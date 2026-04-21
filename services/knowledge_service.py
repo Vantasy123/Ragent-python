@@ -44,6 +44,7 @@ from ingestion.nodes.fetcher_node import FetcherNode
 from ingestion.nodes.indexer_node import IndexerNode
 from ingestion.nodes.parser_node import ParserNode
 from models import KnowledgeBase, KnowledgeChunk, KnowledgeDocument, KnowledgeDocumentChunkLog
+from services.storage import create_storage_service
 
 
 class KnowledgeService:
@@ -90,8 +91,11 @@ class KnowledgeService:
         kb = self.get_kb(kb_id)
         if not kb:
             return False
+        file_urls = [doc.file_url for doc in kb.documents if doc.file_url]
         self.db.delete(kb)
         self.db.commit()
+        for file_url in file_urls:
+            self._delete_file_if_unreferenced(file_url)
         return True
 
     def page_kbs(self, page_no: int, page_size: int) -> tuple[list[KnowledgeBase], int]:
@@ -124,9 +128,22 @@ class KnowledgeService:
         doc = self.get_document(doc_id)
         if not doc:
             return False
+        file_url = doc.file_url
         self.db.delete(doc)
         self.db.commit()
+        self._delete_file_if_unreferenced(file_url)
         return True
+
+    def _delete_file_if_unreferenced(self, file_url: str | None) -> bool:
+        if not file_url:
+            return False
+        references = self.db.query(KnowledgeDocument).filter(KnowledgeDocument.file_url == file_url).count()
+        if references > 0:
+            return False
+        try:
+            return create_storage_service().delete_file(file_url)
+        except Exception:
+            return False
 
     def page_documents(self, kb_id: str, page_no: int, page_size: int, keyword: str | None = None) -> tuple[list[KnowledgeDocument], int]:
         query = self.db.query(KnowledgeDocument).filter(KnowledgeDocument.kb_id == kb_id)
