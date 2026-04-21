@@ -62,3 +62,6 @@ htmlcov/
 
 # Docker
 docker-compose.override.yml
+
+# Local notes
+docs/agent-interview-guide.md
