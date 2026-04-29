@@ -2,8 +2,8 @@
   <section>
     <PageHeader
       title="摄取任务中心"
-      eyebrow="Ingestion Ops"
-      description="主页面保留 Pipeline 管理和任务列表，任务详情改为抽屉查看。"
+      eyebrow="摄取运维"
+      description="按原版后台主线管理流程、提交任务，并查看节点级执行详情。"
     >
       <template #actions>
         <button class="btn btn-secondary" @click="load">刷新数据</button>
@@ -11,10 +11,10 @@
     </PageHeader>
 
     <div class="grid-two">
-      <SurfaceCard title="Pipeline 管理" subtitle="从已有模块库中编排流程并维护节点顺序。">
+      <SurfaceCard title="流程管理" subtitle="通过模块模板编排摄取流程，并维护节点顺序。">
         <div class="form-grid">
-          <input v-model="pipelineForm.name" class="input" placeholder="Pipeline 名称" />
-          <textarea v-model="pipelineForm.description" class="textarea" placeholder="Pipeline 描述" />
+          <input v-model="pipelineForm.name" class="input" placeholder="流程名称" />
+          <textarea v-model="pipelineForm.description" class="textarea" placeholder="流程描述" />
 
           <ModuleComposer
             title="模块编排"
@@ -36,13 +36,9 @@
             @remove-module="removeModule"
           />
 
-          <SurfaceCard compact title="提交流程预览" subtitle="实际发送到后端的节点定义。">
-            <pre class="preformatted">{{ pipelineNodesPreview }}</pre>
-          </SurfaceCard>
-
           <div class="inline-actions">
             <button class="btn btn-primary" :disabled="!pipelineForm.name.trim() || !selectedModules.length" @click="submitPipeline">
-              {{ pipelineForm.id ? '保存 Pipeline' : '创建 Pipeline' }}
+              {{ pipelineForm.id ? '保存流程' : '创建流程' }}
             </button>
             <button v-if="pipelineForm.id" class="btn btn-secondary" @click="resetPipelineForm">取消编辑</button>
           </div>
@@ -54,25 +50,28 @@
           :loading="loading"
           :error="error"
           :empty="!pipelines.length"
-          empty-title="暂无 Pipeline"
+          empty-title="暂无流程"
           empty-description="先配置一个摄取流程，后续任务才能绑定具体执行路径。"
         >
           <div class="list-stack">
-            <article v-for="item in pipelines" :key="item.id" class="resource-item" :class="{ active: selectedPipelineId === item.id }">
-              <button class="w-full text-left" @click="selectPipeline(item.id)">
-                <div class="resource-title">{{ item.name }}</div>
-                <div class="resource-meta">
-                  <span>{{ item.enabled ? 'enabled' : 'disabled' }}</span>
-                  <span>{{ formatDate(item.createdAt) }}</span>
-                </div>
-                <div class="helper-text mt-2">{{ item.description || '暂无描述' }}</div>
-              </button>
+            <article v-for="item in pipelines" :key="item.id" class="resource-item" :class="{ active: selectedPipeline?.id === item.id }">
+              <div class="resource-item-row">
+                <button class="w-full text-left" @click="selectPipeline(item)">
+                  <div class="resource-title">{{ item.name }}</div>
+                  <div class="resource-meta">
+                    <span>{{ item.enabled ? '已启用' : '已停用' }}</span>
+                    <span>{{ formatDate(item.createdAt) }}</span>
+                  </div>
+                  <div class="helper-text mt-2">{{ item.description || '暂无描述' }}</div>
+                </button>
+              </div>
               <div class="mt-3 inline-actions">
                 <button class="btn btn-secondary" @click="editPipeline(item.id)">编辑</button>
                 <button class="btn btn-danger" @click="removePipeline(item.id)">删除</button>
               </div>
             </article>
           </div>
+          <PaginationBar :total="pipelinePagination.total" :page-size="pipelinePagination.pageSize" :current-page="pipelinePagination.pageNo" @update:page="changePipelinePage" />
         </AsyncState>
       </SurfaceCard>
 
@@ -81,7 +80,7 @@
           <div class="form-grid form-grid-two">
             <input v-model="taskForm.name" class="input" placeholder="任务名称" />
             <select v-model="taskForm.pipeline_id" class="select">
-              <option value="">选择 Pipeline</option>
+              <option value="">选择流程</option>
               <option v-for="item in pipelines" :key="item.id" :value="item.id">{{ item.name }}</option>
             </select>
             <select v-model="taskForm.kb_id" class="select">
@@ -100,8 +99,8 @@
             </select>
           </div>
 
-          <SurfaceCard compact class="mt-4" title="任务上下文预览" subtitle="按表单生成 payload，无需手写 JSON。">
-            <pre class="preformatted">{{ taskPayloadPreview }}</pre>
+          <SurfaceCard compact class="mt-4" title="任务上下文预览" subtitle="按表单生成请求载荷，无需手写配置。">
+            <KeyValueGrid :items="taskPayloadFacts" />
           </SurfaceCard>
 
           <div class="mt-4 inline-actions">
@@ -109,7 +108,7 @@
           </div>
         </SurfaceCard>
 
-        <SurfaceCard title="任务列表" subtitle="在主页面查看状态，详情进入抽屉。">
+        <SurfaceCard title="任务列表" subtitle="查看状态，并在下方详情面板查看节点明细。">
           <AsyncState
             :loading="loading"
             :error="error"
@@ -129,72 +128,81 @@
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="item in tasks" :key="item.id">
+                  <tr
+                    v-for="item in tasks"
+                    :key="item.id"
+                    :class="{ 'row-active': selectedTask?.id === item.id }"
+                    @click="selectTask(item.id)"
+                  >
                     <td>{{ item.name }}</td>
-                    <td><span :class="statusClass(item.status)" class="status-badge">{{ item.status }}</span></td>
+                    <td><span :class="statusClass(item.status)" class="status-badge">{{ formatStatus(item.status) }}</span></td>
                     <td>{{ formatDate(item.createdAt) }}</td>
                     <td>{{ formatDate(item.finishedAt) }}</td>
-                    <td><button class="btn btn-secondary" @click="selectTask(item.id)">查看详情</button></td>
+                    <td><button class="btn btn-secondary" @click.stop="selectTask(item.id)">详情</button></td>
                   </tr>
                 </tbody>
               </table>
+            </div>
+            <PaginationBar :total="taskPagination.total" :page-size="taskPagination.pageSize" :current-page="taskPagination.pageNo" @update:page="changeTaskPage" />
+          </AsyncState>
+        </SurfaceCard>
+
+        <SurfaceCard title="任务详情" subtitle="展示任务上下文、错误信息和节点执行时间线。">
+          <AsyncState
+            :loading="loadingTaskDetail"
+            :error="taskDetailError"
+            :empty="!selectedTask"
+            empty-title="尚未选择任务"
+            empty-description="从任务列表中选择一项查看执行节点与错误信息。"
+          >
+            <div v-if="selectedTask" class="list-stack">
+              <KeyValueGrid
+                :items="[
+                  { label: '状态', value: formatStatus(selectedTask.status) },
+                  { label: '流程 ID', value: selectedTask.pipelineId || '-' },
+                  { label: '知识库 ID', value: selectedTask.kbId || '-' },
+                  { label: '文档 ID', value: selectedTask.docId || '-' },
+                  { label: '开始时间', value: formatDate(selectedTask.startedAt) },
+                  { label: '结束时间', value: formatDate(selectedTask.finishedAt) },
+                  { label: '错误信息', value: selectedTask.errorMessage || '-' },
+                ]"
+              />
+
+              <SurfaceCard compact title="任务载荷">
+                <DataPreview :data="selectedTask.payload || {}" />
+              </SurfaceCard>
+
+              <div class="selection-list">
+                <article v-for="node in taskNodes" :key="node.id" class="resource-item">
+                  <div class="resource-item-row">
+                    <div class="mini-stack">
+                      <div class="resource-title">{{ node.nodeName }}</div>
+                      <div class="resource-meta">
+                        <span>{{ node.durationMs ?? 0 }} ms</span>
+                        <span>输出 {{ node.outputCount ?? 0 }}</span>
+                      </div>
+                    </div>
+                    <span :class="statusClass(node.status)" class="status-badge">{{ formatStatus(node.status) }}</span>
+                  </div>
+                  <div class="resource-item-note">{{ node.errorMessage || '节点执行完成，无额外错误信息。' }}</div>
+                </article>
+              </div>
             </div>
           </AsyncState>
         </SurfaceCard>
       </div>
     </div>
-
-    <DetailDrawer
-      :open="drawerOpen"
-      title="任务详情"
-      :subtitle="selectedTask?.name ? `${selectedTask.name} 的节点执行详情` : '加载中'"
-      @close="drawerOpen = false"
-    >
-      <AsyncState
-        :loading="loadingTaskDetail"
-        :error="taskDetailError"
-        :empty="!selectedTask"
-        empty-title="尚未选择任务"
-        empty-description="从任务列表中选择一项查看执行节点与错误信息。"
-      >
-        <div v-if="selectedTask" class="list-stack">
-          <KeyValueGrid
-            :items="[
-              { label: '状态', value: selectedTask.status },
-              { label: '错误信息', value: selectedTask.errorMessage || '无' },
-              { label: '开始时间', value: formatDate(selectedTask.startedAt) },
-              { label: '结束时间', value: formatDate(selectedTask.finishedAt) },
-            ]"
-          />
-
-          <div class="selection-list">
-            <article v-for="node in taskNodes" :key="node.id" class="resource-item">
-              <div class="resource-item-row">
-                <div class="mini-stack">
-                  <div class="resource-title">{{ node.nodeName }}</div>
-                  <div class="resource-meta">
-                    <span>{{ node.durationMs ?? 0 }} ms</span>
-                    <span>output {{ node.outputCount ?? 0 }}</span>
-                  </div>
-                </div>
-                <span :class="statusClass(node.status)" class="status-badge">{{ node.status }}</span>
-              </div>
-              <div class="resource-item-note">{{ node.errorMessage || '节点执行完成，无额外错误信息。' }}</div>
-            </article>
-          </div>
-        </div>
-      </AsyncState>
-    </DetailDrawer>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import AsyncState from '@/components/admin/AsyncState.vue'
-import DetailDrawer from '@/components/admin/DetailDrawer.vue'
+import DataPreview from '@/components/admin/DataPreview.vue'
 import KeyValueGrid from '@/components/admin/KeyValueGrid.vue'
 import ModuleComposer from '@/components/admin/ModuleComposer.vue'
 import PageHeader from '@/components/admin/PageHeader.vue'
+import PaginationBar from '@/components/admin/PaginationBar.vue'
 import SurfaceCard from '@/components/admin/SurfaceCard.vue'
 import { adminService } from '@/services/adminService'
 import { knowledgeService } from '@/services/knowledgeService'
@@ -206,6 +214,7 @@ import {
   normalizePipelineNodes,
   type IngestionModuleSelection,
 } from '@/modules/ingestionModules'
+import { formatShanghaiDateTime } from '@/utils/date'
 
 type PipelineSummary = {
   id: string
@@ -213,6 +222,8 @@ type PipelineSummary = {
   description?: string
   enabled?: boolean
   createdAt?: string
+  updatedAt?: string
+  nodes?: Array<Record<string, unknown>>
 }
 
 type KnowledgeBaseOption = {
@@ -229,8 +240,9 @@ const loading = ref(false)
 const error = ref('')
 const pipelines = ref<PipelineSummary[]>([])
 const tasks = ref<any[]>([])
-const selectedPipelineId = ref('')
-const drawerOpen = ref(false)
+const pipelinePagination = ref({ total: 0, pageNo: 1, pageSize: 6 })
+const taskPagination = ref({ total: 0, pageNo: 1, pageSize: 8 })
+const selectedPipeline = ref<PipelineSummary | null>(null)
 const selectedTask = ref<any | null>(null)
 const taskNodes = ref<any[]>([])
 const loadingTaskDetail = ref(false)
@@ -242,7 +254,7 @@ const taskDocuments = ref<DocumentOption[]>([])
 const pipelineForm = ref({ id: '', name: '', description: '' })
 const selectedModules = ref<IngestionModuleSelection[]>([])
 const moduleDraftKey = ref('')
-const selectedPresetId = ref('')
+const selectedPresetId = ref('standard_rag')
 
 const taskForm = ref({
   name: '',
@@ -287,38 +299,35 @@ const selectedModuleViews = computed(() =>
   }),
 )
 
-const pipelineNodesPreview = computed(() => JSON.stringify(buildPipelineNodes(selectedModules.value), null, 2))
-
-const taskPayloadPreview = computed(() =>
-  JSON.stringify(
-    {
-      source: taskForm.value.source,
-      retry: Number(taskForm.value.retry),
-      kb_id: taskForm.value.kb_id || undefined,
-      doc_id: taskForm.value.doc_id || undefined,
-    },
-    null,
-    2,
-  ),
-)
+const taskPayloadFacts = computed(() => [
+  { label: '来源', value: taskSourceOptions.find((item) => item.value === taskForm.value.source)?.label || '-' },
+  { label: '重试次数', value: `${Number(taskForm.value.retry)} 次` },
+  { label: '知识库', value: knowledgeBases.value.find((item) => item.id === taskForm.value.kb_id)?.name || '未选择' },
+  { label: '文档', value: taskDocuments.value.find((item) => item.id === taskForm.value.doc_id)?.docName || '未选择' },
+])
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
     const [pipelinePage, taskPage, kbPage] = await Promise.all([
-      adminService.pipelines(),
-      adminService.tasks(),
+      adminService.pipelines(pipelinePagination.value.pageNo, pipelinePagination.value.pageSize),
+      adminService.tasks(taskPagination.value.pageNo, taskPagination.value.pageSize),
       knowledgeService.listKnowledgeBases(),
     ])
     pipelines.value = pipelinePage.items as PipelineSummary[]
     tasks.value = taskPage.items
+    pipelinePagination.value = { total: pipelinePage.total, pageNo: pipelinePage.pageNo, pageSize: pipelinePage.pageSize }
+    taskPagination.value = { total: taskPage.total, pageNo: taskPage.pageNo, pageSize: taskPage.pageSize }
     knowledgeBases.value = (kbPage.items || []).map((item: any) => ({ id: item.id, name: item.name }))
+    if (selectedTask.value?.id) {
+      selectedTask.value = tasks.value.find((item) => item.id === selectedTask.value.id) || null
+    }
     if (taskForm.value.kb_id) {
       await loadTaskDocuments(taskForm.value.kb_id)
     }
   } catch (err: any) {
-    error.value = err?.detail || err?.message || '摄取模块加载失败'
+    error.value = err?.detail || err?.message || '摄取数据加载失败'
   } finally {
     loading.value = false
   }
@@ -372,12 +381,13 @@ function buildDefaultModules() {
   return ingestionPipelinePresets[0].modules.map((key) => ({ key }))
 }
 
-async function selectPipeline(id: string) {
-  selectedPipelineId.value = id
+function selectPipeline(item: PipelineSummary) {
+  selectedPipeline.value = item
 }
 
 async function editPipeline(id: string) {
   const detail = await adminService.pipelineDetail(id)
+  selectedPipeline.value = detail as PipelineSummary
   pipelineForm.value = {
     id: detail.id,
     name: detail.name,
@@ -411,7 +421,7 @@ async function submitPipeline() {
 
 async function removePipeline(id: string) {
   await adminService.deletePipeline(id)
-  if (selectedPipelineId.value === id) selectedPipelineId.value = ''
+  if (selectedPipeline.value?.id === id) selectedPipeline.value = null
   await load()
 }
 
@@ -432,11 +442,13 @@ async function submitTask() {
 }
 
 async function selectTask(taskId: string) {
-  drawerOpen.value = true
   loadingTaskDetail.value = true
   taskDetailError.value = ''
   try {
-    const [detail, nodes] = await Promise.all([adminService.taskDetail(taskId), adminService.taskNodes(taskId)])
+    const [detail, nodes] = await Promise.all([
+      adminService.taskDetail(taskId),
+      adminService.taskNodes(taskId),
+    ])
     selectedTask.value = detail
     taskNodes.value = nodes
   } catch (err: any) {
@@ -446,28 +458,51 @@ async function selectTask(taskId: string) {
   }
 }
 
-function formatDate(value?: string) {
-  return value ? new Date(value).toLocaleString() : '-'
+function changePipelinePage(pageNo: number) {
+  pipelinePagination.value.pageNo = pageNo
+  void load()
+}
+
+function changeTaskPage(pageNo: number) {
+  taskPagination.value.pageNo = pageNo
+  void load()
 }
 
 function statusClass(status: string) {
   const normalized = String(status || '').toLowerCase()
   if (['success', 'completed'].includes(normalized)) return 'status-badge-success'
   if (['failed', 'error'].includes(normalized)) return 'status-badge-danger'
-  if (['processing', 'pending', 'running'].includes(normalized)) return 'status-badge-warning'
+  if (['running', 'processing', 'pending'].includes(normalized)) return 'status-badge-warning'
   return 'status-badge-neutral'
+}
+
+function formatStatus(status?: string) {
+  const map: Record<string, string> = {
+    success: '成功',
+    completed: '已完成',
+    failed: '失败',
+    error: '错误',
+    running: '运行中',
+    processing: '处理中',
+    pending: '待处理',
+  }
+  return map[String(status || '').toLowerCase()] || status || '-'
+}
+
+function formatDate(value?: string) {
+  return formatShanghaiDateTime(value)
 }
 
 watch(
   () => taskForm.value.kb_id,
-  async (kbId) => {
+  async (value) => {
     taskForm.value.doc_id = ''
-    await loadTaskDocuments(kbId)
+    await loadTaskDocuments(value)
   },
 )
 
-onMounted(async () => {
+onMounted(() => {
   resetPipelineModules()
-  await load()
+  void load()
 })
 </script>

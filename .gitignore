@@ -54,6 +54,11 @@ logs/
 uploads/*
 !uploads/.gitkeep
 
+# Local runtime databases
+*.db
+*.sqlite
+*.sqlite3
+
 # Testing
 .pytest_cache/
 .coverage

@@ -1,0 +1,23 @@
+services:
+  ragent-api:
+    # 仅在 ops override 中使用 root，以便访问 Docker socket；默认部署仍使用镜像内 app 用户。
+    user: root
+    environment:
+      # 运维 Agent 只有在启用本 override 时才开放 Docker 白名单工具能力。
+      AGENT_EXECUTOR_ENABLED: "true"
+      AGENT_COMPOSE_DIR: /app
+      AGENT_COMPOSE_PROJECT: ragent-python
+      # 保留旧变量名，兼容历史脚本和旧实现。
+      OPS_AGENT_EXECUTOR_ENABLED: "true"
+      OPS_AGENT_COMPOSE_DIR: /app
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # 专门用于运维联调的测试服务，可安全执行查看日志、inspect、重启等操作。
+  ops-test-service:
+    image: nginxdemos/hello:plain-text
+    ports:
+      - "18081:80"
+    networks:
+      - ragent-network
+    restart: unless-stopped

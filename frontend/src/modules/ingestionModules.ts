@@ -18,15 +18,15 @@ export interface IngestionModuleSelection {
 
 export const ingestionModuleCatalog: IngestionModuleOption[] = [
   { key: 'fetcher', label: '文件抓取', description: '读取本地上传文件或远端资源。', category: '输入' },
-  { key: 'parser', label: '内容解析', description: '把 PDF、Word、Markdown 等文件转成文本。', category: '处理' },
-  { key: 'chunker', label: '文本切片', description: '按 chunk 策略把长文本拆成可检索片段。', category: '处理' },
-  { key: 'indexer', label: '向量索引', description: '将片段写入 PGVector，供聊天检索使用。', category: '输出' },
+  { key: 'parser', label: '内容解析', description: '将 PDF、Word、Markdown 等文件转成纯文本。', category: '处理' },
+  { key: 'chunker', label: '文本切片', description: '按分块策略把长文本拆成可检索片段。', category: '处理' },
+  { key: 'indexer', label: '向量索引', description: '将片段写入 Milvus，供聊天检索使用。', category: '输出' },
 ]
 
 export const ingestionPipelinePresets: IngestionPipelinePreset[] = [
   {
     id: 'standard_rag',
-    label: '标准 RAG 入库',
+    label: '标准检索增强入库',
     description: '最常用的文档摄取链路，包含抓取、解析、切片和索引。',
     modules: ['fetcher', 'parser', 'chunker', 'indexer'],
   },
@@ -39,7 +39,7 @@ export const ingestionPipelinePresets: IngestionPipelinePreset[] = [
   {
     id: 'chunk_debug',
     label: '切片调试',
-    description: '用于验证 chunk 规模和顺序，适合调 chunk 参数。',
+    description: '用于验证分块规模和顺序，适合调试分块参数。',
     modules: ['fetcher', 'parser', 'chunker'],
   },
 ]

@@ -1,9 +1,5 @@
--- 初始化数据库脚本
--- 创建 pgvector 扩展
-CREATE EXTENSION IF NOT EXISTS vector;
+-- 初始化 MySQL 数据库脚本
+-- 业务结构化数据存放在 MySQL，向量数据存放在 Milvus。
 
--- 设置时区
-ALTER DATABASE ragent SET timezone TO 'Asia/Shanghai';
-
--- 显示完成信息
-SELECT 'Database initialized successfully!' AS status;
+SET NAMES utf8mb4;
+SET time_zone = '+08:00';

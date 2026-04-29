@@ -4,15 +4,16 @@ uvicorn[standard]==0.27.0
 pydantic==2.5.3
 pydantic-settings==2.1.0
 sqlalchemy==2.0.25
-# psycopg2-binary 在 Windows 上使用预编译版本
+# psycopg2-binary 保留用于一次性 PostgreSQL -> MySQL 迁移脚本
 psycopg2-binary>=2.9.9
+pymysql>=1.1.0
 
 # LangChain & AI (移除严格版本锁定，让pip自动解决依赖冲突)
 langchain>=0.1.0,<0.2.0
 langchain-community>=0.0.10,<0.1.0
 langchain-openai>=0.0.5,<0.1.0
-langchain-postgres>=0.0.7,<0.1.0
 langgraph>=0.0.51,<0.1.0
+pymilvus>=2.5.0,<2.6.0
 
 # Document processing
 PyPDF2==3.0.1
@@ -26,7 +27,11 @@ openpyxl==3.1.2
 # HTTP client
 requests==2.31.0
 httpx==0.26.0
+redis>=5.0.0,<6.0.0
 
 # Utilities
 python-multipart==0.0.6
 apscheduler==3.10.4
+
+# Multi-Agent ops (系统指标采集)
+psutil>=5.9.0

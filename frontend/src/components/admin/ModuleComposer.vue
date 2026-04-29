@@ -45,7 +45,6 @@
           <div>
             <div class="resource-title">{{ index + 1 }}. {{ item.label || item.key }}</div>
             <div class="resource-meta">
-              <span>{{ item.key }}</span>
               <span>{{ item.category || '模块' }}</span>
             </div>
             <div class="helper-text mt-2">{{ item.description || '已选择模块' }}</div>

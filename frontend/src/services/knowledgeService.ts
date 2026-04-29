@@ -20,9 +20,14 @@ export const knowledgeService = {
   async chunkStrategies() {
     return toArrayResult(await apiClient.get('/knowledge-base/chunk-strategies'))
   },
-  async listDocuments(kbId: string, keyword = '', pageNo = 1, pageSize = 100) {
-    const search = keyword ? `&keyword=${encodeURIComponent(keyword)}` : ''
-    return toTablePageResult(await apiClient.get(`/knowledge-base/${kbId}/docs?pageNo=${pageNo}&pageSize=${pageSize}${search}`))
+  async listDocuments(kbId: string, keyword = '', status = '', pageNo = 1, pageSize = 100) {
+    const params = new URLSearchParams({
+      pageNo: String(pageNo),
+      pageSize: String(pageSize),
+    })
+    if (keyword) params.set('keyword', keyword)
+    if (status) params.set('status', status)
+    return toTablePageResult(await apiClient.get(`/knowledge-base/${kbId}/docs?${params.toString()}`))
   },
   async searchDocuments(keyword: string) {
     return toArrayResult(await apiClient.get(`/knowledge-base/docs/search?keyword=${encodeURIComponent(keyword)}`))
@@ -64,11 +69,18 @@ export const knowledgeService = {
   updateChunk(docId: string, chunkId: string, payload: Record<string, unknown>) {
     return apiClient.put(`/knowledge-base/docs/${docId}/chunks/${chunkId}`, payload)
   },
+  enableChunk(docId: string, chunkId: string) {
+    return apiClient.post(`/knowledge-base/docs/${docId}/chunks/${chunkId}/enable`)
+  },
+  disableChunk(docId: string, chunkId: string) {
+    return apiClient.post(`/knowledge-base/docs/${docId}/chunks/${chunkId}/disable`)
+  },
   deleteChunk(docId: string, chunkId: string) {
     return apiClient.delete(`/knowledge-base/docs/${docId}/chunks/${chunkId}`)
   },
   batchEnableChunks(docId: string, chunkIds: string[], enabled: boolean) {
-    return apiClient.post(`/knowledge-base/docs/${docId}/chunks/batch-enable`, { chunkIds, enabled })
+    const path = enabled ? 'batch-enable' : 'batch-disable'
+    return apiClient.post(`/knowledge-base/docs/${docId}/chunks/${path}`, { chunkIds, enabled })
   },
   rebuildChunks(docId: string) {
     return apiClient.post(`/knowledge-base/docs/${docId}/chunks/rebuild`)

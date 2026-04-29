@@ -2,8 +2,8 @@
   <section>
     <PageHeader
       title="系统设置"
-      eyebrow="Runtime Settings"
-      description="运营参数支持在线保存。已接入热切换的字段会立即生效，摘要类设置仍需后端重启。"
+      eyebrow="运行时设置"
+      description="运营参数支持在线保存。已接入热切换的字段会立即生效，需要重启的字段会明确标记。"
     >
       <template #actions>
         <div class="inline-actions">
@@ -26,72 +26,54 @@
 
       <SurfaceCard v-if="isDirty" class="mb-5" title="未保存变更" subtitle="当前表单与最近一次已保存配置不一致。">
         <div class="inline-actions">
-          <span class="status-badge status-badge-warning">Pending Changes</span>
-          <span class="helper-text">保存后会立即刷新页面数据，并按字段能力决定是否热切换。</span>
+          <span class="status-badge status-badge-warning">待保存变更</span>
+          <span class="helper-text">保存后会刷新页面数据，并按字段能力决定是否热切换。</span>
         </div>
       </SurfaceCard>
 
       <div class="grid-two">
-        <SurfaceCard title="RAG 参数" subtitle="Top K 与 Temperature 已支持热切换。">
+        <SurfaceCard title="RAG 参数" subtitle="召回数量与生成温度支持在线生效。">
           <div class="form-grid">
-            <div>
-              <div class="meta-label !text-slate-500">Top K</div>
+            <FieldMeta label="召回数量" :meta="fieldMeta.rag.topK">
               <input v-model.number="form.rag.topK" type="number" min="1" class="input mt-2" />
-            </div>
-            <div>
-              <div class="meta-label !text-slate-500">Temperature</div>
+            </FieldMeta>
+            <FieldMeta label="生成温度" :meta="fieldMeta.rag.temperature">
               <input v-model.number="form.rag.temperature" type="number" step="0.1" min="0" max="2" class="input mt-2" />
-            </div>
-            <div class="inline-actions">
-              <span class="status-badge status-badge-success">即时生效</span>
-            </div>
+            </FieldMeta>
           </div>
         </SurfaceCard>
 
-        <SurfaceCard title="记忆参数" subtitle="历史轮数与标题截断支持热切换，摘要相关设置暂时仍需重启。">
+        <SurfaceCard title="记忆参数" subtitle="历史轮数与标题长度可热更新，摘要相关参数需重启生效。">
           <div class="form-grid form-grid-two">
-            <div>
-              <div class="meta-label !text-slate-500">History Turns</div>
+            <FieldMeta label="历史保留轮数" :meta="fieldMeta.memory.historyKeepTurns">
               <input v-model.number="form.memory.historyKeepTurns" type="number" min="1" class="input mt-2" />
-            </div>
-            <div>
-              <div class="meta-label !text-slate-500">Summary Start Turns</div>
+            </FieldMeta>
+            <FieldMeta label="摘要启动轮数" :meta="fieldMeta.memory.summaryStartTurns">
               <input v-model.number="form.memory.summaryStartTurns" type="number" min="1" class="input mt-2" />
-            </div>
-            <div>
-              <div class="meta-label !text-slate-500">Summary Max Chars</div>
+            </FieldMeta>
+            <FieldMeta label="摘要最大字符数" :meta="fieldMeta.memory.summaryMaxChars">
               <input v-model.number="form.memory.summaryMaxChars" type="number" min="50" class="input mt-2" />
-            </div>
-            <div>
-              <div class="meta-label !text-slate-500">Title Max Length</div>
+            </FieldMeta>
+            <FieldMeta label="标题最大长度" :meta="fieldMeta.memory.titleMaxLength">
               <input v-model.number="form.memory.titleMaxLength" type="number" min="10" class="input mt-2" />
-            </div>
+            </FieldMeta>
           </div>
-          <label class="mt-4 inline-actions items-center">
+          <label class="mt-4 inline-actions items-center rounded-2xl border border-slate-200 px-4 py-3">
             <input v-model="form.memory.summaryEnabled" type="checkbox" />
             <span>启用摘要</span>
           </label>
-          <div class="mt-4 inline-actions">
-            <span class="status-badge status-badge-success">History / Title 即时生效</span>
-            <span class="status-badge status-badge-warning">Summary 需重启</span>
-          </div>
         </SurfaceCard>
       </div>
 
       <div class="grid-two mt-5">
-        <SurfaceCard title="上传限制" subtitle="上传大小限制已支持热切换，超限请求会立即返回 413。">
+        <SurfaceCard title="上传限制" subtitle="上传大小限制支持在线更新，超限请求会立即返回错误。">
           <div class="form-grid form-grid-two">
-            <div>
-              <div class="meta-label !text-slate-500">Max File Size</div>
+            <FieldMeta label="单文件最大大小" :meta="fieldMeta.upload.maxFileSize">
               <input v-model.number="form.upload.maxFileSize" type="number" min="1" class="input mt-2" />
-            </div>
-            <div>
-              <div class="meta-label !text-slate-500">Max Request Size</div>
+            </FieldMeta>
+            <FieldMeta label="单请求最大大小" :meta="fieldMeta.upload.maxRequestSize">
               <input v-model.number="form.upload.maxRequestSize" type="number" min="1" class="input mt-2" />
-            </div>
-          </div>
-          <div class="mt-4 inline-actions">
-            <span class="status-badge status-badge-success">即时生效</span>
+            </FieldMeta>
           </div>
         </SurfaceCard>
 
@@ -103,7 +85,7 @@
             <SurfaceCard compact title="向量与存储">
               <DataPreview :data="{ vector: readonly.vector, storage: readonly.storage }" />
             </SurfaceCard>
-            <SurfaceCard compact title="安全与 Trace">
+            <SurfaceCard compact title="安全与追踪">
               <DataPreview :data="{ trace: readonly.trace, security: readonly.security }" />
             </SurfaceCard>
           </div>
@@ -114,7 +96,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, defineComponent, h, onMounted, ref } from 'vue'
 import AsyncState from '@/components/admin/AsyncState.vue'
 import DataPreview from '@/components/admin/DataPreview.vue'
 import PageHeader from '@/components/admin/PageHeader.vue'
@@ -139,12 +121,37 @@ type SettingsForm = {
   }
 }
 
+const FieldMeta = defineComponent({
+  name: 'FieldMeta',
+  props: {
+    label: { type: String, required: true },
+    meta: { type: Object, default: () => ({}) },
+  },
+  setup(props, { slots }) {
+    return () =>
+      h('div', [
+        h('div', { class: 'meta-label !text-slate-500' }, props.label),
+        h('div', { class: 'mt-2 inline-actions' }, [
+          h(
+            'span',
+            {
+              class: `status-badge ${props.meta?.restartRequired ? 'status-badge-warning' : 'status-badge-success'}`,
+            },
+            props.meta?.restartRequired ? '需重启' : '即时生效',
+          ),
+        ]),
+        slots.default?.(),
+      ])
+  },
+})
+
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
 const saveMessage = ref('')
 const saveRequiresRestart = ref(false)
 const initialForm = ref<SettingsForm | null>(null)
+const meta = ref<Record<string, any>>({})
 const form = ref<SettingsForm>({
   rag: { topK: 5, temperature: 0.7 },
   memory: {
@@ -165,8 +172,13 @@ const isDirty = computed(() => JSON.stringify(form.value) !== JSON.stringify(ini
 const saveBadgeClass = computed(() => (saveRequiresRestart.value ? 'status-badge status-badge-warning' : 'status-badge status-badge-success'))
 const saveBadgeLabel = computed(() => (saveRequiresRestart.value ? '部分需重启' : '已热切换'))
 const saveSubtitle = computed(() =>
-  saveRequiresRestart.value ? '配置已写入数据库。摘要相关字段仍需重启后端后生效。' : '配置已写入数据库，当前字段已在线生效。'
+  saveRequiresRestart.value ? '配置已写入数据库。标记为需重启的字段会在后端重启后生效。' : '配置已写入数据库，当前字段已在线生效。',
 )
+const fieldMeta = computed(() => ({
+  rag: meta.value.rag || {},
+  memory: meta.value.memory || {},
+  upload: meta.value.upload || {},
+}))
 
 function cloneForm(source: SettingsForm): SettingsForm {
   return JSON.parse(JSON.stringify(source)) as SettingsForm
@@ -194,6 +206,7 @@ function applyPayload(payload: any) {
   initialForm.value = cloneForm(nextForm)
   form.value = cloneForm(nextForm)
   readonly.value = values.readonly || {}
+  meta.value = payload?.meta || {}
   saveRequiresRestart.value = Boolean(payload?.restartRequired)
 }
 
@@ -223,8 +236,8 @@ async function save() {
   try {
     const payload = await adminService.updateSettings(form.value as unknown as Record<string, unknown>)
     applyPayload(payload)
-    const changedKeys = Array.isArray(payload?.changedKeys) ? payload.changedKeys.join(', ') : ''
-    saveMessage.value = changedKeys ? `已保存：${changedKeys}` : '配置已保存，当前没有新的字段变更。'
+    const changedKeys = Array.isArray(payload?.changedKeys) ? payload.changedKeys.join('、') : ''
+    saveMessage.value = changedKeys ? `已保存：${changedKeys}` : '配置已保存，但当前没有新的字段变更。'
   } catch (err: any) {
     error.value = err?.detail || err?.message || '系统设置保存失败'
   } finally {
