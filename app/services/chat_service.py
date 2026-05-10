@@ -293,6 +293,10 @@ async def stream_chat(
             output_data={
                 "chunks": len(chunks),
                 "sources": [getattr(chunk, "metadata", {}).get("doc_id") for chunk in chunks[:5]],
+                "channels": [
+                    getattr(chunk, "metadata", {}).get("hybridChannels") or getattr(chunk, "channel", "")
+                    for chunk in chunks[:5]
+                ],
                 "chunkPreview": [getattr(chunk, "content", getattr(chunk, "page_content", str(chunk)))[:160] for chunk in chunks[:3]],
             },
         )

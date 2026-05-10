@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     OPS_AGENT_MAX_CONCURRENCY: int = 2
     CONCURRENCY_COUNTER_TTL_SECONDS: int = 60 * 30
 
+    MONITORING_ENABLED: bool = False
+    PROMETHEUS_URL: str = ""
+    ALERTMANAGER_URL: str = ""
+    MONITORING_TIMEOUT_SECONDS: float = 5.0
+
     JWT_SECRET: str = "ragent-python-secret"
     JWT_EXPIRE_MINUTES: int = 60 * 24 * 7
 
@@ -61,6 +66,9 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 50
     RERANK_THRESHOLD: float = 0.7
+    HYBRID_RETRIEVAL_ENABLED: bool = True
+    HYBRID_KEYWORD_MAX_CHUNKS: int = 3000
+    HYBRID_RRF_K: int = 60
 
     HISTORY_KEEP_TURNS: int = 4
     SUMMARY_ENABLED: bool = True

@@ -197,12 +197,17 @@ flowchart TD
     Question["用户问题"] --> History["读取最近历史"]
     History --> Rewrite["QueryRewriter"]
     Rewrite --> Retrieve["MultiChannelRetriever"]
-    Retrieve --> Rerank["RerankerService"]
+    Retrieve --> Vector[("Milvus 向量召回")]
+    Retrieve --> Keyword[("MySQL Chunk BM25 关键词召回")]
+    Vector --> Fusion["RRF 融合去重"]
+    Keyword --> Fusion
+    Fusion --> Rerank["RerankerService"]
     Rerank --> Prompt["构造知识库提示词"]
     Prompt --> LLM["build_primary_llm"]
     LLM --> Answer["流式回答"]
-    Retrieve --> Vector[("Milvus")]
 ```
+
+检索默认启用混合召回：Milvus 负责语义相似度，BM25 负责关键词精确匹配，随后使用 RRF 融合排序。关键词通道失败时自动回退到向量检索，不影响聊天接口。
 
 ### 运维 Plan-Execute-Replan
 
@@ -250,6 +255,7 @@ flowchart TD
 | `response_time_probe` | read | 否 | 探测接口响应时间 |
 | `alert_status` | read | 否 | 查看当前告警状态 |
 | `metric_trend` | read | 否 | 查看指标趋势 |
+| `prometheus_query` | read | 否 | 执行 Prometheus 即时查询 |
 | `compose_restart_service` | write | 是 | 重启指定 Compose 服务 |
 
 安全规则：
@@ -258,6 +264,7 @@ flowchart TD
 - 只读工具可自动执行。
 - 写操作工具只产生审批事件，不会被 Agent 直接执行。
 - 工具服务名经过白名单和别名归一化，避免模型幻觉出不可控目标。
+- 监控工具默认不强依赖外部服务；需要真实数据时配置 `MONITORING_ENABLED=true`、`PROMETHEUS_URL` 和 `ALERTMANAGER_URL`。
 
 ## 知识库入库流程
 
@@ -270,11 +277,18 @@ flowchart TD
     Engine --> Fetcher["读取文件"]
     Fetcher --> Parser["解析内容"]
     Parser --> Clean["文本清洗"]
-    Clean --> Chunker["分块"]
+    Clean --> Chunker["分块 fixed / recursive / markdown / semantic"]
     Chunker --> ChunkRows["写入 knowledge_chunk"]
     Chunker --> Indexer["写入 Milvus"]
     Engine --> Log["写入 chunk log"]
 ```
+
+分块策略说明：
+
+- `fixed`：保留历史固定字符滑窗，适合兼容旧行为。
+- `recursive`：默认策略，按标题、段落、句子边界切分，超长片段固定窗口兜底。
+- `markdown`：优先保留 Markdown 标题路径、列表和代码块边界。
+- `semantic`：先规则切段，再用 embedding 相似度在低相关位置断开；embedding 不可用时自动回退 `recursive`。
 
 ## Trace 流程
 
@@ -405,6 +419,15 @@ docker compose -f docker-compose.yml -f docker-compose.ops.yml ps
 - `AGENT_EXECUTOR_ENABLED=true`
 - `AGENT_COMPOSE_PROJECT=ragent-python`
 - 已挂载 `/var/run/docker.sock`
+
+### 运维 Agent 无法读取监控数据
+
+监控工具默认保持降级可用；未配置外部监控时会返回 `monitoring_not_configured`，Agent 会继续执行日志和健康检查。需要接入真实数据时配置：
+
+- `MONITORING_ENABLED=true`
+- `PROMETHEUS_URL=http://prometheus:9090`
+- `ALERTMANAGER_URL=http://alertmanager:9093`
+- `MONITORING_TIMEOUT_SECONDS=5`
 
 ### Trace 节点耗时异常
 

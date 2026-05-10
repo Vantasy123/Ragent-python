@@ -49,6 +49,7 @@ class OpsToolkit:
             "response_time_probe": self.response_time_probe,
             "alert_status": self.alert_status,
             "metric_trend": self.metric_trend,
+            "prometheus_query": self.prometheus_query,
             "compose_restart_service": self.compose_restart_service,
         }
 
@@ -75,6 +76,7 @@ class OpsToolkit:
             ToolSpec("response_time_probe", "探测接口响应时间", {"url": "string", "count": "integer"}),
             ToolSpec("alert_status", "查看当前告警状态"),
             ToolSpec("metric_trend", "查看指标趋势", {"metric": "string", "minutes": "integer"}),
+            ToolSpec("prometheus_query", "执行 Prometheus 即时查询", {"query": "string", "time": "number"}),
             ToolSpec(
                 "compose_restart_service",
                 "重启指定 Compose 服务",
@@ -256,10 +258,37 @@ class OpsToolkit:
         except Exception as exc:
             return {"success": False, "summary": f"{host}:{port} 不可连接：{exc}", "data": {}, "error": type(exc).__name__}
 
-    def system_metrics(self) -> dict[str, Any]:
-        """基础系统指标占位；后续可接入 psutil 或 Prometheus。"""
+    async def system_metrics(self) -> dict[str, Any]:
+        """读取基础系统指标；Prometheus 不可用时回退到占位快照。"""
 
-        return {"success": True, "summary": "已采集基础系统指标", "data": {"cpuPercent": 0, "memoryPercent": 0}}
+        fallback = {
+            "success": True,
+            "summary": "监控源未配置或不可用，已返回基础占位指标",
+            "data": {"cpuPercent": 0, "memoryPercent": 0, "source": "fallback"},
+            "error": "monitoring_not_configured" if not self._monitoring_enabled() else "monitoring_query_failed",
+        }
+        if not self._monitoring_enabled() or not getattr(settings, "PROMETHEUS_URL", ""):
+            return fallback
+
+        cpu = await self._prometheus_instant_query(self._metric_query("cpu_percent"))
+        memory = await self._prometheus_instant_query(self._metric_query("memory_percent"))
+        if not cpu.get("success") and not memory.get("success"):
+            fallback["summary"] = "Prometheus 指标查询失败，已返回基础占位指标"
+            return fallback
+
+        cpu_value = self._first_prometheus_value(cpu)
+        memory_value = self._first_prometheus_value(memory)
+        return {
+            "success": True,
+            "summary": f"CPU {cpu_value:.2f}%，内存 {memory_value:.2f}%",
+            "data": {
+                "cpuPercent": cpu_value,
+                "memoryPercent": memory_value,
+                "source": "prometheus",
+                "raw": {"cpu": cpu.get("data"), "memory": memory.get("data")},
+            },
+            "error": "",
+        }
 
     def container_stats(self, service: str = "ragent-api") -> dict[str, Any]:
         """读取 Docker 容器资源快照。"""
@@ -282,15 +311,198 @@ class OpsToolkit:
         avg = sum(samples) / len(samples)
         return {"success": True, "summary": f"平均响应时间 {avg:.0f} ms", "data": {"samples": samples, "avgMs": avg}}
 
-    def alert_status(self) -> dict[str, Any]:
-        """告警状态占位；生产环境可接入 Alertmanager、云监控等。"""
+    async def alert_status(self) -> dict[str, Any]:
+        """从 Alertmanager 查询当前告警状态。"""
 
-        return {"success": True, "summary": "当前没有接入外部告警源", "data": {"alerts": []}}
+        if not self._monitoring_enabled() or not getattr(settings, "ALERTMANAGER_URL", ""):
+            return self._monitoring_not_configured("Alertmanager 未配置，无法查询当前告警")
 
-    def metric_trend(self, metric: str = "cpu_percent", minutes: int = 30) -> dict[str, Any]:
-        """指标趋势占位；生产环境应从时序库读取真实点位。"""
+        url = self._join_url(settings.ALERTMANAGER_URL, "/api/v2/alerts")
+        try:
+            async with httpx.AsyncClient(timeout=float(settings.MONITORING_TIMEOUT_SECONDS)) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            return self._monitoring_query_failed(f"Alertmanager 查询失败：{exc}")
 
-        return {"success": True, "summary": f"{metric} 最近 {minutes} 分钟暂无真实时序数据", "data": {"points": []}}
+        alerts = payload if isinstance(payload, list) else []
+        active_alerts = []
+        for item in alerts:
+            if not isinstance(item, dict):
+                continue
+            status = item.get("status") if isinstance(item.get("status"), dict) else {}
+            if status.get("state") not in {"active", "unprocessed", "suppressed"}:
+                continue
+            labels = item.get("labels") if isinstance(item.get("labels"), dict) else {}
+            annotations = item.get("annotations") if isinstance(item.get("annotations"), dict) else {}
+            active_alerts.append(
+                {
+                    "name": labels.get("alertname", "unknown"),
+                    "severity": labels.get("severity", "unknown"),
+                    "summary": annotations.get("summary") or annotations.get("description") or "",
+                    "startsAt": item.get("startsAt"),
+                    "labels": labels,
+                }
+            )
+
+        if not active_alerts:
+            return {"success": True, "summary": "当前没有活跃告警", "data": {"alerts": [], "count": 0}, "error": ""}
+        top = active_alerts[0]
+        return {
+            "success": True,
+            "summary": f"当前有 {len(active_alerts)} 条活跃告警，最高优先关注 {top['name']}（{top['severity']}）",
+            "data": {"alerts": active_alerts, "count": len(active_alerts)},
+            "error": "",
+        }
+
+    async def metric_trend(self, metric: str = "cpu_percent", minutes: int = 30) -> dict[str, Any]:
+        """从 Prometheus 查询指定指标最近一段时间的趋势。"""
+
+        if not self._monitoring_enabled() or not getattr(settings, "PROMETHEUS_URL", ""):
+            return self._monitoring_not_configured("Prometheus 未配置，无法查询指标趋势")
+
+        safe_minutes = max(1, min(int(minutes or 30), 24 * 60))
+        query = self._metric_query(metric)
+        end = time.time()
+        start = end - safe_minutes * 60
+        step = max(15, int((safe_minutes * 60) / 30))
+        result = await self._prometheus_range_query(query, start, end, step)
+        if not result.get("success"):
+            return result
+
+        points = self._prometheus_points(result)
+        if not points:
+            return {
+                "success": True,
+                "summary": f"{metric} 最近 {safe_minutes} 分钟没有返回时序点",
+                "data": {"metric": metric, "query": query, "points": []},
+                "error": "",
+            }
+        values = [point["value"] for point in points]
+        return {
+            "success": True,
+            "summary": f"{metric} 最近 {safe_minutes} 分钟平均 {sum(values) / len(values):.2f}，最大 {max(values):.2f}",
+            "data": {"metric": metric, "query": query, "points": points, "min": min(values), "max": max(values), "avg": sum(values) / len(values)},
+            "error": "",
+        }
+
+    async def prometheus_query(self, query: str = "", time: float | None = None) -> dict[str, Any]:
+        """执行 Prometheus 即时查询，供 Planner 针对具体故障补充指标。"""
+
+        if not query:
+            return {"success": False, "summary": "PromQL 不能为空", "data": {}, "error": "invalid_promql"}
+        if not self._monitoring_enabled() or not getattr(settings, "PROMETHEUS_URL", ""):
+            return self._monitoring_not_configured("Prometheus 未配置，无法执行即时查询")
+        return await self._prometheus_instant_query(query, time=time)
+
+    def _monitoring_enabled(self) -> bool:
+        """统一判断监控查询是否启用。"""
+
+        return bool(getattr(settings, "MONITORING_ENABLED", False))
+
+    def _monitoring_not_configured(self, summary: str) -> dict[str, Any]:
+        """返回监控源未配置的统一结构，避免调用方需要捕获异常。"""
+
+        return {"success": False, "summary": summary, "data": {}, "error": "monitoring_not_configured"}
+
+    def _monitoring_query_failed(self, summary: str) -> dict[str, Any]:
+        """返回监控查询失败的统一结构。"""
+
+        return {"success": False, "summary": summary, "data": {}, "error": "monitoring_query_failed"}
+
+    def _join_url(self, base: str, path: str) -> str:
+        """拼接监控服务地址，兼容环境变量中是否带尾部斜杠。"""
+
+        return f"{base.rstrip('/')}/{path.lstrip('/')}"
+
+    def _metric_query(self, metric: str) -> str:
+        """将常用指标别名转换为 PromQL，未识别时按原始 PromQL 处理。"""
+
+        aliases = {
+            "cpu": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
+            "cpu_percent": "100 * (1 - avg(rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))",
+            "memory": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))",
+            "memory_percent": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))",
+            "request_rate": "sum(rate(http_requests_total[5m]))",
+            "error_rate": "sum(rate(http_requests_total{status=~\"5..\"}[5m]))",
+            "latency_p95": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le))",
+        }
+        return aliases.get(str(metric or "").strip(), str(metric or "").strip())
+
+    async def _prometheus_instant_query(self, query: str, time: float | None = None) -> dict[str, Any]:
+        """调用 Prometheus 即时查询接口。"""
+
+        url = self._join_url(settings.PROMETHEUS_URL, "/api/v1/query")
+        params: dict[str, Any] = {"query": query}
+        if time is not None:
+            params["time"] = time
+        try:
+            async with httpx.AsyncClient(timeout=float(settings.MONITORING_TIMEOUT_SECONDS)) as client:
+                response = await client.get(url, params=params)
+                response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            return self._monitoring_query_failed(f"Prometheus 查询失败：{exc}")
+        if payload.get("status") != "success":
+            return self._monitoring_query_failed(str(payload.get("error") or "Prometheus 返回失败状态"))
+        result = payload.get("data", {}).get("result", [])
+        return {
+            "success": True,
+            "summary": f"Prometheus 查询成功，返回 {len(result)} 组结果",
+            "data": {"query": query, "result": result, "resultType": payload.get("data", {}).get("resultType")},
+            "error": "",
+        }
+
+    async def _prometheus_range_query(self, query: str, start: float, end: float, step: int) -> dict[str, Any]:
+        """调用 Prometheus 区间查询接口。"""
+
+        url = self._join_url(settings.PROMETHEUS_URL, "/api/v1/query_range")
+        try:
+            async with httpx.AsyncClient(timeout=float(settings.MONITORING_TIMEOUT_SECONDS)) as client:
+                response = await client.get(url, params={"query": query, "start": start, "end": end, "step": step})
+                response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:
+            return self._monitoring_query_failed(f"Prometheus 趋势查询失败：{exc}")
+        if payload.get("status") != "success":
+            return self._monitoring_query_failed(str(payload.get("error") or "Prometheus 返回失败状态"))
+        result = payload.get("data", {}).get("result", [])
+        return {
+            "success": True,
+            "summary": f"Prometheus 趋势查询成功，返回 {len(result)} 组序列",
+            "data": {"query": query, "result": result, "resultType": payload.get("data", {}).get("resultType")},
+            "error": "",
+        }
+
+    def _first_prometheus_value(self, result: dict[str, Any]) -> float:
+        """从 Prometheus 即时查询结果中提取第一个数值。"""
+
+        rows = result.get("data", {}).get("result") or []
+        if not rows:
+            return 0.0
+        value = rows[0].get("value") if isinstance(rows[0], dict) else None
+        if not isinstance(value, list) or len(value) < 2:
+            return 0.0
+        try:
+            return float(value[1])
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _prometheus_points(self, result: dict[str, Any]) -> list[dict[str, float]]:
+        """把 Prometheus matrix 结果压平成前端和报告易消费的点位。"""
+
+        series = result.get("data", {}).get("result") or []
+        points: list[dict[str, float]] = []
+        for item in series[:3]:
+            if not isinstance(item, dict):
+                continue
+            for raw_time, raw_value in item.get("values") or []:
+                try:
+                    points.append({"timestamp": float(raw_time), "value": float(raw_value)})
+                except (TypeError, ValueError):
+                    continue
+        return points[-120:]
 
 
 def get_toolkit() -> OpsToolkit:

@@ -5,10 +5,12 @@ from __future__ import annotations
 import uuid
 from typing import AsyncIterator, Literal
 
+from langchain_core.messages import HumanMessage
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.domain.models import User
+from app.rag.workflow import build_primary_llm
 from app.services.chat_service import ConversationService, stream_chat
 from app.services.ops_agent_service import OpsAgentService
 from app.services.runtime_state import concurrency_slot
@@ -16,7 +18,7 @@ from app.services.runtime_state import concurrency_slot
 ChatMode = Literal["auto", "rag", "ops"]
 
 
-# 自动路由关键词。命中这些词时，auto 模式会进入运维 Agent。
+# 自动路由兜底关键词。LLM 判定失败时，auto 模式会回退到这套规则。
 OPS_KEYWORDS = {
     "502",
     "docker",
@@ -37,13 +39,45 @@ OPS_KEYWORDS = {
 }
 
 
-def resolve_chat_mode(message: str, mode: ChatMode) -> Literal["rag", "ops"]:
-    """根据用户指定模式或关键词规则选择底层通道。"""
+ROUTE_CLASSIFIER_PROMPT = """你是 Ragent 的聊天入口路由器，需要判断用户消息应该进入哪个通道。
+
+可选通道：
+- ops：用户要排查、观察或处理本系统/服务的运维问题，例如容器、日志、健康检查、端口、数据库连接、服务异常、重启、部署、接口 502、前后端代理等。
+- rag：普通知识问答、文档问答、概念解释、代码解释、写作、方案咨询，或只是询问运维概念但不要求检查/操作当前系统。
+
+只输出一个小写单词：ops 或 rag。不要输出解释。
+
+用户消息：
+{message}
+"""
+
+
+def _resolve_chat_mode_by_keywords(message: str, mode: ChatMode) -> Literal["rag", "ops"]:
+    """使用关键词规则兜底选择底层通道。"""
 
     if mode != "auto":
         return mode
     lowered = message.lower()
     return "ops" if any(keyword in lowered or keyword in message for keyword in OPS_KEYWORDS) else "rag"
+
+
+async def resolve_chat_mode(message: str, mode: ChatMode) -> Literal["rag", "ops"]:
+    """根据用户指定模式或 LLM 意图判定选择底层通道。"""
+
+    if mode != "auto":
+        return mode
+
+    try:
+        # 路由判定使用非流式主模型，避免占用聊天输出流。
+        llm = build_primary_llm(streaming=False)
+        response = await llm.ainvoke([HumanMessage(content=ROUTE_CLASSIFIER_PROMPT.format(message=message))])
+        channel = str(getattr(response, "content", "")).strip().lower()
+        if channel in {"rag", "ops"}:
+            return channel
+    except Exception:
+        pass
+
+    return _resolve_chat_mode_by_keywords(message, mode)
 
 
 class UnifiedChatService:
@@ -52,7 +86,7 @@ class UnifiedChatService:
     前端只需要调用 /agent/chat：
     - 普通知识问答走 RAG 链路。
     - 运维问题走多 Agent 诊断链路。
-    - auto 模式由 resolve_chat_mode 进行轻量路由。
+    - auto 模式优先由 LLM 判断路由，失败时回退到关键词规则。
     """
 
     def __init__(self, db: Session):
@@ -68,7 +102,7 @@ class UnifiedChatService:
     ) -> AsyncIterator[dict]:
         """根据通道输出统一 SSE 事件，并补充 channel 字段。"""
 
-        channel = resolve_chat_mode(message, mode)
+        channel = await resolve_chat_mode(message, mode)
 
         if channel == "ops":
             # 运维 Agent 可以读取容器状态和触发审批，必须限制为管理员。

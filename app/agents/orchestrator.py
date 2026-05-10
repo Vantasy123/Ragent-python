@@ -64,6 +64,12 @@ SIMPLE_OPS_KEYWORDS = {
     "超时",
     "cpu",
     "内存",
+    "告警",
+    "alert",
+    "指标",
+    "metric",
+    "监控",
+    "monitor",
     "重启",
     "restart",
     "恢复",
@@ -142,7 +148,7 @@ class PlannerAgent:
         prompt = (
             "你是 Ragent 运维 Planner，需要生成安全、可执行的排障计划。\n"
             "只能输出 JSON，不要输出 Markdown。格式：{\"steps\":[{\"title\":\"步骤标题\",\"tool\":\"工具名\",\"args\":{},\"reasoning\":\"原因\"}]}\n"
-            "要求：优先使用只读工具；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
+            "要求：优先使用只读工具；优先查询 alert_status、metric_trend、health/log 等证据；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
             f"可用工具：{json.dumps(tools, ensure_ascii=False)}\n"
             f"服务名白名单：{json.dumps(sorted(set(OPS_SERVICE_ALIASES.values())), ensure_ascii=False)}\n"
             "如果用户只说“后端/API/服务端”，service 必须使用 ragent-api；只说“前端/nginx”，service 必须使用 ragent-frontend。\n"
@@ -255,6 +261,9 @@ class PlannerAgent:
         text = task.lower()
         steps = [
             PlanStep("检查 Compose 服务状态", "compose_ps", reasoning="先确认核心服务是否存在异常状态"),
+            PlanStep("查询当前活跃告警", "alert_status", reasoning="先确认监控系统是否已有明确告警"),
+            PlanStep("查询 CPU 指标趋势", "metric_trend", {"metric": "cpu_percent", "minutes": 30}, "用指标趋势判断是否存在资源异常"),
+            PlanStep("查询内存指标趋势", "metric_trend", {"metric": "memory_percent", "minutes": 30}, "用指标趋势判断是否存在内存压力"),
         ]
 
         if any(key in text or key in task for key in ["日志", "log", "logs", "报错", "error", "exception", "502"]):
@@ -433,6 +442,8 @@ class OrchestratorAgent(BaseAgent):
     def _should_call_replanner(self, result: ToolCallResult, remaining: list[AgentStep]) -> bool:
         """按需触发 LLM Replanner，避免成功只读步骤后反复调用模型。"""
 
+        if result.error in {"monitoring_not_configured", "monitoring_query_failed"} and remaining:
+            return False
         if result.requires_approval or result.error == "approval_required":
             return True
         if not result.success:
@@ -444,9 +455,35 @@ class OrchestratorAgent(BaseAgent):
     def _build_report(self, task: str, steps: list[AgentStep], decision: ReplanDecision) -> str:
         """生成面向用户的最终运维报告。"""
 
-        lines = ["## 运维 Agent 诊断报告", f"问题：{task}", "", "### 执行结果"]
+        facts = []
+        gaps = []
+        suspected = []
+        suggestions = []
+        for step in steps:
+            status = step.status.value if isinstance(step.status, StepStatus) else str(step.status)
+            observation = step.observation or "无观察结果"
+            if status == StepStatus.SUCCESS.value:
+                facts.append(f"- {step.title}：{observation}")
+            elif "未配置" in observation or "monitoring_not_configured" in observation:
+                gaps.append(f"- {step.title}：{observation}")
+            elif status == StepStatus.BLOCKED.value:
+                suggestions.append(f"- {step.title}：需要审批后才能继续")
+            else:
+                suspected.append(f"- {step.title}：{observation}")
+
+        if not facts:
+            facts.append("- 暂无成功采集的直接事实，请优先查看失败步骤和监控配置。")
+        if not suspected:
+            suspected.append("- 暂未发现明确单点原因，需结合失败步骤、日志和指标继续排查。")
+        if gaps:
+            suggestions.append("- 补齐 Prometheus/Alertmanager 配置后重新运行，可获得更完整的指标和告警证据。")
+        suggestions.append(f"- 重规划结论：{decision.final_report or decision.reason}")
+
+        lines = ["## 运维 Agent 诊断报告", f"问题：{task}", "", "### 已确认事实", *facts, "", "### 疑似原因", *suspected]
+        if gaps:
+            lines.extend(["", "### 数据缺口", *gaps])
+        lines.extend(["", "### 下一步建议", *suggestions, "", "### 执行明细"])
         for index, step in enumerate(steps, start=1):
             status = step.status.value if isinstance(step.status, StepStatus) else str(step.status)
             lines.append(f"- {index}. {step.title}：{status}。{step.observation}")
-        lines.extend(["", "### 重规划结论", decision.final_report or decision.reason])
         return "\n".join(lines)

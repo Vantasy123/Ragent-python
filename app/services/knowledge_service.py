@@ -65,6 +65,7 @@ class KnowledgeService:
             {"value": "recursive", "label": "Recursive"},
             {"value": "fixed", "label": "Fixed Size"},
             {"value": "markdown", "label": "Markdown"},
+            {"value": "semantic", "label": "Semantic"},
         ]
 
     def create_kb(self, name: str, description: str = "", embedding_model: str = settings.EMBEDDING_MODEL) -> KnowledgeBase:
@@ -251,6 +252,10 @@ class KnowledgeService:
                             "chunk_size": doc.chunk_config.get("chunk_size", settings.CHUNK_SIZE),
                             "chunk_overlap": doc.chunk_config.get("chunk_overlap", settings.CHUNK_OVERLAP),
                             "strategy": doc.chunk_strategy,
+                            "semantic_threshold": doc.chunk_config.get("semantic_threshold"),
+                            "min_chunk_size": doc.chunk_config.get("min_chunk_size"),
+                            "max_chunk_size": doc.chunk_config.get("max_chunk_size"),
+                            "preserve_headings": doc.chunk_config.get("preserve_headings", True),
                         },
                     },
                     {"type": "indexer", "settings": {}},
@@ -283,7 +288,8 @@ class KnowledgeService:
             doc.error_message = ""
             log.status = "completed"
             log.chunk_count = len(result.chunks)
-            log.message = "Chunking completed"
+            fallback = context.metadata.get("chunker_fallback")
+            log.message = f"Chunking completed；{fallback}" if fallback else "Chunking completed"
             self.db.commit()
             return True
         except Exception as exc:

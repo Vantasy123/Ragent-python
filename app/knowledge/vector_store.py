@@ -183,6 +183,12 @@ class MilvusVectorStoreAdapter:
                     metadata = json.loads(metadata)
                 except Exception:
                     metadata = {"raw_metadata": metadata}
+            metadata = {
+                **metadata,
+                "chunk_id": hit.entity.get("chunk_id") or metadata.get("chunk_id"),
+                "kb_id": hit.entity.get("kb_id") or metadata.get("kb_id"),
+                "doc_id": hit.entity.get("doc_id") or metadata.get("doc_id"),
+            }
 
             matches.append(
                 (
