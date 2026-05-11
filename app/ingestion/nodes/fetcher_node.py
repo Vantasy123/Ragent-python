@@ -1,4 +1,7 @@
-"""模块说明：本文件属于 Ragent Python 后端，提供对应业务能力。"""
+"""模块导读：本文件位于 app/ingestion/nodes/fetcher_node.py，属于文档摄取流水线。
+
+主要职责：把上传文件解析、分块、向量化并写入知识库索引。
+阅读建议：先看模块顶部导入，理解它依赖哪些服务或外部组件；再看公开类和函数，顺着调用链理解数据如何流转。"""
 
 from __future__ import annotations
 
@@ -11,6 +14,7 @@ class FetcherNode:
     """从本地存储读取上传文件。"""
 
     def execute(self, context, settings: dict[str, Any]) -> dict[str, Any]:
+        """执行当前节点的核心逻辑，输入上下文并返回结构化处理结果。"""
         source = settings.get("source_location") or settings.get("source")
         if not source:
             return {"success": False, "error": "缺少文件路径"}

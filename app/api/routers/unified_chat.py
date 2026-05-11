@@ -1,4 +1,7 @@
-"""模块说明：本文件属于 Ragent Python 后端，提供对应业务能力。"""
+"""模块导读：本文件位于 app/api/routers/unified_chat.py，属于API 路由层。
+
+主要职责：把 HTTP 请求转换成服务层调用，并把结果整理成前端可以直接使用的响应。
+阅读建议：先看模块顶部导入，理解它依赖哪些服务或外部组件；再看公开类和函数，顺着调用链理解数据如何流转。"""
 
 from __future__ import annotations
 
@@ -37,6 +40,7 @@ async def unified_chat(payload: UnifiedChatRequest, db: Session = Depends(get_db
     """
 
     async def event_stream():
+        """event_stream 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         async for event in UnifiedChatService(db).stream(
             payload.message,
             user,

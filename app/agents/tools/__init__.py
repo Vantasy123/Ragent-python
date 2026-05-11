@@ -1,4 +1,7 @@
-"""模块说明：本文件属于 Ragent Python 后端，提供对应业务能力。"""
+"""模块导读：本文件位于 app/agents/tools/__init__.py，属于Agent 编排层。
+
+主要职责：描述智能体、工具调用、计划执行、审批边界和流式事件的运行方式。
+阅读建议：先看模块顶部导入，理解它依赖哪些服务或外部组件；再看公开类和函数，顺着调用链理解数据如何流转。"""
 
 from __future__ import annotations
 
@@ -25,6 +28,7 @@ class OpsToolkit:
 
     def __init__(self) -> None:
         # Docker 命令的工作目录由 compose override 注入，通常指向项目部署目录。
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.compose_dir = Path(getattr(settings, "AGENT_COMPOSE_DIR", ".")).resolve()
         # 通过 compose project 标签定位容器，避免在轻量镜像里强依赖 docker compose 插件。
         self.compose_project = getattr(settings, "AGENT_COMPOSE_PROJECT", "ragent-python")

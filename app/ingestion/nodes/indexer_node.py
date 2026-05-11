@@ -13,11 +13,14 @@ logger = logging.getLogger(__name__)
 
 
 class IndexerNode:
+    """IndexerNode 流水线节点：负责文档处理链路中的一个独立步骤，输入上下文并输出结构化结果。"""
     def __init__(self, vector_store=None, embeddings=None):
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.vector_store = vector_store
         self.embeddings = embeddings
 
     def execute(self, context, settings: dict[str, Any]) -> dict[str, Any]:
+        """执行当前节点的核心逻辑，输入上下文并返回结构化处理结果。"""
         try:
             if not context.chunks:
                 return {"success": False, "error": "No chunks to index"}

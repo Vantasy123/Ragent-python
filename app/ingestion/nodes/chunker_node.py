@@ -34,6 +34,7 @@ class ChunkerNode:
     """
 
     def execute(self, context, settings: dict[str, Any]) -> dict[str, Any]:
+        """执行当前节点的核心逻辑，输入上下文并返回结构化处理结果。"""
         text = sanitize_text(context.raw_text or "")
         if not text.strip():
             return {"success": False, "error": "解析文本为空"}
@@ -167,6 +168,7 @@ class ChunkerNode:
         in_code = False
 
         def flush(end_pos: int) -> None:
+            """flush 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
             nonlocal buffer, buffer_start
             content = "".join(buffer).strip()
             if content:
@@ -242,6 +244,7 @@ class ChunkerNode:
         current: list[TextSegment] = []
 
         def flush() -> None:
+            """flush 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
             nonlocal current
             if not current:
                 return
@@ -271,9 +274,11 @@ class ChunkerNode:
         current: list[TextSegment] = []
 
         def current_length() -> int:
+            """current_length 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
             return len("\n\n".join(item.content for item in current))
 
         def flush() -> None:
+            """flush 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
             nonlocal current
             if current:
                 packed.append(self._merge_segments(current, overlap))

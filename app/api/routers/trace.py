@@ -1,4 +1,7 @@
-"""模块说明：本文件属于 Ragent Python 后端，提供对应业务能力。"""
+"""模块导读：本文件位于 app/api/routers/trace.py，属于API 路由层。
+
+主要职责：把 HTTP 请求转换成服务层调用，并把结果整理成前端可以直接使用的响应。
+阅读建议：先看模块顶部导入，理解它依赖哪些服务或外部组件；再看公开类和函数，顺着调用链理解数据如何流转。"""
 
 from __future__ import annotations
 
@@ -18,6 +21,7 @@ router = APIRouter(tags=["trace"])
 
 
 def _normalize_span_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """_normalize_span_metadata 函数：把内部数据整理成后续步骤需要的格式，避免业务逻辑到处重复拼装。"""
     metadata = metadata or {}
     if set(metadata.keys()) == {"metadata"} and isinstance(metadata["metadata"], dict):
         return metadata["metadata"]
@@ -25,6 +29,7 @@ def _normalize_span_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _split_span_metadata(metadata: dict[str, Any] | None) -> tuple[dict[str, Any], dict[str, Any]]:
+    """_split_span_metadata 函数：把内部数据整理成后续步骤需要的格式，避免业务逻辑到处重复拼装。"""
     metadata = _normalize_span_metadata(metadata)
 
     # 新结构优先：Trace 写入时已经显式区分 input/output，详情页直接使用。
@@ -70,6 +75,7 @@ def list_runs(
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):
+    """list_runs 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
     query = db.query(TraceRun).order_by(TraceRun.created_at.desc())
     total = query.count()
     rows = query.offset((pageNo - 1) * pageSize).limit(pageSize).all()
@@ -89,6 +95,7 @@ def list_runs(
 
 @router.get("/rag/traces/runs/{trace_id}")
 def get_run(trace_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """get_run 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
     row = db.query(TraceRun).filter(TraceRun.id == trace_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Trace 不存在")
@@ -110,6 +117,7 @@ def get_run(trace_id: str, db: Session = Depends(get_db), _: User = Depends(requ
 
 @router.get("/rag/traces/runs/{trace_id}/nodes")
 def get_nodes(trace_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """get_nodes 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
     row = db.query(TraceRun).filter(TraceRun.id == trace_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Trace 不存在")

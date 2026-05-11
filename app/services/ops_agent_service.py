@@ -27,6 +27,7 @@ class OpsAgentService:
     """
 
     def __init__(self, db: Session):
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.db = db
         self.toolkit = OpsToolkit()
 

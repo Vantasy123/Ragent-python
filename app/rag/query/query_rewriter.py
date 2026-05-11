@@ -17,6 +17,7 @@ class QueryRewriter:
     """把依赖上下文的用户问题改写成可独立检索的查询。"""
 
     def __init__(self, llm: ChatOpenAI | None = None):
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.llm = llm or ChatOpenAI(
             model=settings.CHAT_MODEL,
             temperature=0.0,
@@ -42,6 +43,7 @@ Latest user question:
 Standalone question:"""
 
     def rewrite(self, question: str, chat_history: list[dict[str, Any]] | None = None) -> str:
+        """rewrite 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         if not chat_history:
             return question
 
@@ -62,6 +64,7 @@ Standalone question:"""
             return question
 
     def _format_history(self, chat_history: list[dict[str, Any]]) -> str:
+        """_format_history 函数：把内部数据整理成后续步骤需要的格式，避免业务逻辑到处重复拼装。"""
         lines: list[str] = []
         for msg in chat_history[-5:]:
             role = msg.get("role", "unknown")

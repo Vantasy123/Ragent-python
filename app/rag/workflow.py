@@ -1,4 +1,7 @@
-"""模块说明：本文件属于 Ragent Python 后端，提供对应业务能力。"""
+"""模块导读：本文件位于 app/rag/workflow.py，属于RAG 问答链路。
+
+主要职责：处理问题改写、知识检索、结果融合、重排和最终回答生成。
+阅读建议：先看模块顶部导入，理解它依赖哪些服务或外部组件；再看公开类和函数，顺着调用链理解数据如何流转。"""
 
 from __future__ import annotations
 
@@ -36,6 +39,7 @@ class SimpleAppGraph:
     """兼容旧测试导入的轻量工作流对象。"""
 
     async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
+        """异步执行 RAG 工作流，返回问答结果、检索片段和 Trace 信息。"""
         question = state.get("question") or state.get("input") or ""
         docs = multi_channel_retriever.retrieve(question, top_k=get_runtime_settings().top_k)
         return {"question": question, "documents": docs}

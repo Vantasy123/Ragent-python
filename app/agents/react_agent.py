@@ -26,6 +26,7 @@ class ConversationReactAgent:
     """普通对话 Agent，按思考、工具、观察、回答的 ReAct 流程运行。"""
 
     def __init__(self, registry: UnifiedToolRegistry | None = None, max_steps: int = 5) -> None:
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.registry = registry or UnifiedToolRegistry(include_ops=False)
         self.max_steps = max(1, max_steps)
 

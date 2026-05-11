@@ -18,6 +18,7 @@ class ParserNode:
     """解析 PDF、Office 和纯文本上传文件，产出原始文本。"""
 
     def execute(self, context, settings: dict[str, Any]) -> dict[str, Any]:
+        """执行当前节点的核心逻辑，输入上下文并返回结构化处理结果。"""
         try:
             if not context.raw_bytes:
                 return {"success": False, "error": "No raw bytes to parse"}
@@ -45,6 +46,7 @@ class ParserNode:
             return {"success": False, "error": str(exc)}
 
     def _parse_pdf(self, raw_bytes: bytes) -> str:
+        """_parse_pdf 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         try:
             from PyPDF2 import PdfReader
 
@@ -55,6 +57,7 @@ class ParserNode:
             return self._decode_text(raw_bytes)
 
     def _parse_word(self, raw_bytes: bytes) -> str:
+        """_parse_word 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         try:
             from docx import Document
 
@@ -71,6 +74,7 @@ class ParserNode:
             return self._parse_openxml_text(raw_bytes)
 
     def _parse_excel(self, raw_bytes: bytes) -> str:
+        """_parse_excel 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         try:
             import pandas as pd
 
@@ -81,6 +85,7 @@ class ParserNode:
             return self._decode_text(raw_bytes)
 
     def _parse_text(self, raw_bytes: bytes) -> str:
+        """_parse_text 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         return self._decode_text(raw_bytes)
 
     def _decode_text(self, raw_bytes: bytes) -> str:
@@ -112,6 +117,7 @@ class ParserNode:
         return raw_bytes.decode("utf-8", errors="replace")
 
     def _parse_openxml_text(self, raw_bytes: bytes) -> str:
+        """_parse_openxml_text 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         if not zipfile.is_zipfile(io.BytesIO(raw_bytes)):
             text = self._decode_text(raw_bytes).strip()
             if text:
@@ -155,6 +161,7 @@ class ParserNode:
         return text
 
     def _extract_xml_text(self, xml_bytes: bytes) -> str:
+        """_extract_xml_text 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         root = ElementTree.fromstring(xml_bytes)
         texts: list[str] = []
         for element in root.iter():

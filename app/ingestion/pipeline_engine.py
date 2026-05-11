@@ -55,6 +55,7 @@ class PipelineContext:
     """Pipeline 执行上下文"""
     
     def __init__(self, task_id: str, pipeline_id: str):
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.task_id = task_id
         self.pipeline_id = pipeline_id
         self.raw_bytes: Optional[bytes] = None
@@ -68,6 +69,7 @@ class PipelineContext:
         self.end_time: Optional[datetime] = None
         
     def to_dict(self) -> Dict[str, Any]:
+        """to_dict 函数：把内部对象转换成普通 dict，便于 JSON 序列化、接口返回或 Trace 记录。"""
         return {
             "task_id": self.task_id,
             "pipeline_id": self.pipeline_id,

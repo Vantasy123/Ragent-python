@@ -95,6 +95,7 @@ class BaseAgent:
 
     def __init__(self, tools: dict[str, Any] | None = None) -> None:
         # tools 由 OpsToolkit 注入，避免 Agent 自己创建任意执行能力。
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.tools = tools or {}
 
     def tool_specs(self) -> list[ToolSpec]:

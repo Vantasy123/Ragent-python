@@ -54,6 +54,7 @@ async def rag_chat(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    """rag_chat 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     service = ConversationService(db)
     conversation = service.get_conversation(conversationId) if conversationId else None
     if not conversation:
@@ -61,6 +62,7 @@ async def rag_chat(
     task_id = str(uuid.uuid4())
 
     async def event_stream():
+        """event_stream 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         with concurrency_slot(f"chat:user:{user.id}", settings.CHAT_MAX_CONCURRENCY_PER_USER, settings.CONCURRENCY_COUNTER_TTL_SECONDS) as acquired:
             if not acquired:
                 yield f"data: {json.dumps({'type': 'error', 'content': '当前用户聊天并发已满，请等待上一轮回答完成'}, ensure_ascii=False)}\n\n"
@@ -73,6 +75,7 @@ async def rag_chat(
 
 @router.post("/rag/v3/stop")
 def stop_chat(taskId: str = Query(...)):
+    """stop_chat 函数：停止正在运行的任务，通常通过共享状态通知流式链路尽快结束。"""
     STOP_TASKS.add(taskId)
     return success()
 

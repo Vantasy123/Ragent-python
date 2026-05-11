@@ -15,6 +15,7 @@ class RedisClient:
     """对 redis-py 做一层安全封装，避免 Redis 异常影响主流程。"""
 
     def __init__(self) -> None:
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.enabled = bool(settings.REDIS_ENABLED)
         self._client: Any | None = None
         self._available: bool | None = None

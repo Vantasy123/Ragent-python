@@ -35,12 +35,14 @@ router = APIRouter(tags=["auth"])
 
 
 class LoginRequest(BaseModel):
+    """LoginRequest 请求模型：描述前端提交到接口的字段，FastAPI 会用它完成参数校验和类型转换。"""
     username: str
     password: str
 
 
 @router.post("/auth/login")
 def login_api(payload: LoginRequest, db: Session = Depends(get_db)):
+    """登录接口：验证用户名和密码，成功后返回 JWT 令牌。"""
     try:
         return success(login(db, payload.username, payload.password))
     except ValueError as exc:
@@ -49,12 +51,14 @@ def login_api(payload: LoginRequest, db: Session = Depends(get_db)):
 
 @router.post("/auth/logout")
 def logout_api(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    """退出接口：将当前令牌加入撤销列表，防止继续使用。"""
     logout(db, user._token_payload)  # type: ignore[attr-defined]
     return success()
 
 
 @router.get("/user/me")
 def me(user: User = Depends(get_current_user)):
+    """返回当前登录用户的基本信息，供前端做权限和展示判断。"""
     return success({"id": user.id, "username": user.username, "nickname": user.nickname, "role": user.role})
 
 

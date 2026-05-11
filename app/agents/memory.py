@@ -1,4 +1,7 @@
-"""模块说明：本文件属于 Ragent Python 后端，提供对应业务能力。"""
+"""模块导读：本文件位于 app/agents/memory.py，属于Agent 编排层。
+
+主要职责：描述智能体、工具调用、计划执行、审批边界和流式事件的运行方式。
+阅读建议：先看模块顶部导入，理解它依赖哪些服务或外部组件；再看公开类和函数，顺着调用链理解数据如何流转。"""
 
 from __future__ import annotations
 
@@ -29,6 +32,7 @@ class SharedMemory:
     """
 
     def __init__(self) -> None:
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.items: list[MemoryItem] = []
 
     def add(self, agent: str, event_type: str, content: str, data: dict[str, Any] | None = None) -> None:

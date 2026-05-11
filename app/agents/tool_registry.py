@@ -116,6 +116,7 @@ class UnifiedToolRegistry:
     """统一内置工具、MCP 工具和运维工具的注册表。"""
 
     def __init__(self, include_ops: bool = False, toolkit: OpsToolkit | None = None) -> None:
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.include_ops = include_ops
         self.toolkit = toolkit or OpsToolkit()
         self.mcp_registry = ToolRegistry()

@@ -124,6 +124,7 @@ class PlannerAgent:
     name = "planner"
 
     def __init__(self, registry: UnifiedToolRegistry) -> None:
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.registry = registry
 
     async def create_plan(self, task: str, knowledge: ToolCallResult | None = None) -> list[AgentStep]:
@@ -307,6 +308,7 @@ class StepExecutorAgent:
     name = "executor"
 
     def __init__(self, registry: UnifiedToolRegistry) -> None:
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.registry = registry
 
     async def execute(self, step: AgentStep) -> ToolCallResult:
@@ -403,6 +405,7 @@ class OrchestratorAgent(BaseAgent):
     description = "按计划、执行、重规划模式处理运维问题。"
 
     def __init__(self, toolkit: OpsToolkit | None = None) -> None:
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.toolkit = toolkit or OpsToolkit()
         self.registry = UnifiedToolRegistry(include_ops=True, toolkit=self.toolkit)
         self.memory = SharedMemory()

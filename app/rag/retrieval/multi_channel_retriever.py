@@ -13,13 +13,16 @@ logger = logging.getLogger(__name__)
 
 
 class RetrievedChunk:
+    """RetrievedChunk 辅助类型：把相关字段和行为组织在一起，减少跨模块传递零散数据。"""
     def __init__(self, content: str, score: float, metadata: dict[str, Any], channel: str):
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.content = content
         self.score = score
         self.metadata = metadata
         self.channel = channel
 
     def to_dict(self) -> dict[str, Any]:
+        """to_dict 函数：把内部对象转换成普通 dict，便于 JSON 序列化、接口返回或 Trace 记录。"""
         return {
             "content": self.content,
             "score": self.score,
@@ -29,12 +32,15 @@ class RetrievedChunk:
 
 
 class MultiChannelRetriever:
+    """MultiChannelRetriever 检索器：负责从知识库或索引中召回候选片段，供 RAG 后续拼接和回答使用。"""
     def __init__(self, vector_store=None, embeddings=None, keyword_retriever: KeywordBM25Retriever | None = None):
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.vector_store = vector_store
         self.embeddings = embeddings
         self.keyword_retriever = keyword_retriever or KeywordBM25Retriever()
 
     def _ensure_vector_store(self):
+        """_ensure_vector_store 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         if self.vector_store is None:
             from app.knowledge.vector_store import vector_store as shared_vector_store
 
@@ -53,6 +59,7 @@ class MultiChannelRetriever:
         top_k: int | None = None,
         intent_nodes: list[dict[str, Any]] | None = None,
     ) -> list[RetrievedChunk]:
+        """retrieve 函数：执行检索逻辑，从知识库或索引中找出和用户问题最相关的内容。"""
         effective_top_k = top_k if top_k is not None else get_runtime_settings().top_k
         logger.info("Starting multi-channel retrieval: top_k=%s query=%s", effective_top_k, query[:50])
 
@@ -84,6 +91,7 @@ class MultiChannelRetriever:
         intent_nodes: list[dict[str, Any]],
         top_k: int,
     ) -> list[RetrievedChunk]:
+        """_intent_based_retrieve 函数：执行检索逻辑，从知识库或索引中找出和用户问题最相关的内容。"""
         chunks: list[RetrievedChunk] = []
 
         for node in intent_nodes:
@@ -109,6 +117,7 @@ class MultiChannelRetriever:
         return chunks
 
     def _global_vector_retrieve(self, query: str, collection_name: str | None, top_k: int) -> list[RetrievedChunk]:
+        """_global_vector_retrieve 函数：执行检索逻辑，从知识库或索引中找出和用户问题最相关的内容。"""
         chunks: list[RetrievedChunk] = []
 
         try:
@@ -129,6 +138,7 @@ class MultiChannelRetriever:
         return chunks
 
     def _deduplicate_chunks(self, chunks: list[RetrievedChunk]) -> list[RetrievedChunk]:
+        """_deduplicate_chunks 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         seen_contents: dict[str, RetrievedChunk] = {}
         for chunk in chunks:
             content_key = self._chunk_key(chunk)

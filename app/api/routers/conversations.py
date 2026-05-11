@@ -42,10 +42,12 @@ router = APIRouter(tags=["conversations"])
 
 
 class ConversationRenameRequest(BaseModel):
+    """ConversationRenameRequest 请求模型：描述前端提交到接口的字段，FastAPI 会用它完成参数校验和类型转换。"""
     title: str
 
 
 class FeedbackRequest(BaseModel):
+    """FeedbackRequest 请求模型：描述前端提交到接口的字段，FastAPI 会用它完成参数校验和类型转换。"""
     feedback_type: str
     comment: str = ""
     reasonTags: list[str] = Field(default_factory=list)
@@ -54,6 +56,7 @@ class FeedbackRequest(BaseModel):
 
 @router.get("/conversations")
 def list_conversations(pageNo: int = 1, pageSize: int = 10, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """list_conversations 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
     rows, total = ConversationService(db).list_conversations(user.id, pageNo, pageSize)
     items = [{"id": row.id, "title": row.title, "messageCount": row.message_count, "updatedAt": to_shanghai_iso(row.updated_at)} for row in rows]
     return success(page(items, total, pageNo, pageSize))
@@ -61,6 +64,7 @@ def list_conversations(pageNo: int = 1, pageSize: int = 10, db: Session = Depend
 
 @router.put("/conversations/{conversation_id}")
 def rename_conversation(conversation_id: str, payload: ConversationRenameRequest, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """rename_conversation 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     row = ConversationService(db).rename_conversation(conversation_id, payload.title)
     if not row:
         raise HTTPException(status_code=404, detail="会话不存在")
@@ -69,6 +73,7 @@ def rename_conversation(conversation_id: str, payload: ConversationRenameRequest
 
 @router.delete("/conversations/{conversation_id}")
 def delete_conversation(conversation_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """delete_conversation 函数：删除业务记录，并在需要时同步清理关联资源或缓存。"""
     if not ConversationService(db).delete_conversation(conversation_id):
         raise HTTPException(status_code=404, detail="会话不存在")
     return success()
@@ -85,12 +90,14 @@ def clear_conversation_messages(conversation_id: str, db: Session = Depends(get_
 
 @router.get("/conversations/{conversation_id}/messages")
 def list_messages(conversation_id: str, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """list_messages 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
     rows = ConversationService(db).list_messages(conversation_id)
     return success([{"id": row.id, "role": row.role, "content": row.content, "metadata": row.meta_data, "createdAt": to_shanghai_iso(row.created_at)} for row in rows])
 
 
 @router.post("/conversations/messages/{message_id}/feedback")
 def message_feedback(message_id: str, payload: FeedbackRequest, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """message_feedback 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     extra = {}
     if payload.reasonTags:
         extra["reasonTags"] = payload.reasonTags

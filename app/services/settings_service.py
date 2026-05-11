@@ -1,4 +1,7 @@
-"""模块说明：本文件属于 Ragent Python 后端，提供对应业务能力。"""
+"""模块导读：本文件位于 app/services/settings_service.py，属于服务层。
+
+主要职责：承接路由层请求，组织数据库、缓存、Trace、Agent 和外部组件完成业务流程。
+阅读建议：先看模块顶部导入，理解它依赖哪些服务或外部组件；再看公开类和函数，顺着调用链理解数据如何流转。"""
 
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ SettingsMeta = dict[str, Any]
 
 @dataclass(slots=True)
 class RuntimeSettings:
+    """RuntimeSettings 辅助类型：把相关字段和行为组织在一起，减少跨模块传递零散数据。"""
     top_k: int
     temperature: float
     history_keep_turns: int
@@ -32,6 +36,7 @@ class RuntimeSettings:
 
 
 class SettingDefinition(dict):
+    """SettingDefinition 辅助类型：把相关字段和行为组织在一起，减少跨模块传递零散数据。"""
     key: EditableSettingKey
     group: str
     field: str
@@ -127,6 +132,7 @@ EDITABLE_SETTINGS: dict[EditableSettingKey, SettingDefinition] = {
 
 
 def _coerce_value(raw_value: Any, value_type: str) -> Any:
+    """_coerce_value 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     if value_type == "bool":
         if isinstance(raw_value, bool):
             return raw_value
@@ -151,12 +157,14 @@ def _coerce_value(raw_value: Any, value_type: str) -> Any:
 
 
 def _serialize_value(value: Any, value_type: str) -> str:
+    """_serialize_value 函数：计算或整理一段辅助数据，让主流程保持清晰。"""
     if value_type == "bool":
         return "true" if bool(value) else "false"
     return str(value)
 
 
 def _default_editable_values() -> dict[str, dict[str, Any]]:
+    """_default_editable_values 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     grouped: dict[str, dict[str, Any]] = {}
     for definition in EDITABLE_SETTINGS.values():
         grouped.setdefault(definition["group"], {})[definition["field"]] = definition["default_factory"]()
@@ -164,6 +172,7 @@ def _default_editable_values() -> dict[str, dict[str, Any]]:
 
 
 def _readonly_values() -> dict[str, Any]:
+    """_readonly_values 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     return {
         "models": {
             "defaultChatModel": settings.CHAT_MODEL,
@@ -206,6 +215,7 @@ def _readonly_values() -> dict[str, Any]:
 
 
 def _build_meta() -> SettingsMeta:
+    """_build_meta 函数：把内部数据整理成后续步骤需要的格式，避免业务逻辑到处重复拼装。"""
     editable_meta: dict[str, dict[str, Any]] = {}
     for definition in EDITABLE_SETTINGS.values():
         editable_meta.setdefault(definition["group"], {})[definition["field"]] = {
@@ -230,11 +240,13 @@ def _build_meta() -> SettingsMeta:
 
 
 def _load_db_overrides(db: Session) -> dict[str, SystemSetting]:
+    """_load_db_overrides 函数：从配置、数据库或外部系统读取数据，并转换成本模块可使用的结构。"""
     rows = db.query(SystemSetting).filter(SystemSetting.key.in_(list(EDITABLE_SETTINGS.keys()))).all()
     return {row.key: row for row in rows}
 
 
 def _apply_overrides(values: dict[str, dict[str, Any]], overrides: dict[str, SystemSetting]) -> dict[str, dict[str, Any]]:
+    """_apply_overrides 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     merged = {
         group: dict(group_values)
         for group, group_values in values.items()
@@ -246,6 +258,7 @@ def _apply_overrides(values: dict[str, dict[str, Any]], overrides: dict[str, Sys
 
 
 def _flatten_update_payload(payload: SettingsPayload) -> dict[EditableSettingKey, Any]:
+    """_flatten_update_payload 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     flattened: dict[EditableSettingKey, Any] = {}
     allowed_groups = {"rag", "memory", "upload"}
     unknown_groups = set(payload.keys()) - allowed_groups
@@ -266,6 +279,7 @@ def _flatten_update_payload(payload: SettingsPayload) -> dict[EditableSettingKey
 
 
 def _to_runtime_settings(values: dict[str, dict[str, Any]]) -> RuntimeSettings:
+    """_to_runtime_settings 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     rag_values = values.get("rag", {})
     memory_values = values.get("memory", {})
     upload_values = values.get("upload", {})
@@ -283,6 +297,7 @@ def _to_runtime_settings(values: dict[str, dict[str, Any]]) -> RuntimeSettings:
 
 
 def get_runtime_settings(db: Session | None = None) -> RuntimeSettings:
+    """get_runtime_settings 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
     if db is not None:
         values = _apply_overrides(_default_editable_values(), _load_db_overrides(db))
         return _to_runtime_settings(values)
@@ -296,6 +311,7 @@ def get_runtime_settings(db: Session | None = None) -> RuntimeSettings:
 
 
 def build_settings_payload(db: Session) -> dict[str, Any]:
+    """build_settings_payload 函数：把内部数据整理成后续步骤需要的格式，避免业务逻辑到处重复拼装。"""
     values = _apply_overrides(_default_editable_values(), _load_db_overrides(db))
     return {
         "values": {
@@ -308,6 +324,7 @@ def build_settings_payload(db: Session) -> dict[str, Any]:
 
 
 def update_settings(db: Session, user: User, payload: SettingsPayload) -> dict[str, Any]:
+    """update_settings 函数：更新已有业务记录，只修改调用方明确传入的字段。"""
     flattened = _flatten_update_payload(payload)
     overrides = _load_db_overrides(db)
     changed_keys: list[str] = []

@@ -1,4 +1,7 @@
-"""模块说明：本文件属于 Ragent Python 后端，提供对应业务能力。"""
+"""模块导读：本文件位于 app/services/evaluation_service.py，属于服务层。
+
+主要职责：承接路由层请求，组织数据库、缓存、Trace、Agent 和外部组件完成业务流程。
+阅读建议：先看模块顶部导入，理解它依赖哪些服务或外部组件；再看公开类和函数，顺着调用链理解数据如何流转。"""
 
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ from app.domain.models import (
 
 
 def _metadata(value: dict[str, Any] | None) -> dict[str, Any]:
+    """_metadata 函数：计算或整理一段辅助数据，让主流程保持清晰。"""
     value = value or {}
     if set(value.keys()) == {"metadata"} and isinstance(value["metadata"], dict):
         return value["metadata"]
@@ -27,10 +31,13 @@ def _metadata(value: dict[str, Any] | None) -> dict[str, Any]:
 
 
 class EvaluationService:
+    """EvaluationService 服务类：集中处理一类业务流程，让路由层不需要直接操作数据库、缓存或外部组件。"""
     def __init__(self, db: Session):
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.db = db
 
     def evaluate_trace(self, trace_id: str) -> EvaluationRun:
+        """evaluate_trace 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         trace = self.db.query(TraceRun).filter(TraceRun.id == trace_id).first()
         if not trace:
             raise ValueError("Trace not found")
@@ -65,6 +72,7 @@ class EvaluationService:
         return run
 
     def latest_for_trace(self, trace_id: str) -> EvaluationRun | None:
+        """latest_for_trace 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         return (
             self.db.query(EvaluationRun)
             .filter(EvaluationRun.trace_id == trace_id)
@@ -73,6 +81,7 @@ class EvaluationService:
         )
 
     def ensure_evaluated(self, trace_id: str) -> EvaluationRun | None:
+        """ensure_evaluated 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         existing = self.latest_for_trace(trace_id)
         if existing:
             return existing
@@ -82,12 +91,14 @@ class EvaluationService:
             return None
 
     def list_runs(self, page_no: int, page_size: int) -> tuple[list[EvaluationRun], int]:
+        """list_runs 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
         query = self.db.query(EvaluationRun).order_by(EvaluationRun.created_at.desc())
         total = query.count()
         rows = query.offset((page_no - 1) * page_size).limit(page_size).all()
         return rows, total
 
     def list_issues(self, page_no: int, page_size: int, severity: str | None = None) -> tuple[list[EvaluationIssue], int]:
+        """list_issues 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
         query = self.db.query(EvaluationIssue)
         if severity:
             query = query.filter(EvaluationIssue.severity == severity)
@@ -97,6 +108,7 @@ class EvaluationService:
         return rows, total
 
     def overview(self) -> dict[str, Any]:
+        """overview 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
         runs = self.db.query(EvaluationRun).order_by(EvaluationRun.created_at.desc()).limit(200).all()
         issues = self.db.query(EvaluationIssue).order_by(EvaluationIssue.created_at.desc()).limit(20).all()
         trace_runs = self.db.query(TraceRun).order_by(TraceRun.created_at.desc()).limit(200).all()
@@ -120,6 +132,7 @@ class EvaluationService:
         }
 
     def run_to_dict(self, run: EvaluationRun, include_details: bool = False) -> dict[str, Any]:
+        """run_to_dict 函数：把内部对象转换成普通 dict，便于 JSON 序列化、接口返回或 Trace 记录。"""
         data: dict[str, Any] = {
             "id": run.id,
             "traceId": run.trace_id,
@@ -137,6 +150,7 @@ class EvaluationService:
 
     @staticmethod
     def metric_to_dict(metric: EvaluationMetric) -> dict[str, Any]:
+        """metric_to_dict 函数：把内部对象转换成普通 dict，便于 JSON 序列化、接口返回或 Trace 记录。"""
         return {
             "id": metric.id,
             "traceId": metric.trace_id,
@@ -150,6 +164,7 @@ class EvaluationService:
 
     @staticmethod
     def issue_to_dict(issue: EvaluationIssue) -> dict[str, Any]:
+        """issue_to_dict 函数：把内部对象转换成普通 dict，便于 JSON 序列化、接口返回或 Trace 记录。"""
         return {
             "id": issue.id,
             "traceId": issue.trace_id,
@@ -162,6 +177,7 @@ class EvaluationService:
         }
 
     def _assistant_message_for_trace(self, trace: TraceRun) -> ConversationMessage | None:
+        """_assistant_message_for_trace 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         if not trace.session_id:
             return None
         rows = (
@@ -183,6 +199,7 @@ class EvaluationService:
         assistant_message: ConversationMessage | None,
         issues: list[EvaluationIssue],
     ) -> list[EvaluationMetric]:
+        """_outcome_metrics 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         metrics: list[EvaluationMetric] = []
         answer = assistant_message.content if assistant_message else ""
         feedback_rows = (
@@ -210,6 +227,7 @@ class EvaluationService:
         return metrics
 
     def _process_metrics(self, run: EvaluationRun, trace: TraceRun, issues: list[EvaluationIssue]) -> list[EvaluationMetric]:
+        """_process_metrics 函数：执行一个完整处理步骤，输入上下文并产出可追踪的结果。"""
         metrics: list[EvaluationMetric] = []
         required = ["intent_analysis", "query_rewrite", "retrieval", "generation"]
         spans_by_operation = {span.operation: span for span in trace.spans}
@@ -233,6 +251,7 @@ class EvaluationService:
         return metrics
 
     def _tool_metrics(self, run: EvaluationRun, trace: TraceRun, issues: list[EvaluationIssue]) -> list[EvaluationMetric]:
+        """_tool_metrics 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         tool_spans = [span for span in trace.spans if span.operation in {"tool_call", "action_call"} or span.operation.startswith("tool")]
         if not tool_spans:
             return [self._metric(run, "tool", "tool_not_required", 1.0, "No tool call was required or recorded", {})]
@@ -255,6 +274,7 @@ class EvaluationService:
         return metrics
 
     def _system_metrics(self, run: EvaluationRun, trace: TraceRun, issues: list[EvaluationIssue]) -> list[EvaluationMetric]:
+        """_system_metrics 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         metrics = [
             self._metric(run, "system", "trace_success", 1.0 if trace.status == "success" else 0.0, "Trace completed successfully", {"status": trace.status}),
             self._metric(run, "system", "total_latency", self._latency_score(trace.total_duration_ms), "Total trace latency score", {"totalDurationMs": trace.total_duration_ms}),
@@ -266,17 +286,21 @@ class EvaluationService:
         return metrics
 
     def _metric(self, run: EvaluationRun, dimension: str, key: str, score: float, reason: str, evidence: dict[str, Any]) -> EvaluationMetric:
+        """_metric 函数：计算或整理一段辅助数据，让主流程保持清晰。"""
         return EvaluationMetric(evaluation_run_id=run.id, trace_id=run.trace_id, dimension=dimension, metric_key=key, score=round(max(0.0, min(1.0, score)), 4), reason=reason, evidence=evidence)
 
     def _issue(self, run: EvaluationRun, dimension: str, key: str, severity: str, message: str, evidence: dict[str, Any]) -> EvaluationIssue:
+        """_issue 函数：计算或整理一段辅助数据，让主流程保持清晰。"""
         return EvaluationIssue(evaluation_run_id=run.id, trace_id=run.trace_id, dimension=dimension, issue_key=key, severity=severity, message=message, evidence=evidence)
 
     @staticmethod
     def _span(trace: TraceRun, operation: str) -> TraceSpan | None:
+        """_span 函数：计算或整理一段辅助数据，让主流程保持清晰。"""
         return next((span for span in trace.spans if span.operation == operation), None)
 
     @staticmethod
     def _summary(score: float, issues: list[EvaluationIssue]) -> str:
+        """_summary 函数：计算或整理一段辅助数据，让主流程保持清晰。"""
         if not issues and score >= 0.85:
             return "Agent run passed rule-based evaluation."
         high = sum(1 for issue in issues if issue.severity == "high")
@@ -284,6 +308,7 @@ class EvaluationService:
 
     @staticmethod
     def _latency_score(duration_ms: int) -> float:
+        """_latency_score 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         if duration_ms <= 0:
             return 0.5
         if duration_ms <= 5000:
@@ -296,10 +321,12 @@ class EvaluationService:
 
     @staticmethod
     def _rate(numerator: int, denominator: int) -> float:
+        """_rate 函数：计算或整理一段辅助数据，让主流程保持清晰。"""
         return round(numerator * 100 / denominator, 2) if denominator else 0.0
 
     @staticmethod
     def _percentile(values: list[int], quantile: float) -> int:
+        """_percentile 函数：计算或整理一段辅助数据，让主流程保持清晰。"""
         if not values:
             return 0
         values = sorted(values)

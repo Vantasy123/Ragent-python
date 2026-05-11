@@ -49,7 +49,9 @@ from app.services.storage import create_storage_service
 
 
 class KnowledgeService:
+    """KnowledgeService 服务类：集中处理一类业务流程，让路由层不需要直接操作数据库、缓存或外部组件。"""
     def __init__(self, db: Session):
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.db = db
         self.pipeline_engine = PipelineEngine(
             node_registry={
@@ -61,6 +63,7 @@ class KnowledgeService:
         )
 
     def list_chunk_strategies(self) -> list[dict]:
+        """list_chunk_strategies 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
         return [
             {"value": "recursive", "label": "Recursive"},
             {"value": "fixed", "label": "Fixed Size"},
@@ -70,6 +73,7 @@ class KnowledgeService:
 
     def create_kb(self, name: str, description: str = "", embedding_model: str = settings.EMBEDDING_MODEL) -> KnowledgeBase:
         # 集合名改为东八区可读时间标识，避免界面或排障时看到 UTC 时间戳难以判断。
+        """create_kb 函数：创建新的业务记录，负责组织入库字段并返回创建后的结果。"""
         kb = KnowledgeBase(name=name, description=description, embedding_model=embedding_model, collection_name=shanghai_time_id("kb"))
         self.db.add(kb)
         self.db.commit()
@@ -77,6 +81,7 @@ class KnowledgeService:
         return kb
 
     def update_kb(self, kb_id: str, **payload) -> KnowledgeBase | None:
+        """update_kb 函数：更新已有业务记录，只修改调用方明确传入的字段。"""
         kb = self.get_kb(kb_id)
         if not kb:
             return None
@@ -88,9 +93,11 @@ class KnowledgeService:
         return kb
 
     def get_kb(self, kb_id: str) -> KnowledgeBase | None:
+        """get_kb 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
         return self.db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
 
     def delete_kb(self, kb_id: str) -> bool:
+        """delete_kb 函数：删除业务记录，并在需要时同步清理关联资源或缓存。"""
         kb = self.get_kb(kb_id)
         if not kb:
             return False
@@ -102,11 +109,13 @@ class KnowledgeService:
         return True
 
     def page_kbs(self, page_no: int, page_size: int) -> tuple[list[KnowledgeBase], int]:
+        """page_kbs 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
         query = self.db.query(KnowledgeBase).order_by(KnowledgeBase.created_at.desc())
         total = query.count()
         return query.offset((page_no - 1) * page_size).limit(page_size).all(), total
 
     def create_document(self, kb_id: str, **payload) -> KnowledgeDocument:
+        """create_document 函数：创建新的业务记录，负责组织入库字段并返回创建后的结果。"""
         doc = KnowledgeDocument(kb_id=kb_id, **payload)
         self.db.add(doc)
         self.db.commit()
@@ -114,9 +123,11 @@ class KnowledgeService:
         return doc
 
     def get_document(self, doc_id: str) -> KnowledgeDocument | None:
+        """get_document 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
         return self.db.query(KnowledgeDocument).filter(KnowledgeDocument.id == doc_id).first()
 
     def update_document(self, doc_id: str, **payload) -> KnowledgeDocument | None:
+        """update_document 函数：更新已有业务记录，只修改调用方明确传入的字段。"""
         doc = self.get_document(doc_id)
         if not doc:
             return None
@@ -128,6 +139,7 @@ class KnowledgeService:
         return doc
 
     def delete_document(self, doc_id: str) -> bool:
+        """delete_document 函数：删除业务记录，并在需要时同步清理关联资源或缓存。"""
         doc = self.get_document(doc_id)
         if not doc:
             return False
@@ -140,6 +152,7 @@ class KnowledgeService:
         return True
 
     def _delete_file_if_unreferenced(self, file_url: str | None) -> bool:
+        """_delete_file_if_unreferenced 函数：删除业务记录，并在需要时同步清理关联资源或缓存。"""
         if not file_url:
             return False
         references = self.db.query(KnowledgeDocument).filter(KnowledgeDocument.file_url == file_url).count()
@@ -158,6 +171,7 @@ class KnowledgeService:
         keyword: str | None = None,
         status: str | None = None,
     ) -> tuple[list[KnowledgeDocument], int]:
+        """page_documents 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
         query = self.db.query(KnowledgeDocument).filter(KnowledgeDocument.kb_id == kb_id)
         if keyword:
             query = query.filter(KnowledgeDocument.doc_name.ilike(f"%{keyword}%"))
@@ -168,18 +182,21 @@ class KnowledgeService:
         return docs, total
 
     def search_documents(self, keyword: str, limit: int = 8) -> list[KnowledgeDocument]:
+        """search_documents 函数：执行检索逻辑，从知识库或索引中找出和用户问题最相关的内容。"""
         query = self.db.query(KnowledgeDocument).filter(
             or_(KnowledgeDocument.doc_name.ilike(f"%{keyword}%"), KnowledgeDocument.source_location.ilike(f"%{keyword}%"))
         )
         return query.limit(limit).all()
 
     def page_chunks(self, doc_id: str, page_no: int, page_size: int) -> tuple[list[KnowledgeChunk], int]:
+        """page_chunks 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
         query = self.db.query(KnowledgeChunk).filter(KnowledgeChunk.doc_id == doc_id)
         total = query.count()
         rows = query.order_by(KnowledgeChunk.chunk_index.asc()).offset((page_no - 1) * page_size).limit(page_size).all()
         return rows, total
 
     def create_chunk(self, doc_id: str, content: str, meta_data: dict | None = None) -> KnowledgeChunk:
+        """create_chunk 函数：创建新的业务记录，负责组织入库字段并返回创建后的结果。"""
         doc = self.get_document(doc_id)
         if not doc:
             raise ValueError("Document not found")
@@ -199,6 +216,7 @@ class KnowledgeService:
         return chunk
 
     def update_chunk(self, chunk_id: str, content: str | None = None, enabled: bool | None = None) -> KnowledgeChunk | None:
+        """update_chunk 函数：更新已有业务记录，只修改调用方明确传入的字段。"""
         chunk = self.db.query(KnowledgeChunk).filter(KnowledgeChunk.id == chunk_id).first()
         if not chunk:
             return None
@@ -211,6 +229,7 @@ class KnowledgeService:
         return chunk
 
     def delete_chunk(self, chunk_id: str) -> bool:
+        """delete_chunk 函数：删除业务记录，并在需要时同步清理关联资源或缓存。"""
         chunk = self.db.query(KnowledgeChunk).filter(KnowledgeChunk.id == chunk_id).first()
         if not chunk:
             return False
@@ -224,15 +243,18 @@ class KnowledgeService:
         return True
 
     def batch_enable_chunks(self, doc_id: str, chunk_ids: list[str], enabled: bool) -> None:
+        """batch_enable_chunks 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         self.db.query(KnowledgeChunk).filter(KnowledgeChunk.doc_id == doc_id, KnowledgeChunk.id.in_(chunk_ids)).update(
             {KnowledgeChunk.enabled: enabled}, synchronize_session=False
         )
         self.db.commit()
 
     def get_chunk_logs(self, doc_id: str) -> list[KnowledgeDocumentChunkLog]:
+        """get_chunk_logs 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
         return self.db.query(KnowledgeDocumentChunkLog).filter(KnowledgeDocumentChunkLog.doc_id == doc_id).order_by(KnowledgeDocumentChunkLog.created_at.desc()).all()
 
     def start_chunking(self, doc_id: str) -> bool:
+        """start_chunking 函数：启动一次运行流程，并创建后续追踪或状态更新需要的初始记录。"""
         doc = self.get_document(doc_id)
         if not doc:
             raise ValueError("Document not found")
@@ -301,6 +323,7 @@ class KnowledgeService:
             return False
 
     def rebuild_chunks(self, doc_id: str) -> bool:
+        """rebuild_chunks 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         return self.start_chunking(doc_id)
 
 

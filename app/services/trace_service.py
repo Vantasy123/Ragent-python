@@ -26,9 +26,11 @@ class TraceService:
     """数据库持久化 Trace 服务。"""
 
     def __init__(self, db: Session):
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.db = db
 
     def start_run(self, session_id: str | None = None, user_id: str | None = None, task_id: str | None = None) -> TraceRun:
+        """start_run 函数：启动一次运行流程，并创建后续追踪或状态更新需要的初始记录。"""
         run = TraceRun(session_id=session_id, user_id=user_id, task_id=task_id, status="running")
         self.db.add(run)
         self.db.commit()
@@ -100,6 +102,7 @@ class TraceService:
         self.db.commit()
 
     def complete_run(self, trace_id: str, status: str = "success") -> None:
+        """complete_run 函数：完成一次运行流程，把最终状态、耗时和输出结果写回。"""
         run = self.db.query(TraceRun).filter(TraceRun.id == trace_id).first()
         if not run:
             return

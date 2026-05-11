@@ -42,16 +42,20 @@ from app.services.knowledge_service import KnowledgeService
 
 
 class IngestionService:
+    """IngestionService 服务类：集中处理一类业务流程，让路由层不需要直接操作数据库、缓存或外部组件。"""
     def __init__(self, db: Session):
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.db = db
 
     def page_pipelines(self, page_no: int, page_size: int):
+        """page_pipelines 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
         query = self.db.query(IngestionPipeline).order_by(IngestionPipeline.created_at.desc())
         total = query.count()
         rows = query.offset((page_no - 1) * page_size).limit(page_size).all()
         return rows, total
 
     def create_pipeline(self, name: str, description: str, nodes: list) -> IngestionPipeline:
+        """create_pipeline 函数：创建新的业务记录，负责组织入库字段并返回创建后的结果。"""
         row = IngestionPipeline(name=name, description=description, nodes=nodes)
         self.db.add(row)
         self.db.commit()
@@ -59,6 +63,7 @@ class IngestionService:
         return row
 
     def update_pipeline(self, pipeline_id: str, **payload) -> IngestionPipeline | None:
+        """update_pipeline 函数：更新已有业务记录，只修改调用方明确传入的字段。"""
         row = self.get_pipeline(pipeline_id)
         if not row:
             return None
@@ -70,9 +75,11 @@ class IngestionService:
         return row
 
     def get_pipeline(self, pipeline_id: str) -> IngestionPipeline | None:
+        """get_pipeline 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
         return self.db.query(IngestionPipeline).filter(IngestionPipeline.id == pipeline_id).first()
 
     def delete_pipeline(self, pipeline_id: str) -> bool:
+        """delete_pipeline 函数：删除业务记录，并在需要时同步清理关联资源或缓存。"""
         row = self.get_pipeline(pipeline_id)
         if not row:
             return False
@@ -81,12 +88,14 @@ class IngestionService:
         return True
 
     def page_tasks(self, page_no: int, page_size: int):
+        """page_tasks 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
         query = self.db.query(IngestionTask).order_by(IngestionTask.created_at.desc())
         total = query.count()
         rows = query.offset((page_no - 1) * page_size).limit(page_size).all()
         return rows, total
 
     def create_task(self, name: str, kb_id: str | None, doc_id: str | None, pipeline_id: str | None, payload: dict) -> IngestionTask:
+        """create_task 函数：创建新的业务记录，负责组织入库字段并返回创建后的结果。"""
         task = IngestionTask(name=name, kb_id=kb_id, doc_id=doc_id, pipeline_id=pipeline_id, payload=payload, status="pending")
         self.db.add(task)
         self.db.commit()
@@ -94,14 +103,17 @@ class IngestionService:
         return task
 
     def get_task(self, task_id: str) -> IngestionTask | None:
+        """get_task 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
         return self.db.query(IngestionTask).filter(IngestionTask.id == task_id).first()
 
     def process_pending_tasks(self) -> None:
+        """process_pending_tasks 函数：执行一个完整处理步骤，输入上下文并产出可追踪的结果。"""
         rows = self.db.query(IngestionTask).filter(IngestionTask.status == "pending").limit(5).all()
         for task in rows:
             self.process_task(task.id)
 
     def process_task(self, task_id: str) -> None:
+        """process_task 函数：执行一个完整处理步骤，输入上下文并产出可追踪的结果。"""
         task = self.get_task(task_id)
         if not task or task.status not in {"pending", "running"}:
             return

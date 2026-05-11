@@ -19,6 +19,7 @@ _local_lock = threading.Lock()
 
 
 def _now() -> float:
+    """_now 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     return time.time()
 
 

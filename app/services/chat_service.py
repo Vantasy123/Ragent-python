@@ -1,4 +1,7 @@
-"""模块说明：本文件属于 Ragent Python 后端，提供对应业务能力。"""
+"""模块导读：本文件位于 app/services/chat_service.py，属于服务层。
+
+主要职责：承接路由层请求，组织数据库、缓存、Trace、Agent 和外部组件完成业务流程。
+阅读建议：先看模块顶部导入，理解它依赖哪些服务或外部组件；再看公开类和函数，顺着调用链理解数据如何流转。"""
 
 from __future__ import annotations
 
@@ -22,6 +25,7 @@ class ChatGenerationError(RuntimeError):
     """聊天链路异常，保留失败阶段以便前端和 Trace 展示。"""
 
     def __init__(self, stage: str, detail: str):
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         super().__init__(detail)
         self.stage = stage
         self.detail = detail
@@ -31,9 +35,11 @@ class ConversationService:
     """会话与消息的数据库服务。"""
 
     def __init__(self, db: Session):
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.db = db
 
     def create_conversation(self, user_id: str | None, title: str | None = None) -> Conversation:
+        """create_conversation 函数：创建新的业务记录，负责组织入库字段并返回创建后的结果。"""
         row = Conversation(user_id=user_id, title=(title or "新对话")[:255])
         self.db.add(row)
         self.db.commit()
@@ -41,9 +47,11 @@ class ConversationService:
         return row
 
     def get_conversation(self, conversation_id: str) -> Conversation | None:
+        """get_conversation 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
         return self.db.query(Conversation).filter(Conversation.id == conversation_id).first()
 
     def list_conversations(self, user_id: str | None, page_no: int, page_size: int):
+        """list_conversations 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
         query = self.db.query(Conversation)
         if user_id:
             query = query.filter(Conversation.user_id == user_id)
@@ -54,6 +62,7 @@ class ConversationService:
         return rows, total
 
     def rename_conversation(self, conversation_id: str, title: str) -> Conversation | None:
+        """rename_conversation 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         row = self.get_conversation(conversation_id)
         if not row:
             return None
@@ -63,6 +72,7 @@ class ConversationService:
         return row
 
     def delete_conversation(self, conversation_id: str) -> bool:
+        """delete_conversation 函数：删除业务记录，并在需要时同步清理关联资源或缓存。"""
         row = self.get_conversation(conversation_id)
         if not row:
             return False
@@ -105,6 +115,7 @@ class ConversationService:
         return deleted
 
     def list_messages(self, conversation_id: str) -> list[ConversationMessage]:
+        """list_messages 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
         return (
             self.db.query(ConversationMessage)
             .filter(ConversationMessage.conversation_id == conversation_id)
@@ -113,6 +124,7 @@ class ConversationService:
         )
 
     def add_message(self, conversation_id: str, role: str, content: str, metadata: dict | None = None) -> ConversationMessage:
+        """add_message 函数：向已有对象或存储中追加一条新数据，用于维护消息、Span 或工具结果。"""
         row = ConversationMessage(conversation_id=conversation_id, role=role, content=content, meta_data=metadata or {})
         self.db.add(row)
         conversation = self.get_conversation(conversation_id)
@@ -129,6 +141,7 @@ class ConversationService:
         return row
 
     def add_feedback(self, message_id: str, feedback_type: str, comment: str = "") -> MessageFeedback:
+        """add_feedback 函数：向已有对象或存储中追加一条新数据，用于维护消息、Span 或工具结果。"""
         row = MessageFeedback(message_id=message_id, feedback_type=feedback_type, comment=comment)
         self.db.add(row)
         self.db.commit()
@@ -137,6 +150,7 @@ class ConversationService:
 
 
 def _history(service: ConversationService, conversation_id: str) -> list[dict[str, str]]:
+    """_history 函数：准备模型调用前需要的上下文、提示词或历史消息。"""
     runtime = get_runtime_settings(service.db)
     keep = max(runtime.history_keep_turns * 2, 2)
     cached = context_window.get_window(conversation_id, keep)
@@ -148,6 +162,7 @@ def _history(service: ConversationService, conversation_id: str) -> list[dict[st
 
 
 def _build_prompt(question: str, chunks: list) -> str:
+    """_build_prompt 函数：把内部数据整理成后续步骤需要的格式，避免业务逻辑到处重复拼装。"""
     if not chunks:
         return question
     context = "\n\n".join(f"[{index + 1}] {getattr(chunk, 'content', getattr(chunk, 'page_content', str(chunk)))}" for index, chunk in enumerate(chunks[:5]))
@@ -158,6 +173,7 @@ def _build_prompt(question: str, chunks: list) -> str:
 
 
 async def _prepare_rag_context(service: ConversationService, conversation_id: str, message: str) -> tuple[str, list, str]:
+    """_prepare_rag_context 函数：准备模型调用前需要的上下文、提示词或历史消息。"""
     try:
         from app.rag.workflow import multi_channel_retriever, query_rewriter, reranker
     except Exception as exc:
@@ -187,6 +203,7 @@ async def _prepare_rag_context(service: ConversationService, conversation_id: st
 
 
 async def generate_answer(prompt: str, deep_thinking: bool = False) -> AsyncIterator[str]:
+    """generate_answer 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     try:
         from app.rag.workflow import build_primary_llm
         from langchain_core.messages import HumanMessage
@@ -211,6 +228,7 @@ async def stream_chat(
     task_id: str,
     deep_thinking: bool = False,
 ) -> AsyncIterator[dict]:
+    """stream_chat 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     trace_service = TraceService(db)
     trace = trace_service.start_run(session_id=conversation_id, task_id=task_id)
     service = ConversationService(db)

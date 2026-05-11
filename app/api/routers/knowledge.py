@@ -46,6 +46,7 @@ storage = create_storage_service()
 
 
 class KnowledgeBasePayload(BaseModel):
+    """KnowledgeBasePayload 请求模型：描述前端提交到接口的字段，FastAPI 会用它完成参数校验和类型转换。"""
     name: str
     description: str = ""
     embedding_model: str = "text-embedding-v3"
@@ -53,6 +54,7 @@ class KnowledgeBasePayload(BaseModel):
 
 
 class DocumentUpdatePayload(BaseModel):
+    """DocumentUpdatePayload 请求模型：描述前端提交到接口的字段，FastAPI 会用它完成参数校验和类型转换。"""
     doc_name: str | None = None
     chunk_strategy: str | None = None
     chunk_config: dict | None = None
@@ -62,23 +64,27 @@ class DocumentUpdatePayload(BaseModel):
 
 
 class ChunkPayload(BaseModel):
+    """ChunkPayload 请求模型：描述前端提交到接口的字段，FastAPI 会用它完成参数校验和类型转换。"""
     content: str
     enabled: bool | None = None
     metadata: dict | None = None
 
 
 class BatchChunkPayload(BaseModel):
+    """BatchChunkPayload 请求模型：描述前端提交到接口的字段，FastAPI 会用它完成参数校验和类型转换。"""
     chunk_ids: list[str]
     enabled: bool
 
 
 @router.get("/knowledge-base/chunk-strategies")
 def chunk_strategies(db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """chunk_strategies 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     return success(KnowledgeService(db).list_chunk_strategies())
 
 
 @router.post("/knowledge-base")
 def create_kb(payload: KnowledgeBasePayload, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    """create_kb 函数：创建新的业务记录，负责组织入库字段并返回创建后的结果。"""
     kb = KnowledgeService(db).create_kb(payload.name, payload.description, payload.embedding_model)
     kb.created_by = user.id
     db.commit()
@@ -87,6 +93,7 @@ def create_kb(payload: KnowledgeBasePayload, db: Session = Depends(get_db), user
 
 @router.put("/knowledge-base/{kb_id}")
 def update_kb(kb_id: str, payload: KnowledgeBasePayload, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """update_kb 函数：更新已有业务记录，只修改调用方明确传入的字段。"""
     kb = KnowledgeService(db).update_kb(kb_id, **payload.model_dump(exclude_none=True))
     if not kb:
         raise HTTPException(status_code=404, detail="知识库不存在")
@@ -95,6 +102,7 @@ def update_kb(kb_id: str, payload: KnowledgeBasePayload, db: Session = Depends(g
 
 @router.delete("/knowledge-base/{kb_id}")
 def delete_kb(kb_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """delete_kb 函数：删除业务记录，并在需要时同步清理关联资源或缓存。"""
     if not KnowledgeService(db).delete_kb(kb_id):
         raise HTTPException(status_code=404, detail="知识库不存在")
     return success()
@@ -102,6 +110,7 @@ def delete_kb(kb_id: str, db: Session = Depends(get_db), _: User = Depends(requi
 
 @router.get("/knowledge-base/{kb_id}")
 def get_kb(kb_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """get_kb 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
     kb = KnowledgeService(db).get_kb(kb_id)
     if not kb:
         raise HTTPException(status_code=404, detail="知识库不存在")
@@ -120,6 +129,7 @@ def get_kb(kb_id: str, db: Session = Depends(get_db), _: User = Depends(require_
 
 @router.get("/knowledge-base")
 def list_kb(pageNo: int = 1, pageSize: int = 10, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """list_kb 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
     rows, total = KnowledgeService(db).page_kbs(pageNo, pageSize)
     items = [
         {
@@ -146,6 +156,7 @@ async def upload_document(
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):
+    """upload_document 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     service = KnowledgeService(db)
     if not service.get_kb(kb_id):
         raise HTTPException(status_code=404, detail="知识库不存在")
@@ -173,6 +184,7 @@ async def upload_document(
 
 @router.post("/knowledge-base/docs/{doc_id}/chunk")
 def start_chunk(doc_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """start_chunk 函数：启动一次运行流程，并创建后续追踪或状态更新需要的初始记录。"""
     service = KnowledgeService(db)
     ok = service.start_chunking(doc_id)
     if not ok:
@@ -182,6 +194,7 @@ def start_chunk(doc_id: str, db: Session = Depends(get_db), _: User = Depends(re
 
 @router.delete("/knowledge-base/docs/{doc_id}")
 def delete_document(doc_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """delete_document 函数：删除业务记录，并在需要时同步清理关联资源或缓存。"""
     if not KnowledgeService(db).delete_document(doc_id):
         raise HTTPException(status_code=404, detail="文档不存在")
     return success()
@@ -189,6 +202,7 @@ def delete_document(doc_id: str, db: Session = Depends(get_db), _: User = Depend
 
 @router.get("/knowledge-base/docs/{doc_id}")
 def get_document(doc_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """get_document 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
     doc = KnowledgeService(db).get_document(doc_id)
     if not doc:
         raise HTTPException(status_code=404, detail="文档不存在")
@@ -214,6 +228,7 @@ def get_document(doc_id: str, db: Session = Depends(get_db), _: User = Depends(r
 
 @router.put("/knowledge-base/docs/{doc_id}")
 def update_document(doc_id: str, payload: DocumentUpdatePayload, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """update_document 函数：更新已有业务记录，只修改调用方明确传入的字段。"""
     row = KnowledgeService(db).update_document(doc_id, **payload.model_dump(exclude_none=True))
     if not row:
         raise HTTPException(status_code=404, detail="文档不存在")
@@ -230,6 +245,7 @@ def list_documents(
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):
+    """list_documents 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
     rows, total = KnowledgeService(db).page_documents(kb_id, pageNo, pageSize, keyword, status)
     items = [
         {
@@ -250,12 +266,14 @@ def list_documents(
 
 @router.get("/knowledge-base/docs/search")
 def search_docs(keyword: str = Query("", alias="keyword"), limit: int = 8, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """search_docs 函数：执行检索逻辑，从知识库或索引中找出和用户问题最相关的内容。"""
     rows = KnowledgeService(db).search_documents(keyword, limit)
     return success([{"id": row.id, "name": row.doc_name, "kbId": row.kb_id} for row in rows])
 
 
 @router.patch("/knowledge-base/docs/{doc_id}/enable")
 def enable_document(doc_id: str, value: bool, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """enable_document 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     row = KnowledgeService(db).update_document(doc_id, enabled=value)
     if not row:
         raise HTTPException(status_code=404, detail="文档不存在")
@@ -264,12 +282,14 @@ def enable_document(doc_id: str, value: bool, db: Session = Depends(get_db), _: 
 
 @router.get("/knowledge-base/docs/{doc_id}/chunk-logs")
 def chunk_logs(doc_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """chunk_logs 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     rows = KnowledgeService(db).get_chunk_logs(doc_id)
     return success([{"id": row.id, "status": row.status, "message": row.message, "chunkCount": row.chunk_count, "createdAt": to_shanghai_iso(row.created_at)} for row in rows])
 
 
 @router.get("/knowledge-base/docs/{doc_id}/chunks")
 def list_chunks(doc_id: str, pageNo: int = 1, pageSize: int = 20, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """list_chunks 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
     rows, total = KnowledgeService(db).page_chunks(doc_id, pageNo, pageSize)
     items = [{"id": row.id, "content": row.content, "chunkIndex": row.chunk_index, "enabled": row.enabled, "metadata": row.meta_data} for row in rows]
     return success(page(items, total, pageNo, pageSize))
@@ -277,12 +297,14 @@ def list_chunks(doc_id: str, pageNo: int = 1, pageSize: int = 20, db: Session = 
 
 @router.post("/knowledge-base/docs/{doc_id}/chunks")
 def create_chunk(doc_id: str, payload: ChunkPayload, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """create_chunk 函数：创建新的业务记录，负责组织入库字段并返回创建后的结果。"""
     row = KnowledgeService(db).create_chunk(doc_id, payload.content, payload.metadata)
     return success({"id": row.id})
 
 
 @router.put("/knowledge-base/docs/{doc_id}/chunks/{chunk_id}")
 def update_chunk(doc_id: str, chunk_id: str, payload: ChunkPayload, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """update_chunk 函数：更新已有业务记录，只修改调用方明确传入的字段。"""
     row = KnowledgeService(db).update_chunk(chunk_id, payload.content, payload.enabled)
     if not row:
         raise HTTPException(status_code=404, detail="分块不存在")
@@ -291,6 +313,7 @@ def update_chunk(doc_id: str, chunk_id: str, payload: ChunkPayload, db: Session 
 
 @router.delete("/knowledge-base/docs/{doc_id}/chunks/{chunk_id}")
 def delete_chunk(doc_id: str, chunk_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """delete_chunk 函数：删除业务记录，并在需要时同步清理关联资源或缓存。"""
     if not KnowledgeService(db).delete_chunk(chunk_id):
         raise HTTPException(status_code=404, detail="分块不存在")
     return success()
@@ -298,6 +321,7 @@ def delete_chunk(doc_id: str, chunk_id: str, db: Session = Depends(get_db), _: U
 
 @router.post("/knowledge-base/docs/{doc_id}/chunks/batch-enable")
 def batch_enable(doc_id: str, payload: BatchChunkPayload, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """batch_enable 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     KnowledgeService(db).batch_enable_chunks(doc_id, payload.chunk_ids, payload.enabled)
     return success()
 
@@ -332,6 +356,7 @@ def batch_disable(doc_id: str, payload: BatchChunkPayload, db: Session = Depends
 
 @router.post("/knowledge-base/docs/{doc_id}/chunks/rebuild")
 def rebuild_chunks(doc_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """rebuild_chunks 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     if not KnowledgeService(db).rebuild_chunks(doc_id):
         raise HTTPException(status_code=500, detail="重建失败")
     return success()

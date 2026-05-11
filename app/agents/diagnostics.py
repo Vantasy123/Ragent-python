@@ -15,6 +15,7 @@ class DiagnosticsAgent(BaseAgent):
 
     def __init__(self, toolkit: OpsToolkit | None = None) -> None:
         # 多个子 Agent 共用同一个 toolkit，确保工具配置和安全边界一致。
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.toolkit = toolkit or OpsToolkit()
         super().__init__(self.toolkit.tools)
 

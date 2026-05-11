@@ -37,14 +37,17 @@ class BailianEmbeddings(Embeddings):
     """阿里云百炼 Embedding 模型封装。"""
 
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.api_key = api_key or BAILIAN_API_KEY
         self.base_url = base_url or BAILIAN_BASE_URL
         self.model_name = settings.EMBEDDING_MODEL
 
     def embed_query(self, text: str) -> List[float]:
+        """embed_query 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         return self.embed_documents([text])[0]
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """embed_documents 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         embeddings: list[list[float]] = []
         for text in texts:
             response = requests.post(
@@ -81,11 +84,13 @@ class MilvusVectorStoreAdapter:
     """
 
     def __init__(self, embeddings: Embeddings):
+        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.embeddings = embeddings
         self.alias = "ragent_python_milvus"
         self.collection = self._init_collection()
 
     def _connect(self) -> None:
+        """_connect 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         if connections.has_connection(self.alias):
             return
 
@@ -102,6 +107,7 @@ class MilvusVectorStoreAdapter:
         )
 
     def _init_collection(self) -> Collection:
+        """_init_collection 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         self._connect()
 
         if not utility.has_collection(COLLECTION_NAME, using=self.alias):
@@ -130,9 +136,11 @@ class MilvusVectorStoreAdapter:
 
     @staticmethod
     def _escape_expr_value(value: str) -> str:
+        """_escape_expr_value 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         return value.replace("\\", "\\\\").replace('"', '\\"')
 
     def _build_chunk_row(self, doc: Document, chunk_id: str, vector: list[float]) -> dict[str, Any]:
+        """_build_chunk_row 函数：把内部数据整理成后续步骤需要的格式，避免业务逻辑到处重复拼装。"""
         metadata = dict(doc.metadata or {})
         return {
             "chunk_id": chunk_id,
@@ -144,6 +152,7 @@ class MilvusVectorStoreAdapter:
         }
 
     def add_documents(self, documents: list[Document], ids: list[str] | None = None) -> None:
+        """add_documents 函数：向已有对象或存储中追加一条新数据，用于维护消息、Span 或工具结果。"""
         if not documents:
             return
 
@@ -165,6 +174,7 @@ class MilvusVectorStoreAdapter:
         self.collection.flush()
 
     def similarity_search_with_score(self, query: str, k: int = 4, filter: str | None = None) -> list[tuple[Document, float]]:
+        """similarity_search_with_score 函数：执行检索逻辑，从知识库或索引中找出和用户问题最相关的内容。"""
         query_vector = self.embeddings.embed_query(query)
         results = self.collection.search(
             data=[query_vector],
@@ -199,6 +209,7 @@ class MilvusVectorStoreAdapter:
         return matches
 
     def delete_by_chunk_ids(self, chunk_ids: list[str]) -> None:
+        """delete_by_chunk_ids 函数：删除业务记录，并在需要时同步清理关联资源或缓存。"""
         if not chunk_ids:
             return
         escaped = [f'"{self._escape_expr_value(chunk_id)}"' for chunk_id in chunk_ids if chunk_id]
@@ -209,6 +220,7 @@ class MilvusVectorStoreAdapter:
         self.collection.flush()
 
     def delete_by_doc_id(self, doc_id: str) -> None:
+        """delete_by_doc_id 函数：删除业务记录，并在需要时同步清理关联资源或缓存。"""
         if not doc_id:
             return
         expr = f'doc_id == "{self._escape_expr_value(doc_id)}"'
@@ -220,6 +232,7 @@ embeddings = BailianEmbeddings()
 
 
 def get_vector_store() -> MilvusVectorStoreAdapter:
+    """get_vector_store 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
     global _vector_store_instance
     if _vector_store_instance is None:
         with _vector_store_lock:
@@ -232,6 +245,7 @@ class LazyVectorStore:
     """延迟代理，避免模块导入时立刻连接 Milvus。"""
 
     def __getattr__(self, name: str):
+        """__getattr__ 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         return getattr(get_vector_store(), name)
 
 
