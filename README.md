@@ -107,15 +107,13 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 ## API 概览
 
-核心接口保留无前缀和 `/api` 前缀两套路径，推荐外部统一使用 `/api` 前缀。
+核心接口统一使用 `/api` 前缀，历史无前缀接口和旧 RAG v3 入口已移除。
 
 | 能力 | 接口 |
 | --- | --- |
 | 健康检查 | `GET /api/health` |
 | 登录 | `POST /api/auth/login` |
 | 统一聊天 | `POST /api/agent/chat` |
-| 旧 RAG 流式聊天 | `GET /api/rag/v3/chat` |
-| 停止聊天 | `POST /api/rag/v3/stop` |
 | 会话列表 | `GET /api/conversations` |
 | 会话消息 | `GET /api/conversations/{id}/messages` |
 | 知识库列表 | `GET /api/knowledge-base` |
@@ -444,5 +442,5 @@ GET /api/rag/traces/runs/{trace_id}/nodes
 - 后端重要代码注释使用简体中文。
 - 新增工具必须通过统一工具注册表暴露，不允许 Agent 直接获得任意 shell 能力。
 - 写操作必须标记 `requires_approval=True`。
-- 外部 API 推荐统一使用 `/api` 前缀。
-- 旧兼容接口仍保留，但新功能优先接入 `/api/agent/chat`。
+- 外部 API 必须统一使用 `/api` 前缀。
+- 聊天能力统一接入 `/api/agent/chat`，不再保留旧 RAG v3 入口。

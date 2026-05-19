@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from langchain_openai import ChatOpenAI
 
 from app.core.config import settings
@@ -34,15 +32,3 @@ def build_primary_llm(streaming: bool = True) -> ChatOpenAI:
         streaming=streaming,
     )
 
-
-class SimpleAppGraph:
-    """兼容旧测试导入的轻量工作流对象。"""
-
-    async def ainvoke(self, state: dict[str, Any]) -> dict[str, Any]:
-        """异步执行 RAG 工作流，返回问答结果、检索片段和 Trace 信息。"""
-        question = state.get("question") or state.get("input") or ""
-        docs = multi_channel_retriever.retrieve(question, top_k=get_runtime_settings().top_k)
-        return {"question": question, "documents": docs}
-
-
-app_graph = SimpleAppGraph()

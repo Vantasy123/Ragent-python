@@ -6,15 +6,16 @@
 from __future__ import annotations
 
 import logging
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.time_utils import utc_now_naive
 from app.agents.react_agent import ConversationReactAgent
 from app.domain.models import Conversation, ConversationMessage, MessageFeedback
 from app.services.context_window import context_window
-from app.services.runtime_state import STOP_TASKS
+from app.services.long_term_memory_service import LongTermMemoryService
 from app.services.settings_service import get_runtime_settings
 from app.services.trace_service import TraceService
 
@@ -161,14 +162,110 @@ def _history(service: ConversationService, conversation_id: str) -> list[dict[st
     return [{"role": row.role, "content": row.content} for row in rows[-keep:]]
 
 
-def _build_prompt(question: str, chunks: list) -> str:
+def _chunk_content(chunk: Any) -> str:
+    """统一读取检索片段正文，兼容自定义 RetrievedChunk 和 LangChain Document。"""
+
+    return str(getattr(chunk, "content", getattr(chunk, "page_content", str(chunk))) or "")
+
+
+def _chunk_metadata(chunk: Any) -> dict[str, Any]:
+    """统一读取检索片段元数据，缺失时返回空字典，避免引用构造时反复判空。"""
+
+    metadata = getattr(chunk, "metadata", {}) or {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _source_title(metadata: dict[str, Any]) -> str:
+    """从元数据中挑选最适合展示给用户的来源名称。"""
+
+    return str(
+        metadata.get("source")
+        or metadata.get("doc_name")
+        or metadata.get("docName")
+        or metadata.get("source_path")
+        or metadata.get("doc_id")
+        or "未知来源"
+    )
+
+
+def _safe_float(value: Any) -> float:
+    """把检索分数转换成 JSON 友好的浮点数，异常时回退为 0。"""
+
+    try:
+        return float(value or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _build_source_items(chunks: list, limit: int = 5) -> list[dict[str, Any]]:
+    """把召回片段整理成面向前端、Trace 和消息持久化的来源出处。"""
+
+    sources: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for chunk in chunks[:limit]:
+        metadata = _chunk_metadata(chunk)
+        content = _chunk_content(chunk)
+        chunk_index = metadata.get("chunk_index", metadata.get("chunkIndex"))
+        source_key = "|".join(
+            str(part or "")
+            for part in (
+                metadata.get("doc_id"),
+                metadata.get("chunk_id") or metadata.get("chunkId"),
+                chunk_index,
+                content[:80],
+            )
+        )
+        if source_key in seen:
+            continue
+        seen.add(source_key)
+
+        sources.append(
+            {
+                "index": len(sources) + 1,
+                "title": _source_title(metadata),
+                "docId": metadata.get("doc_id"),
+                "kbId": metadata.get("kb_id"),
+                "chunkId": metadata.get("chunk_id") or metadata.get("chunkId"),
+                "chunkIndex": chunk_index,
+                "channel": getattr(chunk, "channel", metadata.get("channel", "")),
+                "score": _safe_float(getattr(chunk, "score", 0.0)),
+                "preview": content[:180],
+            }
+        )
+    return sources
+
+
+def _format_source_line(source: dict[str, Any]) -> str:
+    """把单条结构化来源转换成回答末尾可读的出处行。"""
+
+    chunk_index = source.get("chunkIndex")
+    chunk_text = f"，片段 {int(chunk_index) + 1}" if isinstance(chunk_index, int) else ""
+    channel = f"，通道：{source.get('channel')}" if source.get("channel") else ""
+    return f"[{source['index']}] {source.get('title') or '未知来源'}{chunk_text}{channel}"
+
+
+def _format_sources_block(sources: list[dict[str, Any]]) -> str:
+    """生成回答末尾的来源出处区块；无命中时明确说明没有可用来源。"""
+
+    if not sources:
+        return "\n\n来源出处：\n未检索到可用知识库来源"
+    lines = "\n".join(_format_source_line(source) for source in sources)
+    return f"\n\n来源出处：\n{lines}"
+
+
+def _build_prompt(question: str, chunks: list, memory_block: str = "") -> str:
     """_build_prompt 函数：把内部数据整理成后续步骤需要的格式，避免业务逻辑到处重复拼装。"""
+    memory_text = f"长期记忆：\n{memory_block}\n\n" if memory_block else ""
     if not chunks:
-        return question
-    context = "\n\n".join(f"[{index + 1}] {getattr(chunk, 'content', getattr(chunk, 'page_content', str(chunk)))}" for index, chunk in enumerate(chunks[:5]))
+        return f"{memory_text}问题：{question}" if memory_text else question
+    context = "\n\n".join(
+        f"[{index + 1}] 来源：{_source_title(_chunk_metadata(chunk))}\n内容：{_chunk_content(chunk)}"
+        for index, chunk in enumerate(chunks[:5])
+    )
     return (
-        "请严格基于知识库内容回答用户问题；如果知识库不足以支撑结论，请明确说明不知道。\n\n"
-        f"知识库内容：\n{context}\n\n问题：{question}"
+        "请严格基于知识库内容回答用户问题；如果知识库不足以支撑结论，请明确说明不知道。"
+        "回答中引用知识库内容时使用 [1]、[2] 这样的编号标注依据，不要编造未提供的来源。\n\n"
+        f"{memory_text}知识库内容：\n{context}\n\n问题：{question}"
     )
 
 
@@ -180,6 +277,9 @@ async def _prepare_rag_context(service: ConversationService, conversation_id: st
         raise ChatGenerationError("workflow_import", f"{type(exc).__name__}: {exc}") from exc
 
     runtime = get_runtime_settings(service.db)
+    conversation = service.get_conversation(conversation_id)
+    user_id = conversation.user_id if conversation else None
+    memory_block = LongTermMemoryService(service.db).build_prompt_block(user_id, message)
     try:
         rewritten = query_rewriter.rewrite(message, _history(service, conversation_id))
     except Exception as exc:
@@ -193,13 +293,13 @@ async def _prepare_rag_context(service: ConversationService, conversation_id: st
     final_chunks = retrieved_chunks
     try:
         documents = [getattr(chunk, "content", getattr(chunk, "page_content", str(chunk))) for chunk in retrieved_chunks]
-        reranked = reranker.rerank_with_threshold(rewritten, documents)
+        reranked = reranker.rerank_with_threshold(rewritten, documents, threshold=settings.RERANK_THRESHOLD)
         if reranked:
             final_chunks = [retrieved_chunks[item["index"]] for item in reranked if item["index"] < len(retrieved_chunks)]
     except Exception:
         logger.warning("重排失败，回退使用原始检索结果", exc_info=True)
 
-    return rewritten, final_chunks, _build_prompt(message, final_chunks)
+    return rewritten, final_chunks, _build_prompt(message, final_chunks, memory_block)
 
 
 async def generate_answer(prompt: str, deep_thinking: bool = False) -> AsyncIterator[str]:
@@ -232,25 +332,30 @@ async def stream_chat(
     trace_service = TraceService(db)
     trace = trace_service.start_run(session_id=conversation_id, task_id=task_id)
     service = ConversationService(db)
-    service.add_message(conversation_id, "user", message, {"taskId": task_id, "traceId": trace.id})
+    user_message = service.add_message(conversation_id, "user", message, {"taskId": task_id, "traceId": trace.id})
+
+    conversation = service.get_conversation(conversation_id)
+    user_id = conversation.user_id if conversation else None
+    memory_service = LongTermMemoryService(db)
+    remembered = memory_service.remember_from_user_message(user_id, conversation_id, user_message.id, message)
+    memory_block = memory_service.build_prompt_block(user_id, message)
 
     # 为 Trace 显式记录输入，避免详情页把一份 metadata 同时展示成输入和输出。
     history = _history(service, conversation_id)
-    intent_span = trace_service.create_span(trace.id, "intent_analysis", input_data={"question": message})
+    history_for_agent = ([{"role": "system", "content": f"长期记忆：\n{memory_block}"}] + history) if memory_block else history
+    intent_span = trace_service.create_span(
+        trace.id,
+        "intent_analysis",
+        input_data={"question": message},
+        metadata={"remembered": len(remembered), "memoryUsed": bool(memory_block)},
+    )
     answer = ""
 
     trace_service.complete_span(intent_span, output_data={"mode": "rag", "agentMode": "react"})
-    react_span = trace_service.create_span(trace.id, "react_loop", input_data={"question": message, "history": history})
+    react_span = trace_service.create_span(trace.id, "react_loop", input_data={"question": message, "history": history_for_agent})
     react_events: list[dict] = []
     try:
-        async for event in ConversationReactAgent().run(message, history):
-            if task_id in STOP_TASKS:
-                STOP_TASKS.discard(task_id)
-                trace_service.complete_span(react_span, status="error", error_message="任务已中止", output_data={"events": react_events})
-                trace_service.complete_run(trace.id, "error")
-                yield {"type": "stopped", "taskId": task_id, "traceId": trace.id}
-                return
-
+        async for event in ConversationReactAgent().run(message, history_for_agent):
             event["taskId"] = task_id
             event["traceId"] = trace.id
             react_events.append(event)
@@ -292,41 +397,43 @@ async def stream_chat(
         # ReAct 是增强路径，失败时保留 Trace 后回退到原 RAG 链路。
         trace_service.complete_span(react_span, status="error", error_message=str(exc), output_data={"events": react_events})
 
-    rewrite_span = trace_service.create_span(trace.id, "query_rewrite", input_data={"question": message, "history": history})
+    rewrite_span = trace_service.create_span(trace.id, "query_rewrite", input_data={"question": message, "history": history_for_agent})
     retrieval_span = trace_service.create_span(trace.id, "retrieval")
     generation_span = trace_service.create_span(trace.id, "generation")
 
     try:
         rewritten, chunks, prompt = await _prepare_rag_context(service, conversation_id, message)
+        sources = _build_source_items(chunks)
         rewrite_span.input_data["query"] = rewritten
         retrieval_span.input_data = {"query": rewritten}
         generation_span.input_data = {
             "query": message,
             "rewritten": rewritten,
             "promptPreview": prompt[:500],
+            "sources": sources,
         }
         trace_service.complete_span(rewrite_span, output_data={"rewritten": rewritten})
         trace_service.complete_span(
             retrieval_span,
             output_data={
                 "chunks": len(chunks),
-                "sources": [getattr(chunk, "metadata", {}).get("doc_id") for chunk in chunks[:5]],
+                "sources": sources,
                 "channels": [
-                    getattr(chunk, "metadata", {}).get("hybridChannels") or getattr(chunk, "channel", "")
+                    _chunk_metadata(chunk).get("hybridChannels") or getattr(chunk, "channel", "")
                     for chunk in chunks[:5]
                 ],
-                "chunkPreview": [getattr(chunk, "content", getattr(chunk, "page_content", str(chunk)))[:160] for chunk in chunks[:3]],
+                "chunkPreview": [_chunk_content(chunk)[:160] for chunk in chunks[:3]],
             },
         )
         async for token in generate_answer(prompt, deep_thinking):
-            if task_id in STOP_TASKS:
-                STOP_TASKS.discard(task_id)
-                trace_service.complete_span(generation_span, status="error", error_message="任务已中止")
-                trace_service.complete_run(trace.id, "error")
-                yield {"type": "stopped", "taskId": task_id, "traceId": trace.id}
-                return
             answer += token
             yield {"type": "token", "content": token, "taskId": task_id, "traceId": trace.id}
+        sources_block = _format_sources_block(sources)
+        if sources_block:
+            answer += sources_block
+            yield {"type": "token", "content": sources_block, "taskId": task_id, "traceId": trace.id}
+        if sources:
+            yield {"type": "sources", "sources": sources, "taskId": task_id, "traceId": trace.id}
     except ChatGenerationError as exc:
         diagnostic = f"聊天链路失败：[{exc.stage}] {exc.detail}"
         service.add_message(conversation_id, "assistant", diagnostic, {"taskId": task_id, "traceId": trace.id, "errorStage": exc.stage})
@@ -335,7 +442,7 @@ async def stream_chat(
         yield {"type": "error", "content": diagnostic, "taskId": task_id, "traceId": trace.id, "stage": exc.stage}
         return
 
-    service.add_message(conversation_id, "assistant", answer, {"taskId": task_id, "traceId": trace.id})
-    trace_service.complete_span(generation_span, output_data={"responseLength": len(answer), "answerPreview": answer[:500]})
+    service.add_message(conversation_id, "assistant", answer, {"taskId": task_id, "traceId": trace.id, "sources": sources})
+    trace_service.complete_span(generation_span, output_data={"responseLength": len(answer), "answerPreview": answer[:500], "sources": sources})
     trace_service.complete_run(trace.id, "success")
     yield {"type": "done", "taskId": task_id, "traceId": trace.id}

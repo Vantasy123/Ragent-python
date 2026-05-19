@@ -287,6 +287,26 @@ class MessageFeedback(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
 
 
+class UserMemory(Base, TimestampMixin):
+    """UserMemory 数据库模型：保存跨会话长期记忆，用于补充短期上下文窗口。"""
+
+    __tablename__ = "user_memory"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    # 长期记忆按用户隔离，避免不同用户偏好互相污染。
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 来源会话和消息用于审计这条记忆从哪里抽取。
+    conversation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # preference/profile/instruction 等类型，便于后续做不同注入策略。
+    memory_type: Mapped[str] = mapped_column(String(32), default="preference")
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # 权重用于排序，显式“记住”类表达比普通偏好更可靠。
+    weight: Mapped[float] = mapped_column(Float, default=1.0)
+    meta_data: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
 class TraceRun(Base):
     """TraceRun 数据库模型：映射一张业务表，字段定义决定 MySQL 中保存什么数据，以及服务层如何读取和写入。"""
     __tablename__ = "trace_run"

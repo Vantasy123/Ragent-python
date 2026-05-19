@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import logging
+from pathlib import Path
 import re
 from typing import Any
 import zipfile
@@ -26,16 +27,17 @@ class ParserNode:
             mime_type = context.mime_type or "application/octet-stream"
             logger.info("Parsing document: mime_type=%s, size=%s bytes", mime_type, len(context.raw_bytes))
 
-            if "pdf" in mime_type:
-                text = self._parse_pdf(context.raw_bytes)
-            elif "word" in mime_type or "docx" in mime_type:
-                text = self._parse_word(context.raw_bytes)
-            elif "excel" in mime_type or "spreadsheet" in mime_type:
-                text = self._parse_excel(context.raw_bytes)
-            elif "text" in mime_type or "markdown" in mime_type:
-                text = self._parse_text(context.raw_bytes)
-            else:
-                text = self._parse_text(context.raw_bytes)
+            try:
+                text = self._parse_with_markitdown(context)
+                context.metadata["parser"] = "markitdown"
+                logger.info("MarkItDown parsed document successfully: mime_type=%s, text_length=%s", mime_type, len(text))
+            except Exception as exc:
+                # MarkItDown 是增强解析路径，任何异常都不应阻断现有摄取能力。
+                fallback_reason = f"{type(exc).__name__}: {exc}"
+                context.metadata["parser_fallback"] = fallback_reason[:500]
+                logger.warning("MarkItDown parsing failed, falling back to legacy parser: %s", fallback_reason)
+                text = self._parse_legacy(context.raw_bytes, mime_type)
+                context.metadata["parser"] = "legacy"
 
             # PDF/Office 解析器可能产生 NUL 等控制字符，进入分块前必须统一清理。
             context.raw_text = sanitize_text(text)
@@ -44,6 +46,47 @@ class ParserNode:
         except Exception as exc:
             logger.error("Parser node failed: %s", exc, exc_info=True)
             return {"success": False, "error": str(exc)}
+
+    def _parse_with_markitdown(self, context) -> str:
+        """使用 MarkItDown 从本地上传文件解析 Markdown 文本。"""
+
+        source_path = (context.metadata or {}).get("source_path")
+        if not source_path:
+            raise ValueError("MarkItDown requires local source_path")
+
+        path = Path(str(source_path)).expanduser()
+        if not path.is_file():
+            raise ValueError(f"MarkItDown source file is not readable: {path}")
+
+        try:
+            from markitdown import MarkItDown
+        except ImportError as exc:
+            raise RuntimeError("MarkItDown is not installed in current Python environment") from exc
+
+        converter = MarkItDown(enable_plugins=False)
+        # 优先使用更窄的本地文件转换接口；旧版本没有该接口时只传入已校验的本地路径。
+        if hasattr(converter, "convert_local"):
+            result = converter.convert_local(str(path))
+        else:
+            result = converter.convert(str(path))
+
+        text = str(getattr(result, "text_content", "") or "")
+        if not text.strip():
+            raise ValueError("MarkItDown returned empty text")
+        return text
+
+    def _parse_legacy(self, raw_bytes: bytes, mime_type: str) -> str:
+        """按原有 MIME 分支解析文档，作为 MarkItDown 的稳定回退路径。"""
+
+        if "pdf" in mime_type:
+            return self._parse_pdf(raw_bytes)
+        if "word" in mime_type or "docx" in mime_type:
+            return self._parse_word(raw_bytes)
+        if "excel" in mime_type or "spreadsheet" in mime_type:
+            return self._parse_excel(raw_bytes)
+        if "text" in mime_type or "markdown" in mime_type:
+            return self._parse_text(raw_bytes)
+        return self._parse_text(raw_bytes)
 
     def _parse_pdf(self, raw_bytes: bytes) -> str:
         """_parse_pdf 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""

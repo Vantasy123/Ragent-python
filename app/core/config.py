@@ -31,7 +31,6 @@ class Settings(BaseSettings):
     REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_KEY_PREFIX: str = "ragent"
     REDIS_SOCKET_TIMEOUT: float = 1.5
-    CHAT_STOP_TTL_SECONDS: int = 60 * 60
     CHAT_CONTEXT_TTL_SECONDS: int = 60 * 60 * 24
     JWT_REVOKED_TTL_SECONDS: int = 60 * 60 * 24 * 7
     RATE_LIMIT_ENABLED: bool = True
@@ -65,11 +64,17 @@ class Settings(BaseSettings):
     DEFAULT_TOP_K: int = 5
     CHUNK_SIZE: int = 500
     CHUNK_OVERLAP: int = 50
+    RERANK_ENABLED: bool = True
+    RERANK_PROVIDER: str = "flag_embedding"
+    RERANK_MODEL: str = "BAAI/bge-reranker-base"
     RERANK_THRESHOLD: float = 0.7
     HYBRID_RETRIEVAL_ENABLED: bool = True
     HYBRID_KEYWORD_MAX_CHUNKS: int = 3000
     HYBRID_RRF_K: int = 60
 
+    LONG_TERM_MEMORY_ENABLED: bool = True
+    LONG_TERM_MEMORY_TOP_K: int = 5
+    LONG_TERM_MEMORY_MAX_CHARS: int = 800
     HISTORY_KEEP_TURNS: int = 4
     SUMMARY_ENABLED: bool = True
     SUMMARY_START_TURNS: int = 5

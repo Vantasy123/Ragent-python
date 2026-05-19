@@ -55,13 +55,6 @@ def list_intent_tree(db: Session = Depends(get_db), _: User = Depends(require_ad
     return success([_serialize(row) for row in intent_tree_service(db).list()])
 
 
-@router.get("/intent-tree/trees")
-def list_intent_tree_alias(db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    """兼容原版 `/intent-tree/trees` 路径。"""
-
-    return success([_serialize(row) for row in intent_tree_service(db).list()])
-
-
 @router.get("/intent-tree/{item_id}")
 def get_intent_tree(item_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
     """get_intent_tree 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""

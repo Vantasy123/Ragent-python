@@ -130,6 +130,7 @@
             <DataPreview v-if="isEventExpanded(event, index) && event.args" class="mt-3" :data="event.args" empty-text="暂无工具参数" />
             <DataPreview v-if="isEventExpanded(event, index) && event.result" class="mt-3" :data="event.result" empty-text="暂无观察结果" />
             <DataPreview v-if="isEventExpanded(event, index) && event.memory" class="mt-3" :data="event.memory" empty-text="暂无共享记忆" />
+            <DataPreview v-if="isEventExpanded(event, index) && event.sources?.length" class="mt-3" :data="event.sources" empty-text="暂无来源出处" />
 
             <div v-if="isEventExpanded(event, index) && event.type === 'approval_required'" class="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3">
               <div class="font-semibold text-amber-900">需要审批后才会执行危险操作</div>
@@ -256,6 +257,7 @@ function eventTypeLabel(type: string) {
     approval_approved: '审批通过',
     approval_rejected: '审批拒绝',
     agent_done: '智能体完成',
+    sources: '来源出处',
     report: '诊断报告',
     done: '完成',
     error: '错误',
@@ -276,6 +278,7 @@ function eventText(event: OpsAgentEvent) {
   if (event.type === 'final_answer') return event.content || '已生成最终输出。'
   if (event.type === 'react_step') return event.reason || event.thought || '对话 Agent 正在判断下一步。'
   if (event.type === 'tool_call') return `正在调用 ${event.tool || '未知工具'}。`
+  if (event.type === 'sources') return `已生成 ${event.sources?.length || 0} 条来源出处。`
   if (event.type === 'approval_required') return `工具 ${event.tool || '未知工具'} 需要人工审批。`
   return eventTypeLabel(event.type)
 }
@@ -293,6 +296,7 @@ function hasEventDetails(event: OpsAgentEvent) {
       event.args ||
       event.result ||
       event.memory ||
+      event.sources?.length ||
       event.type === 'approval_required',
   )
 }

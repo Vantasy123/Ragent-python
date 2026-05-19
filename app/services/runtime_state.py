@@ -13,7 +13,6 @@ from app.core.redis_client import get_redis_client
 
 logger = logging.getLogger(__name__)
 
-_local_stop_tasks: set[str] = set()
 _local_counters: dict[str, tuple[int, float]] = {}
 _local_lock = threading.Lock()
 
@@ -29,42 +28,6 @@ def _cleanup_local_counter(key: str) -> None:
     value = _local_counters.get(key)
     if value and value[1] <= _now():
         _local_counters.pop(key, None)
-
-
-class StopTaskStore:
-    """聊天停止状态存储，兼容原来的 set.add/discard/in 语义。"""
-
-    def add(self, task_id: str) -> None:
-        """标记任务需要停止。"""
-
-        if not task_id:
-            return
-        redis = get_redis_client()
-        if redis.set(f"chat:stop:{task_id}", "1", ex=settings.CHAT_STOP_TTL_SECONDS):
-            return
-        _local_stop_tasks.add(task_id)
-
-    def discard(self, task_id: str) -> None:
-        """清理停止标记。"""
-
-        if not task_id:
-            return
-        redis = get_redis_client()
-        redis.delete(f"chat:stop:{task_id}")
-        _local_stop_tasks.discard(task_id)
-
-    def __contains__(self, task_id: object) -> bool:
-        """支持 `task_id in STOP_TASKS` 的旧调用方式。"""
-
-        if not isinstance(task_id, str) or not task_id:
-            return False
-        redis = get_redis_client()
-        if redis.exists(f"chat:stop:{task_id}"):
-            return True
-        return task_id in _local_stop_tasks
-
-
-STOP_TASKS = StopTaskStore()
 
 
 def mark_token_revoked(jti: str, ttl_seconds: int) -> None:

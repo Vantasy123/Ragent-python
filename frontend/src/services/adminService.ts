@@ -108,7 +108,7 @@ export const adminService = {
     return toArrayResult(await apiClient.get(`/ingestion/tasks/${taskId}/nodes`))
   },
   async intents() {
-    return toArrayResult(await apiClient.get('/intent-tree/trees')).map((item: any) => normalizeIntent(item))
+    return toArrayResult(await apiClient.get('/intent-tree')).map((item: any) => normalizeIntent(item))
   },
   async intentDetail(itemId: string) {
     return normalizeIntent(unwrapData(await apiClient.get(`/intent-tree/${itemId}`), {}))

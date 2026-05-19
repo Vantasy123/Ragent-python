@@ -11,7 +11,6 @@ from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
 from app.api.routers import (
     auth,
-    chat,
     conversations,
     dashboard,
     evaluations,
@@ -108,7 +107,6 @@ ROUTERS = [
     settings_router.router,
     knowledge.router,
     ingestion.router,
-    chat.router,
     unified_chat.router,
     conversations.router,
     trace.router,
@@ -117,24 +115,7 @@ ROUTERS = [
 ]
 
 for router in ROUTERS:
-    # 保留无前缀路由用于兼容历史前端调用。
-    app.include_router(router)
-    # 同时注册 /api 前缀，匹配 Docker Nginx 反向代理和对外 API 语义。
+    # 对外 API 统一使用 /api 前缀，避免历史无前缀接口继续扩散。
     app.include_router(router, prefix="/api")
-
-
-@app.get("/api/sessions")
-def api_sessions_compat():
-    """兼容旧前端的 sessions 占位接口，后续可移除。"""
-
-    return {"code": 200, "message": "success", "data": {"items": []}}
-
-
-@app.get("/api/workflow/chat")
-async def workflow_chat_compat(question: str | None = None, message: str | None = None):
-    """兼容旧 workflow/chat 调用；真实聊天入口已迁移到 /agent/chat。"""
-
-    content = question or message or ""
-    return {"code": 200, "message": "success", "data": {"content": content, "compat": True}}
 
 

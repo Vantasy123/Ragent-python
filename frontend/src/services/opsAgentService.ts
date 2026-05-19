@@ -3,7 +3,7 @@ import { unwrapData } from './result'
 
 export type OpsAgentEvent = {
   type: string
-  channel?: 'ops'
+  channel?: 'ops' | 'rag'
   runId?: string
   traceId?: string
   approvalId?: string
@@ -18,6 +18,7 @@ export type OpsAgentEvent = {
   steps?: Array<Record<string, unknown>>
   result?: Record<string, unknown>
   memory?: Array<Record<string, unknown>> | Record<string, unknown>
+  sources?: Array<Record<string, unknown>>
   report?: string
   durationMs?: number
 }
