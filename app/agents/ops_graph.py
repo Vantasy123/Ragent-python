@@ -28,6 +28,8 @@ class OpsGraphState(TypedDict, total=False):
     decision: Any
     finalReport: str
     pendingApproval: bool
+    manualPending: bool
+    autoExecuteReadOnly: bool
     memory: SharedMemory
     events: list[dict[str, Any]]
     maxSteps: int
@@ -74,6 +76,8 @@ class OpsLangGraphRunner:
             "decision": None,
             "finalReport": "",
             "pendingApproval": False,
+            "manualPending": False,
+            "autoExecuteReadOnly": bool((context or {}).get("autoExecuteReadOnly", True)),
             "memory": self.memory,
             "events": [],
             "maxSteps": self.max_steps,
@@ -102,7 +106,11 @@ class OpsLangGraphRunner:
 
         graph.add_edge(START, "planner")
         graph.add_conditional_edges("planner", self._route_after_planner, {"execute": "executor", "final": "final"})
-        graph.add_conditional_edges("executor", self._route_after_executor, {"approval": "approval", "replan": "replanner"})
+        graph.add_conditional_edges(
+            "executor",
+            self._route_after_executor,
+            {"approval": "approval", "replan": "replanner", "execute": "executor", "final": "final"},
+        )
         graph.add_edge("approval", "replanner")
         graph.add_conditional_edges("replanner", self._route_after_replanner, {"execute": "executor", "final": "final"})
         graph.add_edge("final", END)
@@ -114,21 +122,23 @@ class OpsLangGraphRunner:
         task = state["message"]
         events: list[dict[str, Any]] = []
 
-        knowledge_args = {"query": task, "topK": 5}
-        knowledge_started = time.perf_counter()
-        events.append({"type": "tool_call", "agent": "planner", "stepIndex": -1, "tool": "knowledge_search", "args": knowledge_args})
-        knowledge_result = await self.registry.call(ToolCallRequest("knowledge_search", knowledge_args))
-        events.append(
-            {
-                "type": "observation",
-                "agent": "planner",
-                "stepIndex": -1,
-                "tool": "knowledge_search",
-                "args": knowledge_args,
-                "durationMs": self._elapsed_ms(knowledge_started),
-                "result": knowledge_result.to_dict(),
-            }
-        )
+        knowledge_result: ToolCallResult | None = None
+        if state.get("autoExecuteReadOnly", True):
+            knowledge_args = {"query": task, "topK": 5}
+            knowledge_started = time.perf_counter()
+            events.append({"type": "tool_call", "agent": "planner", "stepIndex": -1, "tool": "knowledge_search", "args": knowledge_args})
+            knowledge_result = await self.registry.call(ToolCallRequest("knowledge_search", knowledge_args))
+            events.append(
+                {
+                    "type": "observation",
+                    "agent": "planner",
+                    "stepIndex": -1,
+                    "tool": "knowledge_search",
+                    "args": knowledge_args,
+                    "durationMs": self._elapsed_ms(knowledge_started),
+                    "result": knowledge_result.to_dict(),
+                }
+            )
 
         planner_started = time.perf_counter()
         steps = await self.planner.create_plan(task, knowledge_result)
@@ -141,7 +151,6 @@ class OpsLangGraphRunner:
                 "steps": plan_payload,
             }
         )
-        events.append({"type": "agent_plan", "agent": self.orchestrator.name, "steps": plan_payload})
 
         return {
             "plan": steps,
@@ -150,6 +159,7 @@ class OpsLangGraphRunner:
             "observations": [],
             "currentStepIndex": 0,
             "pendingApproval": False,
+            "manualPending": False,
             "events": events,
         }
 
@@ -180,6 +190,45 @@ class OpsLangGraphRunner:
                 "activeStep": step,
                 "lastResult": None,
                 "pendingApproval": True,
+                "manualPending": False,
+                "events": events,
+            }
+
+        if spec and not state.get("autoExecuteReadOnly", True):
+            step.status = StepStatus.PENDING
+            step.observation = "只读工具自动执行已关闭，等待人工确认后再执行。"
+            completed.append(step)
+            result = ToolCallResult(
+                success=True,
+                summary=step.observation,
+                data={"skipped": True, "reason": "auto_execute_readonly_disabled"},
+                risk_level=spec.risk_level,
+                requires_approval=False,
+                source=spec.source,
+                category=spec.category,
+            )
+            observations.append({"stepIndex": index, "tool": step.tool_name, "result": result.to_dict()})
+            events.append(
+                {
+                    "type": "tool_call",
+                    "agent": "executor",
+                    "stepIndex": index,
+                    "tool": step.tool_name,
+                    "args": step.args,
+                    "status": "pending",
+                    "autoExecuteReadOnly": False,
+                    "reason": step.observation,
+                }
+            )
+            return {
+                "remaining": remaining,
+                "completed": completed,
+                "observations": observations,
+                "currentStepIndex": index,
+                "activeStep": step,
+                "lastResult": result,
+                "pendingApproval": False,
+                "manualPending": True,
                 "events": events,
             }
 
@@ -217,6 +266,7 @@ class OpsLangGraphRunner:
             "activeStep": step,
             "lastResult": result,
             "pendingApproval": False,
+            "manualPending": False,
             "events": events,
             "memory": memory,
         }
@@ -251,6 +301,7 @@ class OpsLangGraphRunner:
             "observations": observations,
             "lastResult": result,
             "pendingApproval": True,
+            "manualPending": False,
             "events": [
                 {
                     "type": "approval_required",
@@ -340,7 +391,14 @@ class OpsLangGraphRunner:
     def _route_after_executor(self, state: OpsGraphState) -> str:
         """Executor 后把审批和普通执行分流。"""
 
-        return "approval" if state.get("pendingApproval") else "replan"
+        if state.get("pendingApproval"):
+            return "approval"
+        if state.get("manualPending"):
+            completed_count = len(state.get("completed") or [])
+            if completed_count >= int(state.get("maxSteps") or self.max_steps):
+                return "final"
+            return "execute" if state.get("remaining") else "final"
+        return "replan"
 
     def _route_after_replanner(self, state: OpsGraphState) -> str:
         """Replanner 后根据决策决定继续执行或收尾。"""

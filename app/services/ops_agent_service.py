@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.agents.orchestrator import AGENT_REGISTRY, OrchestratorAgent
-from app.agents.tool_registry import UnifiedToolRegistry
+from app.agents.tool_registry import ToolCallRequest, UnifiedToolRegistry
 from app.agents.tools import OpsToolkit
 from app.core.time_utils import to_shanghai_iso, utc_now_naive
 from app.domain.models import AgentApproval, AgentRun, AgentStep as AgentStepModel, AgentToolCall, User
@@ -69,7 +69,10 @@ class OpsAgentService:
 
         orchestrator = OrchestratorAgent(self.toolkit)
         try:
-            async for event in orchestrator.run(message, {"runId": run.id, "userId": user.id}):
+            async for event in orchestrator.run(
+                message,
+                {"runId": run.id, "userId": user.id, "autoExecuteReadOnly": auto_execute_readonly},
+            ):
                 event["runId"] = run.id
                 event["traceId"] = trace.id
                 event["conversationId"] = conversation_id
@@ -135,7 +138,7 @@ class OpsAgentService:
                     step_id=self._step_id_by_index(run.id, int(event.get("stepIndex", -1))),
                     tool_name=event.get("tool") or "",
                     args=event.get("args") or {},
-                    status="running",
+                    status=event.get("status") or "running",
                     approval_status="not_required",
                 )
             )
@@ -194,6 +197,7 @@ class OpsAgentService:
         operation_map = {
             "plan_created": "planner",
             "observation": "tool_call",
+            "tool_call": "tool_call",
             "replan_decision": "replanner",
             "approval_required": "approval_required",
             "final_answer": "final_answer",
@@ -201,15 +205,38 @@ class OpsAgentService:
         operation = operation_map.get(event_type)
         if not operation:
             return
+        if event_type == "tool_call" and event.get("status") != "pending":
+            return
+
+        result = event.get("result") if isinstance(event.get("result"), dict) else {}
         input_data = {
             "eventType": event_type,
             "stepIndex": event.get("stepIndex"),
+            "toolName": event.get("tool"),
             "tool": event.get("tool"),
             "args": event.get("args") or {},
         }
-        span = trace_service.create_span(trace_id, operation, input_data=input_data, metadata={"agent": event.get("agent")})
-        status = "error" if event_type == "observation" and not (event.get("result") or {}).get("success", False) else "success"
-        trace_service.complete_span(span, status=status, output_data=event, duration_ms=event.get("durationMs"))
+        context_data = {
+            "runId": event.get("runId"),
+            "agent": event.get("agent"),
+            "stepIndex": event.get("stepIndex"),
+            "toolName": event.get("tool"),
+            "riskLevel": event.get("riskLevel") or result.get("riskLevel"),
+            "requiresApproval": event.get("type") == "approval_required" or bool(result.get("requiresApproval")),
+        }
+        output_data = {
+            "eventType": event_type,
+            "status": event.get("status"),
+            "summary": result.get("summary") or event.get("reason") or event.get("content"),
+            "result": result,
+            "steps": event.get("steps"),
+            "action": event.get("action"),
+            "reason": event.get("reason"),
+            "content": event.get("content"),
+        }
+        span = trace_service.create_span(trace_id, operation, input_data=input_data, metadata=context_data)
+        status = "error" if event_type == "observation" and not result.get("success", False) else "success"
+        trace_service.complete_span(span, status=status, output_data=output_data, duration_ms=event.get("durationMs"))
 
     def _step_by_index(self, run_id: str, index: int) -> AgentStepModel | None:
         """根据步骤序号查找持久化步骤。"""
@@ -247,19 +274,49 @@ class OpsAgentService:
         approval.decided_at = utc_now_naive()
 
         if not approved:
+            tool_call = self.db.query(AgentToolCall).filter(AgentToolCall.id == approval.tool_call_id).first()
+            if tool_call:
+                tool_call.status = "blocked"
+                tool_call.approval_status = "rejected"
+                tool_call.error_message = "approval_rejected"
             self.db.commit()
             return {"status": "rejected"}
 
         started = time.perf_counter()
-        result = self.toolkit.tools[approval.tool_name](**approval.args)
-        if hasattr(result, "__await__"):
-            result = await result
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=self.toolkit)
+        result_obj = await registry.call(ToolCallRequest(name=approval.tool_name, args=approval.args), skip_approval=True)
+        result = result_obj.to_dict()
+        duration_ms = max(1, int((time.perf_counter() - started) * 1000))
         tool_call = self.db.query(AgentToolCall).filter(AgentToolCall.id == approval.tool_call_id).first()
         if tool_call:
-            tool_call.status = "success" if result.get("success") else "failed"
+            tool_call.status = "success" if result_obj.success else "failed"
             tool_call.result = result
-            tool_call.duration_ms = int((time.perf_counter() - started) * 1000)
+            tool_call.duration_ms = duration_ms
             tool_call.approval_status = "approved"
+            tool_call.error_message = result_obj.error
+        run = self.db.query(AgentRun).filter(AgentRun.id == run_id).first()
+        if run and run.trace_id:
+            trace_service = TraceService(self.db)
+            span = trace_service.create_span(
+                run.trace_id,
+                "tool_call",
+                input_data={"eventType": "approval_execute", "toolName": approval.tool_name, "tool": approval.tool_name, "args": approval.args},
+                metadata={
+                    "runId": run.id,
+                    "agent": "approval",
+                    "toolName": approval.tool_name,
+                    "riskLevel": result.get("riskLevel"),
+                    "requiresApproval": True,
+                    "approvalId": approval.id,
+                },
+            )
+            trace_service.complete_span(
+                span,
+                status="success" if result_obj.success else "error",
+                error_message=result_obj.error,
+                output_data={"summary": result_obj.summary, "result": result},
+                duration_ms=duration_ms,
+            )
         self.db.commit()
         return {"status": "approved", "result": result}
 

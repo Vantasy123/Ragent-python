@@ -30,6 +30,13 @@ def _metadata(value: dict[str, Any] | None) -> dict[str, Any]:
     return value
 
 
+def _span_part(meta: dict[str, Any], key: str) -> dict[str, Any]:
+    """读取新 trace 结构中的 input/output/context，旧结构下返回空字典。"""
+
+    value = meta.get(key)
+    return value if isinstance(value, dict) else {}
+
+
 class EvaluationService:
     """EvaluationService 服务类：集中处理一类业务流程，让路由层不需要直接操作数据库、缓存或外部组件。"""
     def __init__(self, db: Session):
@@ -261,8 +268,19 @@ class EvaluationService:
         seen: set[str] = set()
         for span in tool_spans:
             meta = _metadata(span.metadata_json)
-            tool_name = meta.get("toolName") or meta.get("tool_name") or meta.get("name") or span.operation
-            args = meta.get("args") or meta.get("params") or {}
+            input_data = _span_part(meta, "input")
+            context_data = _span_part(meta, "context")
+            output_data = _span_part(meta, "output")
+            tool_name = (
+                input_data.get("toolName")
+                or input_data.get("tool")
+                or context_data.get("toolName")
+                or meta.get("toolName")
+                or meta.get("tool_name")
+                or meta.get("name")
+                or span.operation
+            )
+            args = input_data.get("args") or meta.get("args") or meta.get("params") or {}
             signature = f"{tool_name}:{args}"
             if not tool_name:
                 issues.append(self._issue(run, "tool", "unknown_tool", "high", "Tool span has no tool name", meta))
@@ -270,7 +288,17 @@ class EvaluationService:
                 issues.append(self._issue(run, "tool", "duplicate_tool_call", "medium", "Repeated same tool call", meta))
             seen.add(signature)
             if span.status != "success":
-                issues.append(self._issue(run, "tool", "tool_call_failed", "high", span.error_message or "Tool call failed", meta))
+                result = output_data.get("result") if isinstance(output_data.get("result"), dict) else {}
+                issues.append(
+                    self._issue(
+                        run,
+                        "tool",
+                        "tool_call_failed",
+                        "high",
+                        span.error_message or result.get("error") or "Tool call failed",
+                        meta,
+                    )
+                )
         return metrics
 
     def _system_metrics(self, run: EvaluationRun, trace: TraceRun, issues: list[EvaluationIssue]) -> list[EvaluationMetric]:

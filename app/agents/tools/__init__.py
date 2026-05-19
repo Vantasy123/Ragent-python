@@ -59,7 +59,7 @@ class OpsToolkit:
 
     @property
     def tools(self) -> dict[str, Any]:
-        """返回工具函数映射，供 BaseAgent 执行步骤时查找。"""
+        """返回工具函数映射，统一由 UnifiedToolRegistry 包装调用。"""
 
         return self._tools
 

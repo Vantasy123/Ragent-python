@@ -11,6 +11,44 @@ from app.infrastructure.mcp.tool_registry import ToolRegistry
 
 
 ToolHandler = Callable[..., Any | Awaitable[Any]]
+MAX_SUMMARY_CHARS = 1000
+MAX_DATA_STRING_CHARS = 2000
+MAX_LIST_ITEMS = 50
+
+
+def _compact_value(value: Any, *, max_string_chars: int = MAX_DATA_STRING_CHARS) -> Any:
+    """压缩工具输出中的大字段，避免日志或 inspect 结果撑爆 SSE、Trace 和数据库。"""
+
+    if isinstance(value, str):
+        if len(value) <= max_string_chars:
+            return value
+        return {
+            "preview": value[:max_string_chars],
+            "truncated": True,
+            "originalLength": len(value),
+        }
+    if isinstance(value, list):
+        compacted = [_compact_value(item, max_string_chars=max_string_chars) for item in value[:MAX_LIST_ITEMS]]
+        if len(value) > MAX_LIST_ITEMS:
+            compacted.append({"truncated": True, "originalLength": len(value)})
+        return compacted
+    if isinstance(value, dict):
+        return {str(key): _compact_value(item, max_string_chars=max_string_chars) for key, item in value.items()}
+    return value
+
+
+def compact_tool_result_dict(payload: dict[str, Any]) -> dict[str, Any]:
+    """返回可对外展示和持久化的工具结果摘要。"""
+
+    compacted = dict(payload)
+    summary = str(compacted.get("summary") or "")
+    if len(summary) > MAX_SUMMARY_CHARS:
+        compacted["summary"] = summary[:MAX_SUMMARY_CHARS]
+        compacted["summaryTruncated"] = True
+        compacted["summaryOriginalLength"] = len(summary)
+    data = compacted.get("data")
+    compacted["data"] = _compact_value(data if isinstance(data, dict) else {"value": data})
+    return compacted
 
 
 @dataclass
@@ -37,7 +75,7 @@ class ToolCallResult:
     def to_dict(self) -> dict[str, Any]:
         """转换成 SSE 和数据库可直接保存的结构。"""
 
-        return {
+        return compact_tool_result_dict({
             "success": self.success,
             "summary": self.summary,
             "data": self.data,
@@ -46,7 +84,7 @@ class ToolCallResult:
             "requiresApproval": self.requires_approval,
             "source": self.source,
             "category": self.category,
-        }
+        })
 
 
 @dataclass
@@ -97,6 +135,7 @@ class UnifiedTool:
     def to_public_dict(self) -> dict[str, Any]:
         """返回前端工具目录需要的公开字段。"""
 
+        is_read_only = self.spec.risk_level == "read" and not self.spec.requires_approval
         return {
             "name": self.spec.name,
             "description": self.spec.description,
@@ -106,6 +145,8 @@ class UnifiedTool:
             "riskLevel": self.spec.risk_level,
             "requires_approval": self.spec.requires_approval,
             "requiresApproval": self.spec.requires_approval,
+            "is_read_only": is_read_only,
+            "isReadOnly": is_read_only,
             "source": self.spec.source,
             "category": self.spec.category,
             "enabledFor": self.spec.enabled_for,
@@ -140,13 +181,13 @@ class UnifiedToolRegistry:
             if audience in tool.spec.enabled_for or "all" in tool.spec.enabled_for
         ]
 
-    async def call(self, request: ToolCallRequest) -> ToolCallResult:
+    async def call(self, request: ToolCallRequest, *, skip_approval: bool = False) -> ToolCallResult:
         """执行统一工具调用，未知工具返回结构化失败。"""
 
         tool = self._tools.get(request.name)
         if tool is None:
             return ToolCallResult(success=False, summary=f"工具不存在：{request.name}", error="unknown_tool")
-        if tool.spec.requires_approval:
+        if tool.spec.requires_approval and not skip_approval:
             return ToolCallResult(
                 success=False,
                 summary=f"工具需要审批：{request.name}",
