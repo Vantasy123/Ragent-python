@@ -10,18 +10,24 @@
         <router-link v-if="auth.user?.role === 'admin'" to="/admin/dashboard" class="btn btn-secondary conversation-admin-link">后台</router-link>
       </div>
 
-      <div class="inline-actions">
-        <button class="btn btn-primary" @click="startConversation">新建会话</button>
-        <button class="btn btn-secondary" @click="refresh">刷新列表</button>
+      <div class="flex w-full gap-2">
+        <button class="btn btn-primary flex-1 justify-center" @click="startConversation">新建会话</button>
+        <button class="btn btn-secondary flex-1 justify-center" @click="refresh">刷新列表</button>
       </div>
 
       <SurfaceCard compact>
         <label class="meta-label mb-2 block !text-slate-500">对话模式</label>
-        <select class="input" :value="chat.mode" @change="changeMode">
-          <option value="auto">自动识别</option>
-          <option value="rag">知识问答</option>
-          <option value="ops">运维诊断</option>
-        </select>
+        <div class="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 p-1 border border-slate-200">
+          <button 
+            v-for="opt in [{value: 'auto', label: '自动'}, {value: 'rag', label: '问答'}, {value: 'ops', label: '运维'}]" 
+            :key="opt.value" 
+            type="button"
+            :class="['px-1 py-1.5 text-xs font-semibold rounded-md transition-all text-center', chat.mode === opt.value ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-900']"
+            @click="chat.setMode(opt.value)"
+          >
+            {{ opt.label }}
+          </button>
+        </div>
         <KeyValueGrid
           class="mt-4"
           :columns="1"
@@ -49,8 +55,16 @@
             @click="select(item.id)"
           >
             <div class="flex items-center justify-between gap-3">
-              <div class="resource-title">{{ item.title || '未命名会话' }}</div>
-              <button class="btn btn-ghost !px-3 !py-1 text-xs" @click.stop="clearConversation(item.id)">清空记录</button>
+              <div class="resource-title text-slate-800">{{ item.title || '未命名会话' }}</div>
+              <button 
+                class="text-slate-400 hover:text-red-600 transition-colors p-1" 
+                title="删除会话" 
+                @click.stop="clearConversation(item.id)"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                  <path stroke-linecap="round" stroke-linejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </button>
             </div>
             <div class="resource-meta">
               <span>{{ item.messageCount ?? 0 }} 条消息</span>
@@ -62,82 +76,122 @@
     </aside>
 
     <main class="conversation-main">
-      <div class="message-list">
+      <div class="message-list flex-1 min-h-[480px]">
         <AsyncState
           :loading="false"
           :empty="!messages.length"
           empty-title="开始一段新对话"
           empty-description="普通问题会走知识问答；运维问题可自动进入多 Agent 诊断，也可以手动选择运维诊断模式。"
         >
-          <div class="list-stack">
-            <article v-for="(message, index) in messages" :key="index">
-              <div class="meta-label !text-slate-500">{{ message.role === 'user' ? '用户' : '助手' }}</div>
-              <div :class="['message-bubble mt-2', message.role === 'user' ? 'message-bubble-user' : 'message-bubble-assistant']">
-                {{ message.content || (isLoading ? '生成中...' : '') }}
+          <div class="space-y-6">
+            <article 
+              v-for="(message, index) in messages" 
+              :key="index" 
+              :class="['flex items-start gap-4', message.role === 'user' ? 'flex-row-reverse' : '']"
+            >
+              <!-- Avatar -->
+              <div :class="['flex h-8 w-8 shrink-0 select-none items-center justify-center rounded-lg text-sm font-bold border', 
+                message.role === 'user' ? 'bg-slate-800 border-slate-700 text-slate-100' : 'bg-blue-50 border-blue-100 text-blue-600']">
+                <template v-if="message.role === 'user'">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                  </svg>
+                </template>
+                <template v-else>
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-4.5 w-4.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                </template>
+              </div>
+
+              <!-- Message Block -->
+              <div :class="['flex-1 min-w-0 flex flex-col', message.role === 'user' ? 'items-end' : 'items-start']">
+                <span class="text-xs font-semibold text-zinc-500 mb-1">
+                  {{ message.role === 'user' ? '用户' : 'Ragent 助手' }}
+                </span>
+                
+                <!-- Chat Bubble Container -->
+                <div 
+                  v-if="message.role === 'user'" 
+                  class="text-left text-sm text-white bg-blue-600 border border-blue-700 rounded-2xl rounded-tr-none px-4 py-2.5 max-w-[85%] whitespace-pre-wrap selection:bg-blue-800/30"
+                >
+                  {{ message.content }}
+                </div>
+                <div 
+                  v-else 
+                  class="text-left markdown-body bg-slate-50 border border-slate-200/80 rounded-2xl rounded-tl-none px-4 py-2.5 max-w-[85%] selection:bg-blue-500/10" 
+                  v-html="renderMarkdown(message.content || (isLoading && index === messages.length - 1 ? '*AI 正在处理...*' : ''))"
+                >
+                </div>
               </div>
             </article>
           </div>
         </AsyncState>
       </div>
 
-      <SurfaceCard v-if="chat.streamEvents.length" compact>
-        <div class="flex items-center justify-between gap-3">
-          <div>
-            <div class="meta-label !text-slate-500">当前运行阶段</div>
-            <div class="mt-1 font-semibold">{{ chat.currentStage || '正在等待事件' }}</div>
-            <div v-if="chat.finalOutput" class="helper-text mt-2 whitespace-pre-wrap">{{ chat.finalOutput }}</div>
-          </div>
+      <SurfaceCard v-if="chat.streamEvents.length" compact class="border-slate-200 bg-slate-50/80">
+        <div class="flex items-center justify-between border-b border-slate-200 pb-3">
           <div class="flex items-center gap-2">
-            <span class="status-pill status-running">{{ chat.streamEvents.length }} 个事件</span>
-            <button class="btn btn-secondary !px-3 !py-2 text-sm" @click="showOpsDetails = !showOpsDetails">
-              {{ showOpsDetails ? '隐藏详情' : '显示详情' }}
-            </button>
+            <span class="flex h-2 w-2 rounded-full bg-blue-500 animate-pulse"></span>
+            <span class="text-xs font-semibold text-slate-500">智能体运维执行日志</span>
           </div>
+          <button class="btn btn-secondary !px-2.5 !py-1 text-xs" @click="showOpsDetails = !showOpsDetails">
+            {{ showOpsDetails ? '隐藏日志明细' : '查看日志明细 (' + chat.streamEvents.length + ')' }}
+          </button>
         </div>
 
-        <div v-if="showOpsDetails" class="mt-4 grid gap-3">
-          <article v-for="(event, index) in chat.streamEvents" :key="eventKey(event, index)" class="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm">
-            <div class="flex flex-wrap items-center justify-between gap-3">
-              <div class="flex items-center gap-2">
-                <span class="status-pill" :style="{ color: agentTheme(event.agent).color }">
-                  {{ agentTheme(event.agent).label }}
-                </span>
-                <strong>{{ eventTypeLabel(event.type) }}</strong>
+        <div v-if="showOpsDetails" class="mt-4 border-l border-slate-200 ml-2 pl-4 space-y-4">
+          <article v-for="(event, index) in chat.streamEvents" :key="eventKey(event, index)" class="relative text-xs">
+            <!-- Timeline dot -->
+            <span class="absolute -left-[21px] top-1 flex h-2 w-2 items-center justify-center rounded-full bg-slate-200 ring-4 ring-slate-100">
+              <span :class="['h-1.5 w-1.5 rounded-full', event.type === 'error' ? 'bg-red-500' : event.type === 'done' || event.type === 'final_answer' ? 'bg-emerald-500' : 'bg-blue-500']"></span>
+            </span>
+
+            <div class="flex items-start justify-between gap-3">
+              <div class="min-w-0">
+                <div class="flex items-center flex-wrap gap-2">
+                  <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200" :style="{ borderLeft: '2px solid ' + agentTheme(event.agent).color }">
+                    {{ agentTheme(event.agent).label }}
+                  </span>
+                  <span class="font-semibold text-slate-700">{{ eventTypeLabel(event.type) }}</span>
+                  <span v-if="event.tool" class="text-zinc-500">工具: {{ event.tool }}</span>
+                </div>
+                <p class="mt-1 text-slate-500 font-mono">{{ eventText(event) }}</p>
               </div>
-              <div class="flex items-center gap-2">
-                <span v-if="event.tool" class="meta-label !text-slate-500">工具：{{ event.tool }}</span>
-                <button
-                  v-if="hasEventDetails(event)"
-                  class="btn btn-ghost !px-3 !py-1 text-xs"
-                  @click="toggleEventExpanded(event, index)"
-                >
-                  {{ isEventExpanded(event, index) ? '收起详情' : '展开详情' }}
-                </button>
-              </div>
+
+              <button
+                v-if="hasEventDetails(event)"
+                class="text-[10px] text-blue-500 hover:text-blue-400 font-semibold shrink-0"
+                @click="toggleEventExpanded(event, index)"
+              >
+                {{ isEventExpanded(event, index) ? '收起数据' : '查看数据' }}
+              </button>
             </div>
 
-            <p class="mt-2 text-slate-700">{{ eventText(event) }}</p>
-
-            <div v-if="isEventExpanded(event, index) && event.subTasks?.length" class="mt-3 grid gap-2">
-              <div v-for="(task, taskIndex) in event.subTasks" :key="taskIndex" class="rounded-xl border border-slate-200 bg-white p-3">
-                <div class="font-semibold">{{ task.agent || '智能体' }}</div>
-                <div class="mt-1 text-slate-700">{{ task.task || task.message || '-' }}</div>
-                <div v-if="task.reason" class="helper-text mt-1">原因：{{ task.reason }}</div>
+            <!-- Details section -->
+            <div v-if="isEventExpanded(event, index)" class="mt-2 space-y-2 bg-white rounded-lg p-2.5 border border-slate-200">
+              <div v-if="event.subTasks?.length" class="space-y-1.5">
+                <div class="text-[10px] font-semibold text-zinc-500">拆解子任务</div>
+                <div v-for="(task, taskIndex) in event.subTasks" :key="taskIndex" class="border border-slate-150 bg-slate-50 rounded p-2">
+                  <div class="font-semibold text-slate-700">{{ task.agent || '智能体' }}</div>
+                  <div class="mt-0.5 text-slate-600">{{ task.task || task.message || '-' }}</div>
+                  <div v-if="task.reason" class="text-[10px] text-zinc-500 mt-0.5">原因: {{ task.reason }}</div>
+                </div>
               </div>
-            </div>
 
-            <DataPreview v-if="isEventExpanded(event, index) && event.steps?.length" class="mt-3" :data="event.steps" empty-text="暂无计划步骤" />
-            <DataPreview v-if="isEventExpanded(event, index) && event.args" class="mt-3" :data="event.args" empty-text="暂无工具参数" />
-            <DataPreview v-if="isEventExpanded(event, index) && event.result" class="mt-3" :data="event.result" empty-text="暂无观察结果" />
-            <DataPreview v-if="isEventExpanded(event, index) && event.memory" class="mt-3" :data="event.memory" empty-text="暂无共享记忆" />
-            <DataPreview v-if="isEventExpanded(event, index) && event.sources?.length" class="mt-3" :data="event.sources" empty-text="暂无来源出处" />
+              <DataPreview v-if="event.steps?.length" class="mt-1 font-mono text-[11px]" :data="event.steps" empty-text="暂无计划步骤" />
+              <DataPreview v-if="event.args" class="mt-1 font-mono text-[11px]" :data="event.args" empty-text="暂无工具参数" />
+              <DataPreview v-if="event.result" class="mt-1 font-mono text-[11px]" :data="event.result" empty-text="暂无观察结果" />
+              <DataPreview v-if="event.memory" class="mt-1 font-mono text-[11px]" :data="event.memory" empty-text="暂无共享记忆" />
+              <DataPreview v-if="event.sources?.length" class="mt-1 font-mono text-[11px]" :data="event.sources" empty-text="暂无来源出处" />
 
-            <div v-if="isEventExpanded(event, index) && event.type === 'approval_required'" class="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3">
-              <div class="font-semibold text-amber-900">需要审批后才会执行危险操作</div>
-              <div class="helper-text mt-1">风险等级：{{ event.riskLevel || '未标注' }}，审批 ID：{{ event.approvalId || '-' }}</div>
-              <div class="mt-3 flex gap-2">
-                <button class="btn btn-primary" :disabled="chat.approvalLoading === event.approvalId" @click="approve(event, true)">批准执行</button>
-                <button class="btn btn-secondary" :disabled="chat.approvalLoading === event.approvalId" @click="approve(event, false)">拒绝执行</button>
+              <div v-if="event.type === 'approval_required'" class="border border-amber-900/30 bg-amber-950/20 rounded p-2">
+                <div class="font-semibold text-amber-500">此高危运维操作需要您的授权审批</div>
+                <div class="text-[10px] text-zinc-500 mt-0.5">风险等级: {{ event.riskLevel || '未标注' }} | 审批ID: {{ event.approvalId || '-' }}</div>
+                <div class="mt-2 flex gap-2">
+                  <button class="btn btn-primary !px-2.5 !py-1 text-[10px]" :disabled="chat.approvalLoading === event.approvalId" @click="approve(event, true)">批准执行</button>
+                  <button class="btn btn-secondary !px-2.5 !py-1 text-[10px]" :disabled="chat.approvalLoading === event.approvalId" @click="approve(event, false)">拒绝执行</button>
+                </div>
               </div>
             </div>
           </article>
@@ -146,19 +200,19 @@
 
       <div class="chat-composer">
         <p v-if="chat.errorMessage" class="mb-2 text-sm text-red-600">{{ chat.errorMessage }}</p>
-        <form class="chat-composer-form" @submit.prevent="submit">
+        <form class="chat-composer-form border-slate-300 bg-white/95 shadow-md" @submit.prevent="submit">
           <textarea
             v-model="question"
-            class="chat-composer-input"
+            class="chat-composer-input text-slate-800 placeholder-slate-400"
             placeholder="输入问题，例如：后端 502 帮我诊断，或查询知识库内容。"
             rows="1"
             @keydown="handleComposerKeydown"
           />
           <button class="chat-send-button" :disabled="isLoading || !question.trim()" type="submit" title="发送">
-            {{ isLoading ? '发送中...' : '发送' }}
+            {{ isLoading ? '...' : '发送' }}
           </button>
         </form>
-        <div class="chat-composer-hint">Enter 发送，Shift + Enter 换行</div>
+        <div class="chat-composer-hint text-slate-400">Enter 发送，Shift + Enter 换行</div>
       </div>
     </main>
   </div>
@@ -175,6 +229,7 @@ import SurfaceCard from '@/components/admin/SurfaceCard.vue'
 import { useAuthStore } from '@/stores/authStore'
 import { useChatStore } from '@/stores/chatStore'
 import { formatShanghaiDateTime } from '@/utils/date'
+import { marked } from 'marked'
 
 const auth = useAuthStore()
 const chat = useChatStore()
@@ -186,8 +241,9 @@ const isLoading = computed(() => chat.isLoading)
 const expandedEventKeys = reactive(new Set<string>())
 const showOpsDetails = ref(false)
 
-function changeMode(event: Event) {
-  chat.setMode((event.target as HTMLSelectElement).value as ChatMode)
+function renderMarkdown(content: string) {
+  if (!content) return ''
+  return marked.parse(content) as string
 }
 
 async function refresh() {

@@ -1,5 +1,5 @@
 ﻿param(
-    [ValidateSet('full', 'backend', 'ops', 'ops-backend')]
+    [ValidateSet('full', 'backend', 'ops', 'ops-backend', 'monitoring', 'monitoring-backend')]
     [string]$Mode = 'ops',
     [switch]$Build
 )
@@ -10,6 +10,7 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $projectDir = Split-Path -Parent $scriptDir
 $composeYml = Join-Path $projectDir 'docker-compose.yml'
 $composeOpsYml = Join-Path $projectDir 'docker-compose.ops.yml'
+$composeMonitoringYml = Join-Path $projectDir 'docker-compose.monitoring.yml'
 
 function Test-CommandExists {
     param([string]$Name)
@@ -48,12 +49,30 @@ function Invoke-Compose {
     }
 }
 
+function Initialize-ConfigFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Target,
+        [Parameter(Mandatory = $true)][string]$Example
+    )
+
+    if ((Test-Path $Target) -or -not (Test-Path $Example)) {
+        return
+    }
+    Copy-Item -Path $Example -Destination $Target
+    Write-Warning "已从示例生成配置：$Target，请按个人环境修改后再用于生产。"
+}
+
 Write-Host '========================================='
 Write-Host '  Ragent Python Quick Start'
 Write-Host '========================================='
 Write-Host "Mode: $Mode"
 Write-Host "Project: $projectDir"
 Write-Host "Build images: $Build"
+Write-Host ''
+
+Initialize-ConfigFile -Target (Join-Path $projectDir '.env') -Example (Join-Path $projectDir '.env.example')
+Initialize-ConfigFile -Target (Join-Path $projectDir 'config\servers.yml') -Example (Join-Path $projectDir 'config\servers.example.yml')
+Initialize-ConfigFile -Target (Join-Path $projectDir 'config\monitoring.yml') -Example (Join-Path $projectDir 'config\monitoring.example.yml')
 Write-Host ''
 
 if (-not (Test-CommandExists 'docker')) {
@@ -66,7 +85,9 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $frontendEnabled = $false
+$monitoringEnabled = $false
 $backendHealthUrl = 'http://localhost:8000/api/health'
+$activeComposeFiles = @('-f', $composeYml, '-f', $composeOpsYml)
 $effectiveMode = switch ($Mode) {
     'full' { 'ops' }
     'backend' { 'ops-backend' }
@@ -82,7 +103,7 @@ switch ($effectiveMode) {
     'ops' {
         $frontendEnabled = $true
         # 默认启动即加载 ops override，使运维 Agent 可调用 Docker 白名单工具。
-        $arguments = @('-f', $composeYml, '-f', $composeOpsYml, '--profile', 'full', 'up', '-d')
+        $arguments = $activeComposeFiles + @('--profile', 'full', 'up', '-d')
         if ($Build) {
             $arguments += '--build'
         }
@@ -90,11 +111,49 @@ switch ($effectiveMode) {
     }
     'ops-backend' {
         # 后端模式同样启用 ops override，只是不启动前端。
-        $arguments = @('-f', $composeYml, '-f', $composeOpsYml, 'up', '-d')
+        $arguments = $activeComposeFiles + @('up', '-d')
         if ($Build) {
             $arguments += '--build'
         }
         $arguments += @('mysql', 'rustfs', 'etcd', 'milvus', 'redis', 'ragent-api', 'ops-test-service')
+        Invoke-Compose $arguments
+    }
+    'monitoring' {
+        $frontendEnabled = $true
+        $monitoringEnabled = $true
+        $activeComposeFiles = @('-f', $composeYml, '-f', $composeOpsYml, '-f', $composeMonitoringYml)
+        # 监控模式额外启动 Prometheus、Alertmanager、Grafana 和各类 exporter。
+        $arguments = $activeComposeFiles + @('--profile', 'full', 'up', '-d')
+        if ($Build) {
+            $arguments += '--build'
+        }
+        Invoke-Compose $arguments
+    }
+    'monitoring-backend' {
+        $monitoringEnabled = $true
+        $activeComposeFiles = @('-f', $composeYml, '-f', $composeOpsYml, '-f', $composeMonitoringYml)
+        # 后端监控模式不启动正式前端，但保留运维测试服务和监控组件。
+        $arguments = $activeComposeFiles + @('up', '-d')
+        if ($Build) {
+            $arguments += '--build'
+        }
+        $arguments += @(
+            'mysql',
+            'rustfs',
+            'etcd',
+            'milvus',
+            'redis',
+            'ragent-api',
+            'ops-test-service',
+            'prometheus',
+            'alertmanager',
+            'grafana',
+            'node-exporter',
+            'cadvisor',
+            'redis-exporter',
+            'mysqld-exporter',
+            'blackbox-exporter'
+        )
         Invoke-Compose $arguments
     }
 }
@@ -102,14 +161,14 @@ switch ($effectiveMode) {
 Write-Host ''
 Write-Host '[2/4] Waiting for backend health...'
 if (-not (Wait-HttpOk -Url $backendHealthUrl -Retries 120 -DelaySeconds 2)) {
-    & docker compose -f $composeYml -f $composeOpsYml ps
+    & docker compose @activeComposeFiles ps
     throw 'Backend health check timed out. Run docker compose logs ragent-api.'
 }
 Write-Host "[OK] Backend is ready: $backendHealthUrl"
 
 Write-Host ''
 Write-Host '[3/4] Container status...'
-& docker compose -f $composeYml -f $composeOpsYml ps
+& docker compose @activeComposeFiles ps
 
 Write-Host ''
 if ($frontendEnabled) {
@@ -134,10 +193,16 @@ if ($frontendEnabled) {
 if ($effectiveMode -like 'ops*') {
     Write-Host 'Ops test service: http://localhost:18081/'
 }
+if ($monitoringEnabled) {
+    Write-Host 'Ops test service: http://localhost:18081/'
+    Write-Host 'Prometheus: http://localhost:9090/'
+    Write-Host 'Alertmanager: http://localhost:9093/'
+    Write-Host 'Grafana: http://localhost:3001/  (admin/admin)'
+}
 Write-Host ''
 Write-Host 'Useful commands:'
-Write-Host "  Status: docker compose -f `"$composeYml`" -f `"$composeOpsYml`" ps"
-Write-Host "  Logs: docker compose -f `"$composeYml`" -f `"$composeOpsYml`" logs -f ragent-api"
-Write-Host "  Stop: docker compose -f `"$composeYml`" -f `"$composeOpsYml`" down"
+Write-Host "  Status: docker compose $($activeComposeFiles -join ' ') ps"
+Write-Host "  Logs: docker compose $($activeComposeFiles -join ' ') logs -f ragent-api"
+Write-Host "  Stop: docker compose $($activeComposeFiles -join ' ') down"
 Write-Host "  Rebuild start: `"$scriptDir\start-project.bat`" ops -Build"
 

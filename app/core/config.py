@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     PROMETHEUS_URL: str = ""
     ALERTMANAGER_URL: str = ""
     MONITORING_TIMEOUT_SECONDS: float = 5.0
+    CONFIG_DIR: str = str((PROJECT_ROOT / "config").as_posix())
+    SERVERS_CONFIG_PATH: str = str((PROJECT_ROOT / "config" / "servers.yml").as_posix())
+    MONITORING_CONFIG_PATH: str = str((PROJECT_ROOT / "config" / "monitoring.yml").as_posix())
 
     JWT_SECRET: str = "ragent-python-secret"
     JWT_EXPIRE_MINUTES: int = 60 * 24 * 7

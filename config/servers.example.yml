@@ -1,0 +1,28 @@
+# 业务服务器接入示例。
+# 复制为 config/servers.yml 后按个人环境修改；本文件会被版本控制，真实配置不会。
+
+servers:
+  - id: order-service
+    name: 订单服务
+    env: prod
+    enabled: true
+    base_url: http://order-service:8080
+    health_url: http://order-service:8080/health
+    metrics_url: http://order-service:8080/metrics
+    owner: 交易团队
+    tags:
+      - java
+      - order
+      - core
+
+  - id: user-service
+    name: 用户服务
+    env: staging
+    enabled: false
+    base_url: http://user-service:8080
+    health_url: http://user-service:8080/health
+    metrics_url: http://user-service:8080/metrics
+    owner: 用户团队
+    tags:
+      - node
+      - user

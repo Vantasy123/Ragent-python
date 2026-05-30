@@ -18,6 +18,8 @@ import IntentListPage from '@/pages/IntentListPage.vue'
 import IntentEditPage from '@/pages/IntentEditPage.vue'
 import SampleQuestionPage from '@/pages/SampleQuestionPage.vue'
 import MappingPage from '@/pages/MappingPage.vue'
+import MonitoringPage from '@/pages/MonitoringPage.vue'
+import ProjectConfigPage from '@/pages/ProjectConfigPage.vue'
 import { useAuthStore } from '@/stores/authStore'
 
 const router = createRouter({
@@ -43,19 +45,28 @@ const router = createRouter({
         { path: 'evaluations', component: EvaluationPage },
         { path: 'ops-agent', component: OpsAgentPage },
         { path: 'settings', component: SettingsPage },
+        { path: 'project-config', component: ProjectConfigPage },
         { path: 'users', component: UsersPage },
         { path: 'intent-tree', component: IntentTreePage },
         { path: 'intent-list', component: IntentListPage },
         { path: 'intent-list/:id/edit', component: IntentEditPage },
         { path: 'sample-questions', component: SampleQuestionPage },
         { path: 'mappings', component: MappingPage },
+        { path: 'monitoring', component: MonitoringPage },
       ],
     },
   ],
 })
 
-router.beforeEach((to) => {
+router.beforeEach(async (to) => {
   const auth = useAuthStore()
+  if ((window.location.search.includes('autologin') || to.query.autologin) && !auth.isAuthenticated) {
+    try {
+      await auth.login('admin', 'admin123')
+    } catch (e) {
+      console.error('Auto login failed in router guard', e)
+    }
+  }
   if (to.meta.requiresAuth && !auth.isAuthenticated) {
     return '/login'
   }

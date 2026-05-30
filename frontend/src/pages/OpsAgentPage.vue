@@ -82,13 +82,15 @@
               <div class="resource-item-row">
                 <div>
                   <div class="resource-title">{{ tool.name }}</div>
-                  <div class="resource-item-note">{{ tool.description }}</div>
+                  <div class="resource-item-note mt-1 text-xs text-slate-500">{{ tool.description }}</div>
                 </div>
                 <div class="tool-badges">
                   <span class="status-badge" :class="tool.requiresApproval ? 'status-danger' : 'status-ok'">
                     {{ tool.requiresApproval ? '需审批' : '自动执行' }}
                   </span>
-                  <span class="status-badge status-badge-neutral">{{ tool.riskLevel || tool.risk_level || 'read' }}</span>
+                  <span class="status-badge" :class="riskClass(tool.riskLevel || tool.risk_level)">
+                    {{ formatRiskLevel(tool.riskLevel || tool.risk_level) }}
+                  </span>
                 </div>
               </div>
             </article>
@@ -479,6 +481,22 @@ onMounted(() => {
   loadTools()
   loadAgents()
 })
+
+function formatRiskLevel(risk?: string): string {
+  const map: Record<string, string> = {
+    read: '低风险',
+    write: '中风险',
+    admin: '高风险',
+  }
+  return map[String(risk || '').toLowerCase()] || risk || '低风险'
+}
+
+function riskClass(risk?: string): string {
+  const r = String(risk || '').toLowerCase()
+  if (r === 'admin') return 'status-badge-danger'
+  if (r === 'write') return 'status-badge-warning'
+  return 'status-badge-neutral'
+}
 </script>
 
 <style scoped>

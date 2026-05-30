@@ -2,7 +2,7 @@
   <div class="detail-grid" :class="columns === 1 ? 'detail-grid-single' : ''">
     <div v-for="item in normalizedItems" :key="item.label" class="detail-item">
       <div class="meta-label !text-slate-500">{{ item.label }}</div>
-      <div class="detail-value">{{ item.value }}</div>
+      <div class="detail-value" :class="isLongId(item.value) ? 'font-mono text-xs break-all !font-semibold text-slate-700' : ''">{{ item.value }}</div>
       <div v-if="item.hint" class="helper-text mt-1">{{ item.hint }}</div>
     </div>
   </div>
@@ -30,4 +30,9 @@ const normalizedItems = computed(() =>
     value: item.value === null || item.value === undefined || item.value === '' ? '-' : String(item.value),
   })),
 )
+
+function isLongId(val: any) {
+  const str = String(val)
+  return str.length > 20 && (str.includes('-') || /[0-9a-fA-F]{8,}/.test(str))
+}
 </script>

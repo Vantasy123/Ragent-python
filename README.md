@@ -35,7 +35,17 @@
 
 ## 启动
 
-准备 `.env`，至少包含：
+开源使用推荐先复制示例配置，再按个人环境修改：
+
+```powershell
+copy .env.example .env
+copy config\servers.example.yml config\servers.yml
+copy config\monitoring.example.yml config\monitoring.yml
+```
+
+也可以直接运行启动脚本；如果这些文件不存在，脚本会自动从示例生成。
+
+`.env` 至少包含：
 
 ```env
 OPENAI_API_KEY=your-api-key
@@ -58,6 +68,12 @@ scripts\start-project.bat
 scripts\start-project.bat -Build
 ```
 
+需要完整监控栈时使用：
+
+```powershell
+scripts\start-project.bat monitoring -Build
+```
+
 可选模式：
 
 ```powershell
@@ -72,6 +88,18 @@ scripts\start-project.bat ops
 
 # 仅后端，并启用运维工具
 scripts\start-project.bat ops-backend
+
+# 完整前后端、运维工具和 Prometheus / Alertmanager / Grafana
+scripts\start-project.bat monitoring
+
+# 仅后端、运维工具和监控栈
+scripts\start-project.bat monitoring-backend
+```
+
+Linux / macOS 可使用：
+
+```bash
+bash scripts/start-project.sh monitoring --build
 ```
 
 手动启动：
@@ -79,6 +107,9 @@ scripts\start-project.bat ops-backend
 ```powershell
 # 完整模式
 docker compose -f docker-compose.yml -f docker-compose.ops.yml --profile full up -d --build
+
+# 完整监控模式
+docker compose -f docker-compose.yml -f docker-compose.ops.yml -f docker-compose.monitoring.yml --profile full up -d --build
 
 # 仅后端依赖和 API
 docker compose -f docker-compose.yml -f docker-compose.ops.yml up -d --build mysql rustfs etcd milvus redis ragent-api ops-test-service
@@ -102,6 +133,14 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - 前端入口：`http://localhost/`
 - 聊天页：`http://localhost/chat`
 - 后台首页：`http://localhost/admin/dashboard`
+- Prometheus：`http://localhost:9090/`
+- Alertmanager：`http://localhost:9093/`
+- Grafana：`http://localhost:3001/`，默认账号 `admin/admin`
+
+更多开源部署说明见：
+
+- `docs/open-source-quick-start.md`
+- `docs/connect-business-server.md`
 - Trace 页面：`http://localhost/admin/traces`
 - 运维测试服务：`http://localhost:18081/`
 

@@ -65,10 +65,10 @@ class KnowledgeService:
     def list_chunk_strategies(self) -> list[dict]:
         """list_chunk_strategies 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
         return [
-            {"value": "recursive", "label": "Recursive"},
-            {"value": "fixed", "label": "Fixed Size"},
-            {"value": "markdown", "label": "Markdown"},
-            {"value": "semantic", "label": "Semantic"},
+            {"value": "recursive", "label": "递归字符切分"},
+            {"value": "fixed", "label": "固定大小切分"},
+            {"value": "markdown", "label": "Markdown 结构切分"},
+            {"value": "semantic", "label": "语义切分"},
         ]
 
     def create_kb(self, name: str, description: str = "", embedding_model: str = settings.EMBEDDING_MODEL) -> KnowledgeBase:

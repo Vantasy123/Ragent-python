@@ -1,0 +1,25 @@
+# 运维监控接入示例。
+# 复制为 config/monitoring.yml 后按个人环境修改。
+
+monitoring:
+  enabled: true
+  prometheus_url: http://prometheus:9090
+  alertmanager_url: http://alertmanager:9093
+  timeout_seconds: 5
+
+# 额外 HTTP 探测目标。业务服务也可以写在 servers.yml 中。
+probes:
+  - id: gateway
+    name: 网关服务
+    enabled: true
+    url: http://gateway:8080/health
+    tags:
+      - gateway
+      - http
+
+  - id: external-homepage
+    name: 外部首页
+    enabled: false
+    url: https://example.com
+    tags:
+      - public

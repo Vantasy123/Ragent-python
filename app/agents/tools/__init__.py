@@ -15,6 +15,7 @@ import httpx
 
 from app.agents.base import ToolSpec
 from app.core.config import settings
+from app.services.monitoring_service import MonitoringService
 
 
 class OpsToolkit:
@@ -38,6 +39,8 @@ class OpsToolkit:
         self.api_internal_url = "http://127.0.0.1:8000/api/health"
         self.frontend_internal_url = "http://frontend"
         self.proxy_internal_url = "http://frontend/api/health"
+        # 监控查询统一走服务层，保证 API 看板和 Ops Agent 的指标口径一致。
+        self.monitoring_service = MonitoringService()
         # 工具名到函数的映射是 Agent 可调用能力的唯一入口。
         self._tools = {
             "compose_ps": self.compose_ps,
@@ -265,34 +268,7 @@ class OpsToolkit:
     async def system_metrics(self) -> dict[str, Any]:
         """读取基础系统指标；Prometheus 不可用时回退到占位快照。"""
 
-        fallback = {
-            "success": True,
-            "summary": "监控源未配置或不可用，已返回基础占位指标",
-            "data": {"cpuPercent": 0, "memoryPercent": 0, "source": "fallback"},
-            "error": "monitoring_not_configured" if not self._monitoring_enabled() else "monitoring_query_failed",
-        }
-        if not self._monitoring_enabled() or not getattr(settings, "PROMETHEUS_URL", ""):
-            return fallback
-
-        cpu = await self._prometheus_instant_query(self._metric_query("cpu_percent"))
-        memory = await self._prometheus_instant_query(self._metric_query("memory_percent"))
-        if not cpu.get("success") and not memory.get("success"):
-            fallback["summary"] = "Prometheus 指标查询失败，已返回基础占位指标"
-            return fallback
-
-        cpu_value = self._first_prometheus_value(cpu)
-        memory_value = self._first_prometheus_value(memory)
-        return {
-            "success": True,
-            "summary": f"CPU {cpu_value:.2f}%，内存 {memory_value:.2f}%",
-            "data": {
-                "cpuPercent": cpu_value,
-                "memoryPercent": memory_value,
-                "source": "prometheus",
-                "raw": {"cpu": cpu.get("data"), "memory": memory.get("data")},
-            },
-            "error": "",
-        }
+        return await self.monitoring_service.tool_system_metrics()
 
     def container_stats(self, service: str = "ragent-api") -> dict[str, Any]:
         """读取 Docker 容器资源快照。"""
@@ -318,87 +294,17 @@ class OpsToolkit:
     async def alert_status(self) -> dict[str, Any]:
         """从 Alertmanager 查询当前告警状态。"""
 
-        if not self._monitoring_enabled() or not getattr(settings, "ALERTMANAGER_URL", ""):
-            return self._monitoring_not_configured("Alertmanager 未配置，无法查询当前告警")
-
-        url = self._join_url(settings.ALERTMANAGER_URL, "/api/v2/alerts")
-        try:
-            async with httpx.AsyncClient(timeout=float(settings.MONITORING_TIMEOUT_SECONDS)) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-            payload = response.json()
-        except Exception as exc:
-            return self._monitoring_query_failed(f"Alertmanager 查询失败：{exc}")
-
-        alerts = payload if isinstance(payload, list) else []
-        active_alerts = []
-        for item in alerts:
-            if not isinstance(item, dict):
-                continue
-            status = item.get("status") if isinstance(item.get("status"), dict) else {}
-            if status.get("state") not in {"active", "unprocessed", "suppressed"}:
-                continue
-            labels = item.get("labels") if isinstance(item.get("labels"), dict) else {}
-            annotations = item.get("annotations") if isinstance(item.get("annotations"), dict) else {}
-            active_alerts.append(
-                {
-                    "name": labels.get("alertname", "unknown"),
-                    "severity": labels.get("severity", "unknown"),
-                    "summary": annotations.get("summary") or annotations.get("description") or "",
-                    "startsAt": item.get("startsAt"),
-                    "labels": labels,
-                }
-            )
-
-        if not active_alerts:
-            return {"success": True, "summary": "当前没有活跃告警", "data": {"alerts": [], "count": 0}, "error": ""}
-        top = active_alerts[0]
-        return {
-            "success": True,
-            "summary": f"当前有 {len(active_alerts)} 条活跃告警，最高优先关注 {top['name']}（{top['severity']}）",
-            "data": {"alerts": active_alerts, "count": len(active_alerts)},
-            "error": "",
-        }
+        return await self.monitoring_service.tool_alert_status()
 
     async def metric_trend(self, metric: str = "cpu_percent", minutes: int = 30) -> dict[str, Any]:
         """从 Prometheus 查询指定指标最近一段时间的趋势。"""
 
-        if not self._monitoring_enabled() or not getattr(settings, "PROMETHEUS_URL", ""):
-            return self._monitoring_not_configured("Prometheus 未配置，无法查询指标趋势")
-
-        safe_minutes = max(1, min(int(minutes or 30), 24 * 60))
-        query = self._metric_query(metric)
-        end = time.time()
-        start = end - safe_minutes * 60
-        step = max(15, int((safe_minutes * 60) / 30))
-        result = await self._prometheus_range_query(query, start, end, step)
-        if not result.get("success"):
-            return result
-
-        points = self._prometheus_points(result)
-        if not points:
-            return {
-                "success": True,
-                "summary": f"{metric} 最近 {safe_minutes} 分钟没有返回时序点",
-                "data": {"metric": metric, "query": query, "points": []},
-                "error": "",
-            }
-        values = [point["value"] for point in points]
-        return {
-            "success": True,
-            "summary": f"{metric} 最近 {safe_minutes} 分钟平均 {sum(values) / len(values):.2f}，最大 {max(values):.2f}",
-            "data": {"metric": metric, "query": query, "points": points, "min": min(values), "max": max(values), "avg": sum(values) / len(values)},
-            "error": "",
-        }
+        return await self.monitoring_service.tool_metric_trend(metric, minutes)
 
     async def prometheus_query(self, query: str = "", time: float | None = None) -> dict[str, Any]:
         """执行 Prometheus 即时查询，供 Planner 针对具体故障补充指标。"""
 
-        if not query:
-            return {"success": False, "summary": "PromQL 不能为空", "data": {}, "error": "invalid_promql"}
-        if not self._monitoring_enabled() or not getattr(settings, "PROMETHEUS_URL", ""):
-            return self._monitoring_not_configured("Prometheus 未配置，无法执行即时查询")
-        return await self._prometheus_instant_query(query, time=time)
+        return await self.monitoring_service.tool_prometheus_query(query, time=time)
 
     def _monitoring_enabled(self) -> bool:
         """统一判断监控查询是否启用。"""

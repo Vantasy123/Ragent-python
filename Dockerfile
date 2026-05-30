@@ -12,8 +12,9 @@ COPY requirements.txt .
 
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip && \
+    pip install -r requirements.txt
 
 # Docker CLI 单独取自官方镜像，供 ops profile 下的运维 Agent 使用。
 FROM docker:27-cli AS docker-cli

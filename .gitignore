@@ -46,6 +46,11 @@ Thumbs.db
 .env.local
 .env.*.local
 
+# Local runtime config copied from examples
+config/servers.yml
+config/monitoring.yml
+config/*.local.yml
+
 # Logs
 *.log
 logs/

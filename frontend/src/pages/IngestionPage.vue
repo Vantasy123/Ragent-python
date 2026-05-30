@@ -108,7 +108,7 @@
           </div>
         </SurfaceCard>
 
-        <SurfaceCard title="任务列表" subtitle="查看状态，并在下方详情面板查看节点明细。">
+        <SurfaceCard title="任务列表" subtitle="查看状态，点击详情在右侧窗口查看节点明细。">
           <AsyncState
             :loading="loading"
             :error="error"
@@ -120,25 +120,29 @@
               <table class="data-table">
                 <thead>
                   <tr>
-                    <th>任务</th>
-                    <th>状态</th>
-                    <th>创建时间</th>
-                    <th>完成时间</th>
-                    <th></th>
+                    <th class="cell-truncate">任务</th>
+                    <th class="cell-nowrap">状态</th>
+                    <th class="cell-nowrap">创建时间</th>
+                    <th class="cell-nowrap">完成时间</th>
+                    <th class="cell-nowrap">操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   <tr
                     v-for="item in tasks"
                     :key="item.id"
-                    :class="{ 'row-active': selectedTask?.id === item.id }"
-                    @click="selectTask(item.id)"
+                    :class="{ 'row-active': selectedTask?.id === item.id && drawerOpen }"
+                    @click="viewTaskDetails(item.id)"
                   >
-                    <td>{{ item.name }}</td>
-                    <td><span :class="statusClass(item.status)" class="status-badge">{{ formatStatus(item.status) }}</span></td>
-                    <td>{{ formatDate(item.createdAt) }}</td>
-                    <td>{{ formatDate(item.finishedAt) }}</td>
-                    <td><button class="btn btn-secondary" @click.stop="selectTask(item.id)">详情</button></td>
+                    <td class="cell-truncate font-semibold text-slate-800" :title="item.name">{{ item.name }}</td>
+                    <td class="cell-nowrap">
+                      <span :class="statusClass(item.status)" class="status-badge">{{ formatStatus(item.status) }}</span>
+                    </td>
+                    <td class="cell-nowrap cell-mono text-slate-500">{{ formatDate(item.createdAt) }}</td>
+                    <td class="cell-nowrap cell-mono text-slate-500">{{ formatDate(item.finishedAt) }}</td>
+                    <td class="cell-nowrap">
+                      <button class="btn btn-secondary !py-1 !px-2.5 text-xs" @click.stop="viewTaskDetails(item.id)">详情</button>
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -146,52 +150,71 @@
             <PaginationBar :total="taskPagination.total" :page-size="taskPagination.pageSize" :current-page="taskPagination.pageNo" @update:page="changeTaskPage" />
           </AsyncState>
         </SurfaceCard>
-
-        <SurfaceCard title="任务详情" subtitle="展示任务上下文、错误信息和节点执行时间线。">
-          <AsyncState
-            :loading="loadingTaskDetail"
-            :error="taskDetailError"
-            :empty="!selectedTask"
-            empty-title="尚未选择任务"
-            empty-description="从任务列表中选择一项查看执行节点与错误信息。"
-          >
-            <div v-if="selectedTask" class="list-stack">
-              <KeyValueGrid
-                :items="[
-                  { label: '状态', value: formatStatus(selectedTask.status) },
-                  { label: '流程 ID', value: selectedTask.pipelineId || '-' },
-                  { label: '知识库 ID', value: selectedTask.kbId || '-' },
-                  { label: '文档 ID', value: selectedTask.docId || '-' },
-                  { label: '开始时间', value: formatDate(selectedTask.startedAt) },
-                  { label: '结束时间', value: formatDate(selectedTask.finishedAt) },
-                  { label: '错误信息', value: selectedTask.errorMessage || '-' },
-                ]"
-              />
-
-              <SurfaceCard compact title="任务载荷">
-                <DataPreview :data="selectedTask.payload || {}" />
-              </SurfaceCard>
-
-              <div class="selection-list">
-                <article v-for="node in taskNodes" :key="node.id" class="resource-item">
-                  <div class="resource-item-row">
-                    <div class="mini-stack">
-                      <div class="resource-title">{{ node.nodeName }}</div>
-                      <div class="resource-meta">
-                        <span>{{ node.durationMs ?? 0 }} ms</span>
-                        <span>输出 {{ node.outputCount ?? 0 }}</span>
-                      </div>
-                    </div>
-                    <span :class="statusClass(node.status)" class="status-badge">{{ formatStatus(node.status) }}</span>
-                  </div>
-                  <div class="resource-item-note">{{ node.errorMessage || '节点执行完成，无额外错误信息。' }}</div>
-                </article>
-              </div>
-            </div>
-          </AsyncState>
-        </SurfaceCard>
       </div>
     </div>
+
+    <!-- 任务详情抽屉 -->
+    <transition name="drawer">
+      <div v-if="drawerOpen" class="drawer-backdrop" @click.self="drawerOpen = false">
+        <div class="drawer-panel">
+          <div class="drawer-head">
+            <div>
+              <div class="meta-label">摄取任务详情</div>
+              <div class="panel-title text-lg">{{ selectedTask?.name || '任务详情' }}</div>
+            </div>
+            <button class="btn btn-ghost !p-1.5" @click="drawerOpen = false">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+          <div class="drawer-body">
+            <AsyncState
+              :loading="loadingTaskDetail"
+              :error="taskDetailError"
+              :empty="!selectedTask"
+              empty-title="尚未加载详情"
+            >
+              <div v-if="selectedTask" class="list-stack">
+                <KeyValueGrid
+                  :items="[
+                    { label: '任务名称', value: selectedTask.name },
+                    { label: '状态', value: formatStatus(selectedTask.status) },
+                    { label: '流程 ID', value: selectedTask.pipelineId || '-' },
+                    { label: '知识库 ID', value: selectedTask.kbId || '-' },
+                    { label: '文档 ID', value: selectedTask.docId || '-' },
+                    { label: '开始时间', value: formatDate(selectedTask.startedAt) },
+                    { label: '结束时间', value: formatDate(selectedTask.finishedAt) },
+                    { label: '错误信息', value: selectedTask.errorMessage || '-' },
+                  ]"
+                />
+
+                <SurfaceCard compact class="mt-4" title="任务载荷 (Payload)" subtitle="执行此任务传入的参数。">
+                  <DataPreview :data="selectedTask.payload || {}" />
+                </SurfaceCard>
+
+                <div class="meta-label !text-slate-500 mt-4">节点执行时间线</div>
+                <div class="selection-list">
+                  <article v-for="node in taskNodes" :key="node.id" class="resource-item">
+                    <div class="resource-item-row">
+                      <div class="mini-stack">
+                        <div class="resource-title">{{ node.nodeName }}</div>
+                        <div class="resource-meta">
+                          <span>{{ node.durationMs ?? 0 }} ms</span>
+                          <span>输出 {{ node.outputCount ?? 0 }}</span>
+                        </div>
+                      </div>
+                      <span :class="statusClass(node.status)" class="status-badge">{{ formatStatus(node.status) }}</span>
+                    </div>
+                    <div class="resource-item-note mt-2 text-xs text-slate-500">{{ node.errorMessage || '节点执行完成，无额外错误信息。' }}</div>
+                  </article>
+                </div>
+              </div>
+            </AsyncState>
+          </div>
+        </div>
+      </div>
+    </transition>
   </section>
 </template>
 
@@ -247,6 +270,7 @@ const selectedTask = ref<any | null>(null)
 const taskNodes = ref<any[]>([])
 const loadingTaskDetail = ref(false)
 const taskDetailError = ref('')
+const drawerOpen = ref(false)
 
 const knowledgeBases = ref<KnowledgeBaseOption[]>([])
 const taskDocuments = ref<DocumentOption[]>([])
@@ -456,6 +480,11 @@ async function selectTask(taskId: string) {
   } finally {
     loadingTaskDetail.value = false
   }
+}
+
+async function viewTaskDetails(taskId: string) {
+  drawerOpen.value = true
+  await selectTask(taskId)
 }
 
 function changePipelinePage(pageNo: number) {

@@ -421,6 +421,91 @@ class EvaluationIssue(Base):
     evaluation_run: Mapped["EvaluationRun"] = relationship(back_populates="issues")
 
 
+class EvaluationDataset(Base, TimestampMixin):
+    """EvaluationDataset 数据库模型：保存一组可重复执行的离线评估用例。"""
+    __tablename__ = "evaluation_dataset"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    # 数据集名称用于前端选择和批次报告展示。
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, default="")
+    # 可选知识库 ID，批量评估时优先把用例限定到该知识库范围。
+    kb_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 标签用于区分回归集、验收集、专项评测集等用途。
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    cases: Mapped[list["EvaluationCase"]] = relationship(back_populates="dataset", cascade="all, delete-orphan")
+    batch_runs: Mapped[list["EvaluationBatchRun"]] = relationship(back_populates="dataset", cascade="all, delete-orphan")
+
+
+class EvaluationCase(Base, TimestampMixin):
+    """EvaluationCase 数据库模型：保存单条问题、参考答案和检索期望。"""
+    __tablename__ = "evaluation_case"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    dataset_id: Mapped[str] = mapped_column(ForeignKey("evaluation_dataset.id", ondelete="CASCADE"), nullable=False)
+    # 用户问题是离线评估的输入。
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    # 期望答案用于计算答案正确性和 token F1。
+    expected_answer: Mapped[str] = mapped_column(Text, default="")
+    # 期望命中的 chunkId 列表，用于 hit@k、recall@k 和 MRR。
+    expected_chunk_ids: Mapped[list] = mapped_column(JSON, default=list)
+    # 期望关键词用于无标准答案时的轻量答案覆盖率判断。
+    expected_keywords: Mapped[list] = mapped_column(JSON, default=list)
+    kb_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tags: Mapped[list] = mapped_column(JSON, default=list)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    meta_data: Mapped[dict] = mapped_column("metadata", JSON, default=dict)
+
+    dataset: Mapped["EvaluationDataset"] = relationship(back_populates="cases")
+    results: Mapped[list["EvaluationCaseResult"]] = relationship(back_populates="case", cascade="all, delete-orphan")
+
+
+class EvaluationBatchRun(Base, TimestampMixin):
+    """EvaluationBatchRun 数据库模型：保存一次数据集批量评估的聚合结果。"""
+    __tablename__ = "evaluation_batch_run"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    dataset_id: Mapped[str] = mapped_column(ForeignKey("evaluation_dataset.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    total_cases: Mapped[int] = mapped_column(Integer, default=0)
+    completed_cases: Mapped[int] = mapped_column(Integer, default=0)
+    failed_cases: Mapped[int] = mapped_column(Integer, default=0)
+    overall_score: Mapped[float] = mapped_column(Float, default=0.0)
+    # 指标聚合值按 metricKey 保存，便于前端直接渲染批次报告。
+    metric_summary: Mapped[dict] = mapped_column(JSON, default=dict)
+    summary: Mapped[str] = mapped_column(Text, default="")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    dataset: Mapped["EvaluationDataset"] = relationship(back_populates="batch_runs")
+    results: Mapped[list["EvaluationCaseResult"]] = relationship(back_populates="batch_run", cascade="all, delete-orphan")
+
+
+class EvaluationCaseResult(Base, TimestampMixin):
+    """EvaluationCaseResult 数据库模型：保存单条评估用例的回答、指标和错误。"""
+    __tablename__ = "evaluation_case_result"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    batch_run_id: Mapped[str] = mapped_column(ForeignKey("evaluation_batch_run.id", ondelete="CASCADE"), nullable=False)
+    case_id: Mapped[str] = mapped_column(ForeignKey("evaluation_case.id", ondelete="CASCADE"), nullable=False)
+    trace_id: Mapped[str | None] = mapped_column(ForeignKey("trace_run.id", ondelete="SET NULL"), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    question: Mapped[str] = mapped_column(Text, default="")
+    answer: Mapped[str] = mapped_column(Text, default="")
+    expected_answer: Mapped[str] = mapped_column(Text, default="")
+    retrieved_contexts: Mapped[list] = mapped_column(JSON, default=list)
+    metrics: Mapped[dict] = mapped_column(JSON, default=dict)
+    overall_score: Mapped[float] = mapped_column(Float, default=0.0)
+    issue_summary: Mapped[list] = mapped_column(JSON, default=list)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+
+    batch_run: Mapped["EvaluationBatchRun"] = relationship(back_populates="results")
+    case: Mapped["EvaluationCase"] = relationship(back_populates="results")
+
+
 class AgentRun(Base):
     """AgentRun 数据库模型：映射一张业务表，字段定义决定 MySQL 中保存什么数据，以及服务层如何读取和写入。"""
     __tablename__ = "agent_run"

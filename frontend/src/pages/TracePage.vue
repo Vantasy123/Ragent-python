@@ -22,25 +22,25 @@
           <table class="data-table">
             <thead>
               <tr>
-                <th>Trace ID</th>
-                <th>状态</th>
-                <th>耗时</th>
-                <th>会话</th>
-                <th>创建时间</th>
-                <th></th>
+                <th class="cell-id">Trace ID</th>
+                <th class="cell-nowrap">状态</th>
+                <th class="cell-nowrap">耗时</th>
+                <th class="cell-id">会话</th>
+                <th class="cell-nowrap">创建时间</th>
+                <th class="cell-nowrap">操作</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="item in runs" :key="item.traceId">
-                <td>{{ item.traceId }}</td>
-                <td>
+                <td class="cell-id" :title="item.traceId">{{ item.traceId }}</td>
+                <td class="cell-nowrap">
                   <span :class="statusClass(item.status)" class="status-badge">{{ formatStatus(item.status) }}</span>
                 </td>
-                <td>{{ item.totalDurationMs ?? 0 }} ms</td>
-                <td>{{ item.sessionId || '-' }}</td>
-                <td>{{ formatDate(item.createdAt) }}</td>
-                <td>
-                  <router-link class="btn btn-secondary" :to="`/admin/traces/${item.traceId}`">详情</router-link>
+                <td class="cell-nowrap cell-mono">{{ item.totalDurationMs ?? 0 }} ms</td>
+                <td class="cell-id" :title="item.sessionId || '无会话'">{{ item.sessionId || '-' }}</td>
+                <td class="cell-nowrap cell-mono text-slate-500">{{ formatDate(item.createdAt) }}</td>
+                <td class="cell-nowrap">
+                  <router-link class="btn btn-secondary !py-1 !px-2.5 text-xs" :to="`/admin/traces/${item.traceId}`">详情</router-link>
                 </td>
               </tr>
             </tbody>

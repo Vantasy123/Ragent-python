@@ -35,6 +35,8 @@ jieba>=0.42.1,<0.43.0
 # Utilities
 python-multipart==0.0.6
 apscheduler==3.10.4
+PyYAML>=6.0.0,<7.0.0
 
 # Multi-Agent ops (系统指标采集)
 psutil>=5.9.0
+prometheus-fastapi-instrumentator==7.0.0

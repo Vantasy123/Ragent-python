@@ -19,6 +19,9 @@ env/
 .env
 .env.local
 .env.*.local
+config/servers.yml
+config/monitoring.yml
+config/*.local.yml
 
 # Database
 *.db

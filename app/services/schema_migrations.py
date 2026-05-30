@@ -30,6 +30,71 @@ def run_compatible_migrations(engine: Engine) -> None:
             updated_at DATETIME NOT NULL
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS evaluation_dataset (
+            id VARCHAR(64) PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            description TEXT,
+            kb_id VARCHAR(64),
+            tags JSON,
+            enabled BOOLEAN,
+            created_by VARCHAR(64),
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS evaluation_case (
+            id VARCHAR(64) PRIMARY KEY,
+            dataset_id VARCHAR(64) NOT NULL,
+            question TEXT NOT NULL,
+            expected_answer TEXT,
+            expected_chunk_ids JSON,
+            expected_keywords JSON,
+            kb_id VARCHAR(64),
+            tags JSON,
+            enabled BOOLEAN,
+            metadata JSON,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS evaluation_batch_run (
+            id VARCHAR(64) PRIMARY KEY,
+            dataset_id VARCHAR(64) NOT NULL,
+            status VARCHAR(32),
+            total_cases INTEGER,
+            completed_cases INTEGER,
+            failed_cases INTEGER,
+            overall_score FLOAT,
+            metric_summary JSON,
+            summary TEXT,
+            error_message TEXT,
+            created_by VARCHAR(64),
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS evaluation_case_result (
+            id VARCHAR(64) PRIMARY KEY,
+            batch_run_id VARCHAR(64) NOT NULL,
+            case_id VARCHAR(64) NOT NULL,
+            trace_id VARCHAR(64),
+            status VARCHAR(32),
+            question TEXT,
+            answer TEXT,
+            expected_answer TEXT,
+            retrieved_contexts JSON,
+            metrics JSON,
+            overall_score FLOAT,
+            issue_summary JSON,
+            error_message TEXT,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL
+        )
+        """,
     ]
     with engine.begin() as conn:
         for statement in statements:

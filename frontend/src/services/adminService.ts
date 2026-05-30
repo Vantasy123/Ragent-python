@@ -24,6 +24,14 @@ function normalizeMapping(item: Record<string, any>) {
   }
 }
 
+function nestedItems(payload: any) {
+  const data = unwrapData<any>(payload, {})
+  if (Array.isArray(data)) return data
+  if (Array.isArray(data.items)) return data.items
+  if (Array.isArray(data.data?.items)) return data.data.items
+  return []
+}
+
 export const adminService = {
   async overview() {
     return unwrapData(await apiClient.get('/admin/dashboard/overview'), {})
@@ -64,6 +72,49 @@ export const adminService = {
   async evaluationIssues(pageNo = 1, pageSize = 50, severity = '') {
     const suffix = severity ? `&severity=${encodeURIComponent(severity)}` : ''
     return toTablePageResult(await apiClient.get(`/admin/evaluations/issues?pageNo=${pageNo}&pageSize=${pageSize}${suffix}`))
+  },
+  async evaluationDatasets(pageNo = 1, pageSize = 20) {
+    return toTablePageResult(await apiClient.get(`/admin/evaluations/datasets?pageNo=${pageNo}&pageSize=${pageSize}`))
+  },
+  async evaluationDataset(datasetId: string) {
+    return unwrapData(await apiClient.get(`/admin/evaluations/datasets/${datasetId}`), {})
+  },
+  createEvaluationDataset(payload: Record<string, unknown>) {
+    return apiClient.post('/admin/evaluations/datasets', payload)
+  },
+  updateEvaluationDataset(datasetId: string, payload: Record<string, unknown>) {
+    return apiClient.put(`/admin/evaluations/datasets/${datasetId}`, payload)
+  },
+  deleteEvaluationDataset(datasetId: string) {
+    return apiClient.delete(`/admin/evaluations/datasets/${datasetId}`)
+  },
+  async evaluationCases(datasetId: string, pageNo = 1, pageSize = 100) {
+    return toTablePageResult(await apiClient.get(`/admin/evaluations/datasets/${datasetId}/cases?pageNo=${pageNo}&pageSize=${pageSize}`))
+  },
+  createEvaluationCase(datasetId: string, payload: Record<string, unknown>) {
+    return apiClient.post(`/admin/evaluations/datasets/${datasetId}/cases`, payload)
+  },
+  updateEvaluationCase(caseId: string, payload: Record<string, unknown>) {
+    return apiClient.put(`/admin/evaluations/cases/${caseId}`, payload)
+  },
+  deleteEvaluationCase(caseId: string) {
+    return apiClient.delete(`/admin/evaluations/cases/${caseId}`)
+  },
+  importEvaluationCases(datasetId: string, payload: Record<string, unknown>) {
+    return apiClient.post(`/admin/evaluations/datasets/${datasetId}/cases/import`, payload)
+  },
+  async createEvaluationBatchRun(datasetId: string) {
+    return unwrapData(await apiClient.post(`/admin/evaluations/datasets/${datasetId}/runs`), {})
+  },
+  async evaluationBatchRuns(datasetId = '', pageNo = 1, pageSize = 20) {
+    const suffix = datasetId ? `&datasetId=${encodeURIComponent(datasetId)}` : ''
+    return toTablePageResult(await apiClient.get(`/admin/evaluations/batch-runs?pageNo=${pageNo}&pageSize=${pageSize}${suffix}`))
+  },
+  async evaluationBatchRun(batchId: string) {
+    return unwrapData(await apiClient.get(`/admin/evaluations/batch-runs/${batchId}`), {})
+  },
+  async evaluationCaseResults(batchId: string, pageNo = 1, pageSize = 100) {
+    return toTablePageResult(await apiClient.get(`/admin/evaluations/batch-runs/${batchId}/results?pageNo=${pageNo}&pageSize=${pageSize}`))
   },
   async users(pageNo = 1, pageSize = 100) {
     return toTablePageResult(await apiClient.get(`/users?pageNo=${pageNo}&pageSize=${pageSize}`))
@@ -151,5 +202,41 @@ export const adminService = {
   },
   deleteMapping(itemId: string) {
     return apiClient.delete(`/mappings/${itemId}`)
+  },
+  async monitoringOverview() {
+    return unwrapData(await apiClient.get('/admin/monitoring/overview'), {})
+  },
+  async monitoringTargets() {
+    return nestedItems(await apiClient.get('/admin/monitoring/targets'))
+  },
+  async monitoringAlerts() {
+    return nestedItems(await apiClient.get('/admin/monitoring/alerts'))
+  },
+  async monitoringSeries(metric: string, minutes = 30) {
+    return unwrapData(await apiClient.get(`/admin/monitoring/series/${metric}?minutes=${minutes}`), {})
+  },
+  async monitoringProbes() {
+    return nestedItems(await apiClient.get('/admin/monitoring/probes'))
+  },
+  async monitoringQuery(payload: { query: string, time: string | null }) {
+    return unwrapData(await apiClient.post('/admin/monitoring/query', payload), {})
+  },
+  async projectConfigStatus() {
+    return unwrapData(await apiClient.get('/admin/project-config/status'), {})
+  },
+  async projectConfigServers() {
+    return unwrapData(await apiClient.get('/admin/project-config/servers'), {})
+  },
+  async saveProjectConfigServers(payload: { servers: Record<string, unknown>[] }) {
+    return unwrapData(await apiClient.put('/admin/project-config/servers', payload), {})
+  },
+  async projectConfigMonitoring() {
+    return unwrapData(await apiClient.get('/admin/project-config/monitoring'), {})
+  },
+  async saveProjectConfigMonitoring(payload: { monitoring: Record<string, unknown>, probes: Record<string, unknown>[] }) {
+    return unwrapData(await apiClient.put('/admin/project-config/monitoring', payload), {})
+  },
+  async projectConfigProbeTest(payload: { name: string, url: string }) {
+    return unwrapData(await apiClient.post('/admin/project-config/probe-test', payload), {})
   },
 }

@@ -81,6 +81,14 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title=settings.APP_NAME, version=settings.APP_VERSION, lifespan=lifespan)
 
+# 暴露 Prometheus 指标端点，便于监控服务抓取 FastAPI 运行指标。
+try:
+    from prometheus_fastapi_instrumentator import Instrumentator
+    Instrumentator().instrument(app).expose(app, include_in_schema=False)
+except ImportError:
+    # 未安装监控依赖时保持 API 主流程可用，适配轻量本地运行场景。
+    pass
+
 # 前端开发服务器、Docker Nginx 和本地调试都通过这里统一放行。
 app.add_middleware(
     CORSMiddleware,

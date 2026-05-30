@@ -4,7 +4,7 @@
       <div class="admin-brand">
         <div class="admin-brand-subtitle">企业控制台</div>
         <div class="admin-brand-title">Ragent 管理后台</div>
-        <div class="helper-text mt-2 text-sm !text-slate-300/80">
+        <div class="helper-text mt-2 text-sm !text-slate-500">
           对齐原版后台信息架构，覆盖知识库、摄取、链路追踪、评估与运营配置。
         </div>
       </div>
@@ -62,6 +62,8 @@ const primaryItems = [
   { to: '/admin/ingestion', label: '摄取任务', hint: '流程' },
   { to: '/admin/traces', label: '链路追踪', hint: '运行' },
   { to: '/admin/evaluations', label: '智能体评估', hint: '评分' },
+  { to: '/admin/monitoring', label: '运维监控', hint: '指标' },
+  { to: '/admin/project-config', label: '接入配置', hint: '开源' },
   { to: '/admin/settings', label: '系统设置', hint: '配置' },
 ]
 

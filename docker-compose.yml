@@ -136,6 +136,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./uploads:/app/uploads
+      - ./config:/app/config
     networks:
       - ragent-network
     restart: unless-stopped

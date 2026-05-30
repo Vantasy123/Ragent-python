@@ -35,6 +35,12 @@ class RouteCleanupTest(unittest.TestCase):
         self.assertIn("POST", route_methods("/api/agent/chat"))
         self.assertIn("GET", route_methods("/api/conversations"))
         self.assertIn("GET", route_methods("/api/intent-tree"))
+        self.assertIn("GET", route_methods("/api/admin/evaluations/datasets"))
+        self.assertIn("POST", route_methods("/api/admin/evaluations/datasets/{dataset_id}/runs"))
+        self.assertIn("GET", route_methods("/api/admin/monitoring/overview"))
+        self.assertIn("POST", route_methods("/api/admin/monitoring/query"))
+        self.assertIn("GET", route_methods("/api/admin/project-config/status"))
+        self.assertIn("PUT", route_methods("/api/admin/project-config/servers"))
 
     def test_legacy_routes_are_removed(self) -> None:
         self.assertEqual(route_methods("/rag/v3/chat"), set())
