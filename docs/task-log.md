@@ -59,3 +59,19 @@
 ### 文档更新
 - 更新了 [walkthrough.md](file:///C:/Users/86189/.gemini/antigravity/brain/c71bc223-9f27-4582-bdfa-4fb10f3b2fa7/walkthrough.md) 以反映最新监控架构与指标连通性验证。
 - 已创建并写入本条 `docs/task-log.md` 记录。
+
+## 2026-05-31 23:25 - Antigravity
+
+### 任务
+- 在 docker-compose.yml 中补全所有基础服务的自启动策略。
+
+### 修改文件
+- `docker-compose.yml`
+- `.agent/locks/restart_policy_update.lock` (已删除)
+
+### 变更摘要
+- 在 `docker-compose.yml` 中为 `mysql`, `redis`, `milvus`, `etcd`, `rustfs` 服务添加了 `restart: unless-stopped` 配置，确保在 Docker Desktop 或系统重启后，整个 Ragent 系统依赖的基础设施能够自动唤醒。
+
+### 验证情况
+- 运行命令 `docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d --remove-orphans` 成功重构并应用配置，所有基础组件已顺利重启并转换为 Healthy 状态。
+
