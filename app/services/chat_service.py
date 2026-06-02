@@ -281,12 +281,12 @@ async def _prepare_rag_context(service: ConversationService, conversation_id: st
     user_id = conversation.user_id if conversation else None
     memory_block = LongTermMemoryService(service.db).build_prompt_block(user_id, message)
     try:
-        rewritten = query_rewriter.rewrite(message, _history(service, conversation_id))
+        rewritten = await query_rewriter.rewrite(message, _history(service, conversation_id))
     except Exception as exc:
         raise ChatGenerationError("query_rewrite", f"{type(exc).__name__}: {exc}") from exc
 
     try:
-        retrieved_chunks = multi_channel_retriever.retrieve(query=rewritten, top_k=runtime.top_k)
+        retrieved_chunks = await multi_channel_retriever.retrieve(query=rewritten, top_k=runtime.top_k)
     except Exception as exc:
         raise ChatGenerationError("retrieval", f"{type(exc).__name__}: {exc}") from exc
 

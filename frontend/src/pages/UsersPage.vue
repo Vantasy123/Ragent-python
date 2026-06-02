@@ -112,17 +112,82 @@
         </SurfaceCard>
       </div>
     </div>
+
+    <SurfaceCard class="mt-5" title="用户审计" subtitle="按时间倒序展示后台账号增删改记录。">
+      <div class="inline-actions mb-4">
+        <select v-model="auditAction" class="select max-w-xs" @change="loadAudit(1)">
+          <option value="">全部动作</option>
+          <option value="create">创建</option>
+          <option value="update">更新</option>
+          <option value="delete">删除</option>
+        </select>
+        <label class="inline-actions items-center rounded-2xl border border-slate-200 px-4 py-3">
+          <input v-model="auditOnlySelected" type="checkbox" :disabled="!selectedUser" @change="loadAudit(1)" />
+          <span>仅当前用户</span>
+        </label>
+        <button class="btn btn-secondary" :disabled="auditLoading" @click="loadAudit(1)">
+          {{ auditLoading ? '加载中...' : '刷新' }}
+        </button>
+      </div>
+      <div v-if="auditError" class="helper-text text-red-600">{{ auditError }}</div>
+      <div v-else-if="auditRows.length === 0" class="helper-text">暂无用户审计记录。</div>
+      <div v-else class="overflow-x-auto">
+        <table class="min-w-full text-sm">
+          <thead>
+            <tr class="border-b border-slate-200 text-left text-slate-500">
+              <th class="py-2 pr-4 font-medium">时间</th>
+              <th class="py-2 pr-4 font-medium">动作</th>
+              <th class="py-2 pr-4 font-medium">目标用户</th>
+              <th class="py-2 pr-4 font-medium">原值</th>
+              <th class="py-2 pr-4 font-medium">新值</th>
+              <th class="py-2 pr-4 font-medium">操作者</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="row in auditRows" :key="row.id" class="border-b border-slate-100">
+              <td class="py-3 pr-4 whitespace-nowrap text-slate-600">{{ formatAuditTime(row.createdAt) }}</td>
+              <td class="py-3 pr-4 whitespace-nowrap text-slate-700">{{ formatAuditAction(row.action) }}</td>
+              <td class="py-3 pr-4 whitespace-nowrap">
+                <div class="font-medium text-slate-800">{{ row.targetUsername }}</div>
+                <div class="helper-text">{{ row.targetUserId }}</div>
+              </td>
+              <td class="py-3 pr-4 text-slate-600">{{ formatAuditSnapshot(row.oldValue) }}</td>
+              <td class="py-3 pr-4 text-slate-900">{{ formatAuditSnapshot(row.newValue) }}</td>
+              <td class="py-3 pr-4 whitespace-nowrap text-slate-600">{{ row.changedBy || '-' }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="mt-4 inline-actions justify-between">
+        <span class="helper-text">共 {{ auditTotal }} 条，当前第 {{ auditPageNo }} 页</span>
+        <div class="inline-actions">
+          <button class="btn btn-secondary" :disabled="auditLoading || auditPageNo <= 1" @click="loadAudit(auditPageNo - 1)">上一页</button>
+          <button class="btn btn-secondary" :disabled="auditLoading || auditPageNo >= auditTotalPages" @click="loadAudit(auditPageNo + 1)">下一页</button>
+        </div>
+      </div>
+    </SurfaceCard>
   </section>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import AsyncState from '@/components/admin/AsyncState.vue'
 import KeyValueGrid from '@/components/admin/KeyValueGrid.vue'
 import PageHeader from '@/components/admin/PageHeader.vue'
 import PaginationBar from '@/components/admin/PaginationBar.vue'
 import SurfaceCard from '@/components/admin/SurfaceCard.vue'
 import { adminService } from '@/services/adminService'
+
+type UserAuditRow = {
+  id: string
+  action: string
+  targetUserId: string
+  targetUsername: string
+  oldValue: Record<string, any>
+  newValue: Record<string, any>
+  changedBy: string | null
+  createdAt: string | null
+}
 
 const loading = ref(false)
 const error = ref('')
@@ -131,6 +196,15 @@ const pagination = ref({ total: 0, pageNo: 1, pageSize: 10 })
 const selectedUser = ref<any | null>(null)
 const form = ref({ id: '', username: '', nickname: '', role: 'user', password: '', isActive: true })
 const passwordForm = ref({ password: '' })
+const auditRows = ref<UserAuditRow[]>([])
+const auditLoading = ref(false)
+const auditError = ref('')
+const auditAction = ref('')
+const auditOnlySelected = ref(false)
+const auditPageNo = ref(1)
+const auditPageSize = 10
+const auditTotal = ref(0)
+const auditTotalPages = computed(() => Math.max(1, Math.ceil(auditTotal.value / auditPageSize)))
 
 async function load() {
   loading.value = true
@@ -151,6 +225,9 @@ async function load() {
 
 function selectUser(user: any) {
   selectedUser.value = user
+  if (auditOnlySelected.value) {
+    void loadAudit(1)
+  }
 }
 
 function edit(user: any) {
@@ -188,6 +265,7 @@ async function submit() {
   }
   resetForm()
   await load()
+  await loadAudit(1)
 }
 
 async function remove(id: string) {
@@ -199,6 +277,7 @@ async function remove(id: string) {
     resetForm()
   }
   await load()
+  await loadAudit(1)
 }
 
 async function changePassword() {
@@ -211,6 +290,22 @@ function changePage(pageNo: number) {
   void load()
 }
 
+async function loadAudit(pageNo = auditPageNo.value) {
+  auditLoading.value = true
+  auditError.value = ''
+  try {
+    const targetUserId = auditOnlySelected.value ? selectedUser.value?.id || '' : ''
+    const page = await adminService.userAuditLogs(pageNo, auditPageSize, targetUserId, auditAction.value)
+    auditRows.value = Array.isArray(page.items) ? page.items : []
+    auditTotal.value = Number(page.total ?? 0)
+    auditPageNo.value = Number(page.pageNo ?? pageNo)
+  } catch (err: any) {
+    auditError.value = err?.detail || err?.message || '用户审计加载失败'
+  } finally {
+    auditLoading.value = false
+  }
+}
+
 function formatRole(role?: string) {
   const map: Record<string, string> = {
     admin: '管理员',
@@ -219,5 +314,36 @@ function formatRole(role?: string) {
   return map[String(role || '').toLowerCase()] || role || '-'
 }
 
-onMounted(load)
+function formatAuditAction(action?: string) {
+  const map: Record<string, string> = {
+    create: '创建',
+    update: '更新',
+    delete: '删除',
+  }
+  return map[String(action || '').toLowerCase()] || action || '-'
+}
+
+function formatAuditSnapshot(value: Record<string, any> | null | undefined) {
+  if (!value || Object.keys(value).length === 0) return '-'
+  const parts = [
+    value.username ? `用户名：${value.username}` : '',
+    value.nickname ? `昵称：${value.nickname}` : '',
+    value.role ? `角色：${formatRole(value.role)}` : '',
+    typeof value.isActive === 'boolean' ? `状态：${value.isActive ? '已启用' : '已停用'}` : '',
+    value.passwordChanged ? '密码：已变更' : '',
+  ].filter(Boolean)
+  return parts.length ? parts.join('；') : '-'
+}
+
+function formatAuditTime(value: string | null | undefined) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+onMounted(() => {
+  load()
+  loadAudit()
+})
 </script>

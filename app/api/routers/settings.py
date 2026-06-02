@@ -7,14 +7,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.domain.models import User
 from app.services.common import success
 from app.services.dependencies import require_admin
-from app.services.settings_service import build_settings_payload, update_settings
+from app.services.settings_service import build_settings_payload, list_setting_audit_logs, update_settings
 
 router = APIRouter(tags=["settings"])
 
@@ -33,5 +33,18 @@ def update_rag_settings(
 ):
     """update_rag_settings 函数：更新已有业务记录，只修改调用方明确传入的字段。"""
     return success(update_settings(db, user, payload), message="settings updated")
+
+
+@router.get("/rag/settings/audit")
+def setting_audit_logs(
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
+    key: str | None = Query(None),
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """查询运行时设置变更审计日志，供管理员追溯配置变更。"""
+
+    return success(list_setting_audit_logs(db, page_no=pageNo, page_size=pageSize, key=key))
 
 

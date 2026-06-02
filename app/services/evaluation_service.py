@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections import defaultdict
@@ -534,6 +535,7 @@ class EvaluationService:
 
     async def process_batch_run(self, batch_id: str, user_id: str | None = None) -> EvaluationBatchRun | None:
         """执行离线批量评估；单条失败只记录结果，不中断整个批次。"""
+        from app.core.database import SessionLocal
 
         batch = self.get_batch_run(batch_id)
         if not batch:
@@ -550,56 +552,102 @@ class EvaluationService:
         batch.summary = "评估批次执行中。"
         self.db.commit()
 
-        for case in cases:
-            result = EvaluationCaseResult(
-                batch_run_id=batch.id,
-                case_id=case.id,
-                status="running",
-                question=case.question,
-                expected_answer=case.expected_answer,
-            )
-            self.db.add(result)
-            self.db.commit()
-            self.db.refresh(result)
-            try:
-                execution = await self._execute_case(case, user_id)
-                metrics, issues, score = self.evaluate_case_metrics(
-                    case,
-                    execution["answer"],
-                    execution["retrievedContexts"],
-                    execution.get("trace"),
-                )
-                result.trace_id = execution.get("traceId")
-                result.answer = execution["answer"]
-                result.retrieved_contexts = execution["retrievedContexts"]
-                result.metrics = metrics
-                result.issue_summary = issues
-                result.overall_score = score
-                result.status = "completed"
-                batch.completed_cases += 1
-            except Exception as exc:  # pragma: no cover - 真实模型和检索链路失败时走这里。
-                result.status = "failed"
-                result.error_message = str(exc)
-                result.issue_summary = [{"severity": "high", "message": str(exc), "issueKey": "case_execution_failed"}]
-                batch.failed_cases += 1
-            self.db.commit()
+        # 限制并发度为 5，兼顾评估效率和模型 RPM 限流
+        semaphore = asyncio.Semaphore(5)
+        batch_lock = asyncio.Lock()
 
+        async def _eval_single_case(case: EvaluationCase):
+            async with semaphore:
+                # 为该用例的执行和评测创建独立的数据库会话，防止多协程共享 DB Session 导致的并发冲突
+                local_db = SessionLocal()
+                result_id: str | None = None
+                try:
+                    result = EvaluationCaseResult(
+                        batch_run_id=batch.id,
+                        case_id=case.id,
+                        status="running",
+                        question=case.question,
+                        expected_answer=case.expected_answer,
+                    )
+                    local_db.add(result)
+                    local_db.commit()
+                    local_db.refresh(result)
+                    result_id = result.id
+
+                    execution = await self._execute_case(case, user_id, local_db)
+                    metrics, issues, score = await self.evaluate_case_metrics(
+                        case,
+                        execution["answer"],
+                        execution["retrievedContexts"],
+                        execution.get("trace"),
+                    )
+
+                    db_result = local_db.query(EvaluationCaseResult).filter(EvaluationCaseResult.id == result.id).first()
+                    if db_result:
+                        db_result.trace_id = execution.get("traceId")
+                        db_result.answer = execution["answer"]
+                        db_result.retrieved_contexts = execution["retrievedContexts"]
+                        db_result.metrics = metrics
+                        db_result.issue_summary = issues
+                        db_result.overall_score = score
+                        db_result.status = "completed"
+                    local_db.commit()
+
+                    async with batch_lock:
+                        batch.completed_cases += 1
+                        self.db.commit()
+
+                except Exception as exc:
+                    import logging
+                    local_logger = logging.getLogger(__name__)
+                    local_logger.error("Failed to evaluate case %s: %s", case.id, exc, exc_info=True)
+                    try:
+                        if result_id:
+                            db_result = local_db.query(EvaluationCaseResult).filter(EvaluationCaseResult.id == result_id).first()
+                        else:
+                            # 结果行创建前失败时，补写一条失败记录，避免批次详情缺失该用例。
+                            db_result = EvaluationCaseResult(
+                                batch_run_id=batch.id,
+                                case_id=case.id,
+                                status="failed",
+                                question=case.question,
+                                expected_answer=case.expected_answer,
+                            )
+                            local_db.add(db_result)
+                        if db_result:
+                            db_result.status = "failed"
+                            db_result.error_message = str(exc)
+                            db_result.issue_summary = [{"severity": "high", "message": str(exc), "issueKey": "case_execution_failed"}]
+                        local_db.commit()
+                    except Exception as inner_exc:
+                        local_logger.error("Failed to write failed status for case %s: %s", case.id, inner_exc)
+
+                    async with batch_lock:
+                        batch.failed_cases += 1
+                        self.db.commit()
+                finally:
+                    local_db.close()
+
+        # 并发评估所有用例
+        await asyncio.gather(*[_eval_single_case(c) for c in cases])
+
+        self.db.refresh(batch)
         self._finalize_batch(batch)
         self.db.commit()
         self.db.refresh(batch)
         return batch
 
-    async def _execute_case(self, case: EvaluationCase, user_id: str | None) -> dict[str, Any]:
+    async def _execute_case(self, case: EvaluationCase, user_id: str | None, db: Session) -> dict[str, Any]:
         """通过项目真实聊天链路执行单条评估用例，并收集回答与 Trace。"""
 
         from app.services.chat_service import ConversationService, stream_chat
 
-        conversation = ConversationService(self.db).create_conversation(user_id, f"评估：{case.question[:28]}")
+        conversation = ConversationService(db).create_conversation(user_id, f"评估：{case.question[:28]}")
         final_answer = ""
         token_parts: list[str] = []
         trace_id = ""
         async for event in stream_chat(
-            self.db,
+            db,
             conversation.id,
             case.question,
             task_id=f"eval-{case.id}",
@@ -615,7 +663,7 @@ class EvaluationService:
                 raise RuntimeError(str(event.get("content") or "评估用例执行失败"))
 
         answer = final_answer or "".join(token_parts)
-        trace = self.db.query(TraceRun).filter(TraceRun.id == trace_id).first() if trace_id else None
+        trace = db.query(TraceRun).filter(TraceRun.id == trace_id).first() if trace_id else None
         return {
             "answer": answer,
             "traceId": trace_id or None,
@@ -623,7 +671,7 @@ class EvaluationService:
             "retrievedContexts": self._retrieved_contexts(trace) if trace else [],
         }
 
-    def evaluate_case_metrics(
+    async def evaluate_case_metrics(
         self,
         case: EvaluationCase,
         answer: str,
@@ -637,7 +685,7 @@ class EvaluationService:
         metrics.update(self._retrieval_case_metrics(case, retrieved_contexts))
         metrics.update(self._answer_case_metrics(case, answer))
         metrics.update(self._system_case_metrics(trace))
-        judge_metrics, judge_issues = self._judge_case_metrics(case, answer, retrieved_contexts)
+        judge_metrics, judge_issues = await self._judge_case_metrics(case, answer, retrieved_contexts)
         metrics.update(judge_metrics)
         issues.extend(judge_issues)
 
@@ -743,7 +791,7 @@ class EvaluationService:
             "total_latency": self._case_metric("总耗时", self._latency_score(trace.total_duration_ms), "Trace 总耗时折算分", {"totalDurationMs": trace.total_duration_ms}),
         }
 
-    def _judge_case_metrics(
+    async def _judge_case_metrics(
         self,
         case: EvaluationCase,
         answer: str,
@@ -759,7 +807,7 @@ class EvaluationService:
             }, []
 
         try:
-            raw = self._call_judge_model(case, answer, contexts)
+            raw = await self._call_judge_model(case, answer, contexts)
             parsed = self._parse_judge_response(raw)
         except Exception as exc:
             skipped = {
@@ -780,7 +828,7 @@ class EvaluationService:
             for key, label in labels.items()
         }, []
 
-    def _call_judge_model(self, case: EvaluationCase, answer: str, contexts: list[dict[str, Any]]) -> str:
+    async def _call_judge_model(self, case: EvaluationCase, answer: str, contexts: list[dict[str, Any]]) -> str:
         """调用当前主模型充当裁判，要求返回可解析 JSON。"""
 
         from app.rag.workflow import build_primary_llm
@@ -800,7 +848,7 @@ class EvaluationService:
 JSON 示例：
 {{"faithfulness":{{"score":0.8,"reason":"回答基本受上下文支持"}},"answer_relevancy":{{"score":0.9,"reason":"回答紧扣问题"}},"answer_correctness":{{"score":0.7,"reason":"与参考答案部分一致"}}}}
 """.strip()
-        response = build_primary_llm(streaming=False).invoke(prompt)
+        response = await build_primary_llm(streaming=False).ainvoke(prompt)
         return str(getattr(response, "content", response))
 
     def _parse_judge_response(self, raw: str) -> dict[str, Any]:

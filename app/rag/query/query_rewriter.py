@@ -42,7 +42,7 @@ Latest user question:
 
 Standalone question:"""
 
-    def rewrite(self, question: str, chat_history: list[dict[str, Any]] | None = None) -> str:
+    async def rewrite(self, question: str, chat_history: list[dict[str, Any]] | None = None) -> str:
         """rewrite 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
         if not chat_history:
             return question
@@ -53,7 +53,7 @@ Standalone question:"""
 
         try:
             prompt = self.rewrite_prompt.format(history=history_text, question=question)
-            response = self.llm.invoke([HumanMessage(content=prompt)])
+            response = await self.llm.ainvoke([HumanMessage(content=prompt)])
             rewritten_query = str(response.content).strip()
             if not rewritten_query:
                 return question

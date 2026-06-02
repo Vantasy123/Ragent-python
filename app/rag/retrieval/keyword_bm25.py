@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -13,7 +14,7 @@ from app.domain.models import KnowledgeChunk
 
 logger = logging.getLogger(__name__)
 
-try:  # pragma: no cover - 依赖缺失时应降级到纯向量检索。
+try:  # pragma: no cover - 依赖缺失时由调用方降级到纯向量检索。
     import jieba
     from rank_bm25 import BM25Okapi
 except Exception:  # pragma: no cover
@@ -31,28 +32,40 @@ class KeywordChunk:
 
 
 class KeywordBM25Retriever:
-    """基于数据库分块的临时 BM25 检索器。
+    """基于数据库分块的 BM25 检索器。
 
-    当前实现每次按范围读取一批启用分块并构建 BM25，避免新增索引表或数据库迁移。
+    缓存按知识库维度保存 BM25 索引，并用分块最大更新时间判断是否失效。
     """
 
-    def retrieve(self, query: str, kb_id: str | None = None, top_k: int = 10) -> list[KeywordChunk]:
-        """执行关键词检索；任何异常由调用方记录后降级。"""
+    _cache: dict[str, dict[str, Any]] = {}
+    _locks: dict[str, asyncio.Lock] = {}
 
-        query_tokens = self.tokenize(query)
+    async def retrieve(self, query: str, kb_id: str | None = None, top_k: int = 10) -> list[KeywordChunk]:
+        """执行关键词检索；异常由调用方记录后降级。"""
+
+        query_tokens = await asyncio.to_thread(self.tokenize, query)
         if not query_tokens:
             return []
         if BM25Okapi is None:
             raise RuntimeError("rank-bm25 或 jieba 未安装")
 
-        rows = self._load_chunks(kb_id)
-        if not rows:
+        cache_key = kb_id or "__all__"
+        latest_update = await asyncio.to_thread(self._get_latest_update_time, kb_id)
+        cached = await self._get_or_build_cache(cache_key, kb_id, latest_update)
+        bm25 = cached["bm25"]
+        corpus_tokens = cached["corpus_tokens"]
+        rows = cached["rows"]
+
+        if bm25 is None or not rows:
             return []
 
-        corpus_tokens = [self.tokenize(row.content) for row in rows]
-        bm25 = BM25Okapi(corpus_tokens)
-        scores = bm25.get_scores(query_tokens)
-        ranked = sorted(enumerate(scores), key=lambda item: float(item[1]), reverse=True)
+        def _score_and_rank():
+            # BM25 评分是同步 CPU 计算，放到线程池避免阻塞 FastAPI 事件循环。
+            scores = bm25.get_scores(query_tokens)
+            ranked_list = sorted(enumerate(scores), key=lambda item: float(item[1]), reverse=True)
+            return scores, ranked_list
+
+        scores, ranked = await asyncio.to_thread(_score_and_rank)
         query_token_set = set(query_tokens)
 
         results: list[KeywordChunk] = []
@@ -70,9 +83,61 @@ class KeywordBM25Retriever:
                     "chunkIndex": row.chunk_index,
                 }
             )
-            # 小语料下 BM25 可能出现 0 或负分，叠加命中词数保证精确匹配不会被误过滤。
+            # 小语料下 BM25 可能出现 0 或负分，叠加命中词数避免精准匹配被误过滤。
             results.append(KeywordChunk(content=row.content, score=float(score) + overlap, metadata=metadata))
         return results
+
+    async def _get_or_build_cache(self, cache_key: str, kb_id: str | None, latest_update: Any) -> dict[str, Any]:
+        """读取或重建 BM25 缓存；同一知识库只允许一个协程执行重建。"""
+
+        cached = self._cache.get(cache_key)
+        if self._is_cache_valid(cached, latest_update):
+            return cached
+
+        lock = self._locks.setdefault(cache_key, asyncio.Lock())
+        async with lock:
+            # 获得锁后再检查一次，避免并发请求排队后重复构建同一个 BM25 索引。
+            cached = self._cache.get(cache_key)
+            if self._is_cache_valid(cached, latest_update):
+                return cached
+
+            rows = await asyncio.to_thread(self._load_chunks, kb_id)
+            if not rows:
+                cache_entry = {
+                    "bm25": None,
+                    "corpus_tokens": [],
+                    "rows": [],
+                    "last_updated_at": latest_update,
+                }
+                self._cache[cache_key] = cache_entry
+                return cache_entry
+
+            def _build_bm25():
+                # 分词和索引构建同样放在线程池执行。
+                tokens_list = [self.tokenize(row.content) for row in rows]
+                bm25_obj = BM25Okapi(tokens_list)
+                return bm25_obj, tokens_list
+
+            bm25, corpus_tokens = await asyncio.to_thread(_build_bm25)
+            cache_entry = {
+                "bm25": bm25,
+                "corpus_tokens": corpus_tokens,
+                "rows": rows,
+                "last_updated_at": latest_update,
+            }
+            self._cache[cache_key] = cache_entry
+            return cache_entry
+
+    def _is_cache_valid(self, cached: dict[str, Any] | None, latest_update: Any) -> bool:
+        """判断缓存是否仍可复用；空知识库的空缓存也应命中。"""
+
+        if cached is None:
+            return False
+
+        cached_update = cached.get("last_updated_at")
+        if latest_update is None:
+            return cached_update is None
+        return cached_update is not None and latest_update <= cached_update
 
     def tokenize(self, text: str) -> list[str]:
         """中英文统一分词；空文本返回空列表。"""
@@ -87,7 +152,7 @@ class KeywordBM25Retriever:
         return [token for token in tokens if len(token) > 1 or token.isdigit()]
 
     def _load_chunks(self, kb_id: str | None) -> list[KnowledgeChunk]:
-        """从数据库读取启用分块，按配置限制最大参与 BM25 的数量。"""
+        """从数据库读取启用分块，按配置限制最大参评 BM25 的数量。"""
 
         limit = max(1, int(getattr(settings, "HYBRID_KEYWORD_MAX_CHUNKS", 3000)))
         db = SessionLocal()
@@ -96,5 +161,19 @@ class KeywordBM25Retriever:
             if kb_id:
                 query = query.filter(KnowledgeChunk.kb_id == kb_id)
             return query.order_by(KnowledgeChunk.updated_at.desc()).limit(limit).all()
+        finally:
+            db.close()
+
+    def _get_latest_update_time(self, kb_id: str | None) -> Any:
+        """从数据库读取该知识库所有启用分块的最晚更新时间。"""
+
+        from sqlalchemy import func
+
+        db = SessionLocal()
+        try:
+            query = db.query(func.max(KnowledgeChunk.updated_at)).filter(KnowledgeChunk.enabled.is_(True))
+            if kb_id:
+                query = query.filter(KnowledgeChunk.kb_id == kb_id)
+            return query.scalar()
         finally:
             db.close()

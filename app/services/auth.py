@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.domain.models import RevokedToken, User
 from app.services.runtime_state import is_token_revoked_cached, mark_token_revoked, remember_token_revoked
-from app.services.security import create_token, hash_password, verify_password
+from app.services.security import create_token, hash_password, validate_production_security_settings, verify_password
 
 
 def ensure_default_admin(db: Session) -> None:
@@ -24,6 +24,8 @@ def ensure_default_admin(db: Session) -> None:
     这个函数会在应用启动时执行一次。如果默认管理员已存在则直接返回，
     不会覆盖用户后来手动修改过的昵称、密码或角色。
     """
+    validate_production_security_settings()
+
     admin = db.query(User).filter(User.username == settings.DEFAULT_ADMIN_USERNAME).first()
     if admin:
         return

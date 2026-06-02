@@ -17,6 +17,55 @@ from typing import Any
 from app.core.config import settings
 
 
+WEAK_JWT_SECRETS = {
+    "",
+    "ragent-python-secret",
+    "please-change-this-secret",
+    "replace-with-at-least-32-random-characters",
+}
+WEAK_ADMIN_PASSWORDS = {
+    "",
+    "admin",
+    "admin123",
+    "password",
+    "123456",
+    "replace-with-a-strong-admin-password",
+}
+MIN_PRODUCTION_JWT_SECRET_LENGTH = 32
+MIN_PRODUCTION_ADMIN_PASSWORD_LENGTH = 12
+
+
+def is_production_environment() -> bool:
+    """判断当前是否属于生产环境，用于启用更严格的安全门禁。"""
+
+    environment = str(settings.ENVIRONMENT or "").strip().lower()
+    debug_enabled = str(settings.DEBUG or "").strip().lower() in {"1", "true", "yes", "on"}
+    return environment in {"prod", "production"} and not debug_enabled
+
+
+def validate_production_security_settings() -> None:
+    """生产环境启动前检查关键凭证，避免弱默认配置被带到线上。"""
+
+    if not is_production_environment():
+        return
+
+    problems: list[str] = []
+    jwt_secret = str(settings.JWT_SECRET or "")
+    admin_password = str(settings.DEFAULT_ADMIN_PASSWORD or "")
+
+    if jwt_secret in WEAK_JWT_SECRETS:
+        problems.append("JWT_SECRET 仍使用默认值或占位值")
+    if len(jwt_secret) < MIN_PRODUCTION_JWT_SECRET_LENGTH:
+        problems.append(f"JWT_SECRET 长度必须至少 {MIN_PRODUCTION_JWT_SECRET_LENGTH} 个字符")
+    if admin_password in WEAK_ADMIN_PASSWORDS:
+        problems.append("DEFAULT_ADMIN_PASSWORD 仍使用默认弱密码")
+    if len(admin_password) < MIN_PRODUCTION_ADMIN_PASSWORD_LENGTH:
+        problems.append(f"DEFAULT_ADMIN_PASSWORD 长度必须至少 {MIN_PRODUCTION_ADMIN_PASSWORD_LENGTH} 个字符")
+
+    if problems:
+        raise RuntimeError("生产安全配置不合规：" + "；".join(problems))
+
+
 def hash_password(password: str, salt: str | None = None) -> str:
     """hash_password 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     salt = salt or base64.urlsafe_b64encode(os.urandom(16)).decode("utf-8")

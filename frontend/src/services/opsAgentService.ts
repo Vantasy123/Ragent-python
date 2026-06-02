@@ -23,6 +23,23 @@ export type OpsAgentEvent = {
   durationMs?: number
 }
 
+export type OpsApprovalAuditLog = {
+  id: string
+  runId: string
+  toolCallId?: string
+  toolName: string
+  args: Record<string, unknown>
+  status: string
+  requestedBy?: string
+  requestedByName?: string
+  approvedBy?: string
+  approvedByName?: string
+  comment?: string
+  message?: string
+  createdAt?: string
+  decidedAt?: string
+}
+
 export const AGENT_THEME: Record<string, { color: string; label: string; icon: string }> = {
   orchestrator: { color: '#2563eb', label: '编排智能体', icon: '控' },
   diagnostics: { color: '#16a34a', label: '诊断智能体', icon: '诊' },
@@ -83,6 +100,9 @@ export const opsAgentService = {
   },
   async approve(runId: string, payload: { approvalId: string; approved: boolean; comment?: string }) {
     return unwrapData(await apiClient.post(`/agent/ops/runs/${runId}/approve`, payload), {})
+  },
+  async approvalAudit(params: { pageNo?: number; pageSize?: number; status?: string; runId?: string } = {}) {
+    return unwrapData(await apiClient.get('/agent/ops/approvals/audit', { params }), { items: [], total: 0, pageNo: 1, pageSize: 20 })
   },
   async stop(runId: string) {
     return unwrapData(await apiClient.post(`/agent/ops/runs/${runId}/stop`), {})

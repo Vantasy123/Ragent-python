@@ -165,6 +165,7 @@ export const useChatStore = defineStore('chat', () => {
         type: approved ? 'approval_approved' : 'approval_rejected',
         channel: 'ops',
         runId: currentRunId.value,
+        approvalId: event.approvalId,
         agent: event.agent,
         tool: event.tool,
         content: approved ? '审批已通过，等待后端继续执行。' : '审批已拒绝，危险操作不会执行。',

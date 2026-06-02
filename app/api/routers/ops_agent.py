@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -47,6 +47,20 @@ def list_tools(db: Session = Depends(get_db), _: User = Depends(require_admin)):
 def list_agents(db: Session = Depends(get_db), _: User = Depends(require_admin)):
     """list_agents 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
     return success(OpsAgentService(db).list_agents())
+
+
+@router.get("/approvals/audit")
+def list_approval_audit_logs(
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
+    status: str | None = Query(None),
+    runId: str | None = Query(None),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """查询运维审批审计记录，供管理员追溯高风险工具的人工决定。"""
+
+    return success(OpsAgentService(db).list_approval_audit_logs(page_no=pageNo, page_size=pageSize, status_filter=status, run_id=runId))
 
 
 @router.post("/chat")

@@ -48,6 +48,10 @@ export const adminService = {
   async updateSettings(payload: Record<string, unknown>) {
     return unwrapData(await apiClient.put('/rag/settings', payload), {})
   },
+  async settingAuditLogs(pageNo = 1, pageSize = 10, key = '') {
+    const suffix = key ? `&key=${encodeURIComponent(key)}` : ''
+    return toTablePageResult(await apiClient.get(`/rag/settings/audit?pageNo=${pageNo}&pageSize=${pageSize}${suffix}`))
+  },
   async traces(pageNo = 1, pageSize = 20) {
     return toTablePageResult(await apiClient.get(`/rag/traces/runs?pageNo=${pageNo}&pageSize=${pageSize}`))
   },
@@ -118,6 +122,15 @@ export const adminService = {
   },
   async users(pageNo = 1, pageSize = 100) {
     return toTablePageResult(await apiClient.get(`/users?pageNo=${pageNo}&pageSize=${pageSize}`))
+  },
+  async userAuditLogs(pageNo = 1, pageSize = 10, targetUserId = '', action = '') {
+    const params = new URLSearchParams({
+      pageNo: String(pageNo),
+      pageSize: String(pageSize),
+    })
+    if (targetUserId) params.set('targetUserId', targetUserId)
+    if (action) params.set('action', action)
+    return toTablePageResult(await apiClient.get(`/users/audit?${params.toString()}`))
   },
   createUser(payload: Record<string, unknown>) {
     return apiClient.post('/users', payload)

@@ -11,7 +11,7 @@ from app.domain.models import EvaluationBatchRun, EvaluationCase, EvaluationCase
 from app.services.evaluation_service import EvaluationService
 
 
-class HybridEvaluationMetricTest(unittest.TestCase):
+class HybridEvaluationMetricTest(unittest.IsolatedAsyncioTestCase):
     """验证离线混合评估指标和批次聚合逻辑。"""
 
     def setUp(self) -> None:
@@ -37,11 +37,11 @@ class HybridEvaluationMetricTest(unittest.TestCase):
 
         self.db.close()
 
-    def test_retrieval_metrics_use_expected_chunk_ids_and_keywords(self) -> None:
+    async def test_retrieval_metrics_use_expected_chunk_ids_and_keywords(self) -> None:
         """检索命中、召回、MRR 和上下文指标应按期望片段与关键词计算。"""
 
         service = EvaluationService(self.db)
-        metrics, issues, score = service.evaluate_case_metrics(
+        metrics, issues, score = await service.evaluate_case_metrics(
             self.case,
             "可以通过重排模型提升相关性。",
             [
@@ -58,19 +58,19 @@ class HybridEvaluationMetricTest(unittest.TestCase):
         self.assertGreater(score, 0.0)
         self.assertTrue(any(issue["issueKey"] == "low_trace_success" for issue in issues))
 
-    def test_missing_expected_chunk_ids_skips_chunk_based_metrics(self) -> None:
+    async def test_missing_expected_chunk_ids_skips_chunk_based_metrics(self) -> None:
         """未配置期望片段时，chunkId 指标应跳过且不参与归一化。"""
 
         self.case.expected_chunk_ids = []
         service = EvaluationService(self.db)
 
-        metrics, _, score = service.evaluate_case_metrics(self.case, "答案提到了重排。", [], trace=None)
+        metrics, _, score = await service.evaluate_case_metrics(self.case, "答案提到了重排。", [], trace=None)
 
         self.assertEqual(metrics["hit_at_k"]["status"], "skipped")
         self.assertEqual(metrics["mrr"]["status"], "skipped")
         self.assertGreaterEqual(score, 0.0)
 
-    def test_invalid_judge_response_is_skipped(self) -> None:
+    async def test_invalid_judge_response_is_skipped(self) -> None:
         """裁判模型返回非法 JSON 时应降级为 skipped，而不是让评估失败。"""
 
         old_openai_key = settings.OPENAI_API_KEY
@@ -78,9 +78,11 @@ class HybridEvaluationMetricTest(unittest.TestCase):
         settings.OPENAI_API_KEY = "test-key"
         settings.SILICONFLOW_API_KEY = ""
         service = EvaluationService(self.db)
-        service._call_judge_model = lambda *_args, **_kwargs: "不是 JSON"  # type: ignore[method-assign]
+        async def mock_call(*_args, **_kwargs):
+            return "不是 JSON"
+        service._call_judge_model = mock_call  # type: ignore[method-assign]
         try:
-            metrics, issues, _ = service.evaluate_case_metrics(self.case, "答案", [], trace=None)
+            metrics, issues, _ = await service.evaluate_case_metrics(self.case, "答案", [], trace=None)
         finally:
             settings.OPENAI_API_KEY = old_openai_key
             settings.SILICONFLOW_API_KEY = old_siliconflow_key

@@ -150,9 +150,18 @@
                 {{ event.content }}
               </div>
 
-              <div v-if="isEventExpanded(event, index) && event.type === 'approval_required'" class="inline-actions mt-3">
-                <button class="btn btn-primary" @click="approve(event, true)">批准执行</button>
-                <button class="btn btn-danger" @click="approve(event, false)">拒绝</button>
+              <div v-if="isEventExpanded(event, index) && event.type === 'approval_required'" class="mt-3">
+                <div class="inline-actions">
+                  <button class="btn btn-primary" :disabled="isApprovalBusyOrHandled(event)" @click="approve(event, true)">
+                    批准执行
+                  </button>
+                  <button class="btn btn-danger" :disabled="isApprovalBusyOrHandled(event)" @click="approve(event, false)">
+                    拒绝
+                  </button>
+                </div>
+                <div v-if="approvalDecisionLabel(event)" class="mt-2 text-xs text-amber-600">
+                  {{ approvalDecisionLabel(event) }}
+                </div>
               </div>
             </article>
           </div>
@@ -190,6 +199,36 @@
             </div>
           </AsyncState>
         </SurfaceCard>
+        <SurfaceCard title="审批审计" subtitle="最近高风险运维工具的人工审批记录。">
+          <template #actions>
+            <button class="btn btn-secondary !px-3 !py-1 text-xs" @click="loadApprovalAudit">刷新</button>
+          </template>
+          <AsyncState :loading="loadingApprovalAudit" :empty="!approvalAuditItems.length" empty-title="暂无审批记录">
+            <div class="list-stack">
+              <article v-for="approval in approvalAuditItems" :key="approval.id" class="resource-item">
+                <div class="resource-item-row">
+                  <div>
+                    <div class="resource-title">{{ approval.toolName }}</div>
+                    <div class="resource-item-note mt-1">
+                      {{ approval.message || '未记录运行消息' }}
+                    </div>
+                  </div>
+                  <span class="status-badge" :class="approvalStatusClass(approval.status)">
+                    {{ approvalStatusLabel(approval.status) }}
+                  </span>
+                </div>
+                <div class="approval-audit-meta">
+                  <span>运行 {{ approval.runId }}</span>
+                  <span>申请人 {{ approval.requestedByName || '-' }}</span>
+                  <span>审批人 {{ approval.approvedByName || '-' }}</span>
+                  <span>{{ approval.decidedAt || approval.createdAt || '-' }}</span>
+                </div>
+                <div v-if="approval.comment" class="resource-item-note mt-2">意见：{{ approval.comment }}</div>
+                <DataPreview :data="approval.args || {}" />
+              </article>
+            </div>
+          </AsyncState>
+        </SurfaceCard>
       </div>
     </div>
   </section>
@@ -202,7 +241,7 @@ import DataPreview from '@/components/admin/DataPreview.vue'
 import KeyValueGrid from '@/components/admin/KeyValueGrid.vue'
 import PageHeader from '@/components/admin/PageHeader.vue'
 import SurfaceCard from '@/components/admin/SurfaceCard.vue'
-import { AGENT_THEME, opsAgentService, streamOpsAgent, type OpsAgentEvent } from '@/services/opsAgentService'
+import { AGENT_THEME, opsAgentService, streamOpsAgent, type OpsAgentEvent, type OpsApprovalAuditLog } from '@/services/opsAgentService'
 
 const message = ref('检查后端服务情况，并确认前端代理与数据库连接是否正常。')
 const autoExecuteReadOnly = ref(true)
@@ -211,8 +250,15 @@ const error = ref('')
 const events = ref<OpsAgentEvent[]>([])
 const tools = ref<Array<Record<string, any>>>([])
 const agentList = ref<Array<Record<string, any>>>([])
+const approvalAudit = ref<{ items: OpsApprovalAuditLog[]; total: number; pageNo: number; pageSize: number }>({
+  items: [],
+  total: 0,
+  pageNo: 1,
+  pageSize: 20,
+})
 const loadingTools = ref(false)
 const loadingAgents = ref(false)
+const loadingApprovalAudit = ref(false)
 const currentRunId = ref('')
 const runDetail = ref<Record<string, any> | null>(null)
 const currentStage = ref('')
@@ -220,6 +266,8 @@ const finalOutput = ref('')
 const showTimelineDetails = ref(false)
 const activeAgents = reactive(new Set<string>())
 const expandedTimelineKeys = reactive(new Set<string>())
+const approvalSubmittingId = ref('')
+const approvalDecisions = ref<Record<string, 'approved' | 'rejected'>>({})
 
 function getAgentColor(role: string): string {
   return AGENT_THEME[role]?.color || '#2563eb'
@@ -253,6 +301,8 @@ const normalizedToolCalls = computed(() =>
     }
   }),
 )
+
+const approvalAuditItems = computed(() => approvalAudit.value.items || [])
 
 const healthCards = computed(() => {
   const compose = events.value.find((event) => event.type === 'observation' && event.result?.data?.stdout)
@@ -303,6 +353,20 @@ async function loadAgents() {
   }
 }
 
+async function loadApprovalAudit() {
+  loadingApprovalAudit.value = true
+  try {
+    approvalAudit.value = (await opsAgentService.approvalAudit({ pageNo: 1, pageSize: 20 })) as {
+      items: OpsApprovalAuditLog[]
+      total: number
+      pageNo: number
+      pageSize: number
+    }
+  } finally {
+    loadingApprovalAudit.value = false
+  }
+}
+
 async function startRun() {
   running.value = true
   error.value = ''
@@ -314,6 +378,8 @@ async function startRun() {
   showTimelineDetails.value = false
   activeAgents.clear()
   expandedTimelineKeys.clear()
+  approvalSubmittingId.value = ''
+  approvalDecisions.value = {}
 
   try {
     // 事件流以回调方式逐条回放，页面只做增量渲染，不等待整轮结束再展示。
@@ -352,13 +418,36 @@ async function stopRun() {
 }
 
 async function approve(event: OpsAgentEvent, approved: boolean) {
-  if (!event.runId || !event.approvalId) return
-  await opsAgentService.approve(event.runId, {
-    approvalId: event.approvalId,
-    approved,
-    comment: approved ? '管理员批准执行' : '管理员拒绝执行',
-  })
-  await refreshRun()
+  if (!event.runId || !event.approvalId || isApprovalBusyOrHandled(event)) return
+  approvalSubmittingId.value = event.approvalId
+  try {
+    await opsAgentService.approve(event.runId, {
+      approvalId: event.approvalId,
+      approved,
+      comment: approved ? '管理员批准执行' : '管理员拒绝执行',
+    })
+    approvalDecisions.value = {
+      ...approvalDecisions.value,
+      [event.approvalId]: approved ? 'approved' : 'rejected',
+    }
+    await refreshRun()
+    await loadApprovalAudit()
+  } finally {
+    approvalSubmittingId.value = ''
+  }
+}
+
+function approvalDecisionLabel(event: OpsAgentEvent): string {
+  if (!event.approvalId) return ''
+  if (approvalSubmittingId.value === event.approvalId) return '审批提交中，请勿重复点击。'
+  const decision = approvalDecisions.value[event.approvalId]
+  if (decision === 'approved') return '审批已通过，不能重复提交。'
+  if (decision === 'rejected') return '审批已拒绝，不能重复提交。'
+  return ''
+}
+
+function isApprovalBusyOrHandled(event: OpsAgentEvent): boolean {
+  return Boolean(approvalDecisionLabel(event))
 }
 
 function formatStatus(status?: string): string {
@@ -386,6 +475,22 @@ function statusClass(status: string): string {
   if (status === 'success') return 'status-ok'
   if (status === 'failed') return 'status-danger'
   if (status === 'blocked') return 'status-warn'
+  return 'status-badge-neutral'
+}
+
+function approvalStatusLabel(status?: string): string {
+  const map: Record<string, string> = {
+    pending: '待审批',
+    approved: '已通过',
+    rejected: '已拒绝',
+  }
+  return map[String(status || '')] || status || '未知'
+}
+
+function approvalStatusClass(status?: string): string {
+  if (status === 'approved') return 'status-ok'
+  if (status === 'rejected') return 'status-danger'
+  if (status === 'pending') return 'status-warn'
   return 'status-badge-neutral'
 }
 
@@ -480,6 +585,7 @@ function timelineItemClass(event: OpsAgentEvent): string {
 onMounted(() => {
   loadTools()
   loadAgents()
+  loadApprovalAudit()
 })
 
 function formatRiskLevel(risk?: string): string {
@@ -605,6 +711,15 @@ function riskClass(risk?: string): string {
   font-weight: 700;
   color: #0f172a;
   line-height: 1.45;
+}
+
+.approval-audit-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: #64748b;
 }
 
 @media (max-width: 1024px) {

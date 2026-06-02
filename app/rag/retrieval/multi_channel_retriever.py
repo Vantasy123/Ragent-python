@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -51,7 +52,7 @@ class MultiChannelRetriever:
             self.embeddings = shared_embeddings
         return self.vector_store
 
-    def retrieve(
+    async def retrieve(
         self,
         query: str,
         kb_id: str | None = None,
@@ -63,45 +64,61 @@ class MultiChannelRetriever:
         effective_top_k = top_k if top_k is not None else get_runtime_settings().top_k
         logger.info("Starting multi-channel retrieval: top_k=%s query=%s", effective_top_k, query[:50])
 
-        vector_chunks: list[RetrievedChunk] = []
-        try:
-            self._ensure_vector_store()
-            if intent_nodes and kb_id:
-                vector_chunks.extend(self._intent_based_retrieve(query, kb_id, intent_nodes, effective_top_k))
+        tasks = []
 
-            vector_chunks.extend(self._global_vector_retrieve(query, collection_name or kb_id, effective_top_k))
-        except Exception as exc:
-            logger.error("Vector retrieval setup failed: %s", exc)
+        # 1. 向量检索通道
+        async def _vector_task():
+            chunks: list[RetrievedChunk] = []
+            try:
+                self._ensure_vector_store()
+                if intent_nodes and kb_id:
+                    chunks.extend(await self._intent_based_retrieve(query, kb_id, intent_nodes, effective_top_k))
+                chunks.extend(await self._global_vector_retrieve(query, collection_name or kb_id, effective_top_k))
+            except Exception as exc:
+                logger.error("Vector retrieval task failed: %s", exc)
+            return chunks
 
-        if not getattr(settings, "HYBRID_RETRIEVAL_ENABLED", True):
-            return self._rank_and_trim(vector_chunks, effective_top_k)
+        tasks.append(_vector_task())
 
-        keyword_chunks = self._keyword_retrieve(query, collection_name or kb_id, effective_top_k)
-        if not keyword_chunks:
+        # 2. 关键词检索通道
+        hybrid_enabled = getattr(settings, "HYBRID_RETRIEVAL_ENABLED", True)
+        if hybrid_enabled:
+            tasks.append(self._keyword_retrieve(query, collection_name or kb_id, effective_top_k))
+
+        # 并行拉起两路检索任务
+        results = await asyncio.gather(*tasks)
+        vector_chunks = results[0]
+        keyword_chunks = results[1] if len(results) > 1 else []
+
+        if not hybrid_enabled or not keyword_chunks:
             return self._rank_and_trim(vector_chunks, effective_top_k)
         if not vector_chunks:
             return self._rank_and_trim(keyword_chunks, effective_top_k)
 
         return self._rrf_fuse(vector_chunks, keyword_chunks, effective_top_k)
 
-    def _intent_based_retrieve(
+    async def _intent_based_retrieve(
         self,
         query: str,
         kb_id: str,
         intent_nodes: list[dict[str, Any]],
         top_k: int,
     ) -> list[RetrievedChunk]:
-        """_intent_based_retrieve 函数：执行检索逻辑，从知识库或索引中找出和用户问题最相关的内容。"""
+        """_intent_based_retrieve 函数：匹配意图特定节点的向量数据。"""
         chunks: list[RetrievedChunk] = []
 
         for node in intent_nodes:
             node_id = node.get("id")
             node_name = node.get("name", "")
-            # Milvus 侧把 kb_id 拉平成独立字段，检索时直接按字段过滤即可。
             filter_expr = f'kb_id == "{kb_id}"'
 
             try:
-                results = self.vector_store.similarity_search_with_score(query=query, k=top_k, filter=filter_expr)
+                results = await asyncio.to_thread(
+                    self.vector_store.similarity_search_with_score,
+                    query=query,
+                    k=top_k,
+                    filter=filter_expr
+                )
                 for doc, score in results:
                     chunks.append(
                         RetrievedChunk(
@@ -116,13 +133,18 @@ class MultiChannelRetriever:
 
         return chunks
 
-    def _global_vector_retrieve(self, query: str, collection_name: str | None, top_k: int) -> list[RetrievedChunk]:
-        """_global_vector_retrieve 函数：执行检索逻辑，从知识库或索引中找出和用户问题最相关的内容。"""
+    async def _global_vector_retrieve(self, query: str, collection_name: str | None, top_k: int) -> list[RetrievedChunk]:
+        """_global_vector_retrieve 函数：全局向量库召回。"""
         chunks: list[RetrievedChunk] = []
 
         try:
             filter_expr = f'kb_id == "{collection_name}"' if collection_name else None
-            results = self.vector_store.similarity_search_with_score(query=query, k=top_k * 2, filter=filter_expr)
+            results = await asyncio.to_thread(
+                self.vector_store.similarity_search_with_score,
+                query=query,
+                k=top_k * 2,
+                filter=filter_expr
+            )
             for doc, score in results:
                 chunks.append(
                     RetrievedChunk(
@@ -147,11 +169,11 @@ class MultiChannelRetriever:
                 seen_contents[content_key] = chunk
         return list(seen_contents.values())
 
-    def _keyword_retrieve(self, query: str, kb_id: str | None, top_k: int) -> list[RetrievedChunk]:
+    async def _keyword_retrieve(self, query: str, kb_id: str | None, top_k: int) -> list[RetrievedChunk]:
         """执行 BM25 关键词召回；失败时返回空列表，保留向量检索可用性。"""
 
         try:
-            rows = self.keyword_retriever.retrieve(query=query, kb_id=kb_id, top_k=top_k * 2)
+            rows = await self.keyword_retriever.retrieve(query=query, kb_id=kb_id, top_k=top_k * 2)
         except Exception as exc:
             logger.warning("Keyword BM25 retrieval failed, fallback to vector only: %s", exc)
             return []

@@ -8,13 +8,15 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import SessionLocal
-from app.domain.models import SystemSetting, User
+from app.core.time_utils import to_shanghai_iso
+from app.domain.models import SystemSetting, SystemSettingAuditLog, User
 
 EditableSettingKey = str
 SettingsPayload = dict[str, Any]
@@ -44,6 +46,9 @@ class SettingDefinition(dict):
     value_type: str
     restart_required: bool
     default_factory: Callable[[], Any]
+    min_value: int | float | None
+    max_value: int | float | None
+    sensitive: bool
 
 
 EDITABLE_SETTINGS: dict[EditableSettingKey, SettingDefinition] = {
@@ -55,6 +60,8 @@ EDITABLE_SETTINGS: dict[EditableSettingKey, SettingDefinition] = {
         "value_type": "int",
         "restart_required": False,
         "default_factory": lambda: settings.DEFAULT_TOP_K,
+        "min_value": 1,
+        "max_value": 50,
     },
     "rag.temperature": {
         "key": "rag.temperature",
@@ -64,6 +71,8 @@ EDITABLE_SETTINGS: dict[EditableSettingKey, SettingDefinition] = {
         "value_type": "float",
         "restart_required": False,
         "default_factory": lambda: settings.TEMPERATURE,
+        "min_value": 0.0,
+        "max_value": 2.0,
     },
     "memory.historyKeepTurns": {
         "key": "memory.historyKeepTurns",
@@ -73,6 +82,8 @@ EDITABLE_SETTINGS: dict[EditableSettingKey, SettingDefinition] = {
         "value_type": "int",
         "restart_required": False,
         "default_factory": lambda: settings.HISTORY_KEEP_TURNS,
+        "min_value": 1,
+        "max_value": 50,
     },
     "memory.summaryEnabled": {
         "key": "memory.summaryEnabled",
@@ -82,6 +93,8 @@ EDITABLE_SETTINGS: dict[EditableSettingKey, SettingDefinition] = {
         "value_type": "bool",
         "restart_required": True,
         "default_factory": lambda: settings.SUMMARY_ENABLED,
+        "min_value": None,
+        "max_value": None,
     },
     "memory.summaryStartTurns": {
         "key": "memory.summaryStartTurns",
@@ -91,6 +104,8 @@ EDITABLE_SETTINGS: dict[EditableSettingKey, SettingDefinition] = {
         "value_type": "int",
         "restart_required": True,
         "default_factory": lambda: settings.SUMMARY_START_TURNS,
+        "min_value": 1,
+        "max_value": 100,
     },
     "memory.summaryMaxChars": {
         "key": "memory.summaryMaxChars",
@@ -100,6 +115,8 @@ EDITABLE_SETTINGS: dict[EditableSettingKey, SettingDefinition] = {
         "value_type": "int",
         "restart_required": True,
         "default_factory": lambda: settings.SUMMARY_MAX_CHARS,
+        "min_value": 50,
+        "max_value": 4000,
     },
     "memory.titleMaxLength": {
         "key": "memory.titleMaxLength",
@@ -109,6 +126,8 @@ EDITABLE_SETTINGS: dict[EditableSettingKey, SettingDefinition] = {
         "value_type": "int",
         "restart_required": False,
         "default_factory": lambda: settings.TITLE_MAX_LENGTH,
+        "min_value": 10,
+        "max_value": 120,
     },
     "upload.maxFileSize": {
         "key": "upload.maxFileSize",
@@ -118,6 +137,8 @@ EDITABLE_SETTINGS: dict[EditableSettingKey, SettingDefinition] = {
         "value_type": "int",
         "restart_required": False,
         "default_factory": lambda: settings.MAX_FILE_SIZE,
+        "min_value": 1024,
+        "max_value": 1024 * 1024 * 1024,
     },
     "upload.maxRequestSize": {
         "key": "upload.maxRequestSize",
@@ -127,8 +148,24 @@ EDITABLE_SETTINGS: dict[EditableSettingKey, SettingDefinition] = {
         "value_type": "int",
         "restart_required": False,
         "default_factory": lambda: settings.MAX_REQUEST_SIZE,
+        "min_value": 1024,
+        "max_value": 2 * 1024 * 1024 * 1024,
     },
 }
+
+SENSITIVE_AUDIT_VALUE = "<redacted>"
+SENSITIVE_SETTING_KEY_PARTS = (
+    "password",
+    "secret",
+    "token",
+    "credential",
+    "apikey",
+    "accesskey",
+    "privatekey",
+    "databaseurl",
+    "connectionstring",
+    "dsn",
+)
 
 
 def _coerce_value(raw_value: Any, value_type: str) -> Any:
@@ -156,6 +193,27 @@ def _coerce_value(raw_value: Any, value_type: str) -> Any:
     return str(raw_value)
 
 
+def _coerce_setting_value(definition: SettingDefinition, raw_value: Any) -> Any:
+    """按配置定义完成类型转换和边界校验。"""
+
+    value = _coerce_value(raw_value, definition["value_type"])
+    min_value = definition.get("min_value")
+    max_value = definition.get("max_value")
+    if min_value is None and max_value is None:
+        return value
+    if min_value is not None and value < min_value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{definition['label']} must be greater than or equal to {min_value}",
+        )
+    if max_value is not None and value > max_value:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{definition['label']} must be less than or equal to {max_value}",
+        )
+    return value
+
+
 def _serialize_value(value: Any, value_type: str) -> str:
     """_serialize_value 函数：计算或整理一段辅助数据，让主流程保持清晰。"""
     if value_type == "bool":
@@ -173,6 +231,7 @@ def _default_editable_values() -> dict[str, dict[str, Any]]:
 
 def _readonly_values() -> dict[str, Any]:
     """_readonly_values 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
+    database_info = _redact_database_url(settings.DATABASE_URL)
     return {
         "models": {
             "defaultChatModel": settings.CHAT_MODEL,
@@ -208,9 +267,57 @@ def _readonly_values() -> dict[str, Any]:
             "persistence": True,
         },
         "security": {
-            "databaseUrl": settings.DATABASE_URL,
+            "databaseConfigured": database_info["configured"],
+            "databaseScheme": database_info["scheme"],
+            "databaseHost": database_info["host"],
+            "databaseUrl": database_info["redactedUrl"],
             "jwtSecretConfigured": bool(settings.JWT_SECRET),
         },
+    }
+
+
+def _redact_database_url(database_url: str) -> dict[str, Any]:
+    """脱敏数据库连接串，只保留排障需要的协议和主机信息。"""
+
+    if not database_url:
+        return {
+            "configured": False,
+            "scheme": "",
+            "host": "",
+            "redactedUrl": "",
+        }
+
+    try:
+        parsed = urlsplit(database_url)
+    except ValueError:
+        return {
+            "configured": True,
+            "scheme": "",
+            "host": "",
+            "redactedUrl": "<invalid-database-url>",
+        }
+
+    # SQLite 路径可能包含本机目录结构，后台展示时只说明使用本地文件。
+    if parsed.scheme.startswith("sqlite"):
+        return {
+            "configured": True,
+            "scheme": parsed.scheme,
+            "host": "local-file",
+            "redactedUrl": f"{parsed.scheme}:///<local-file>",
+        }
+
+    host = parsed.hostname or ""
+    port = f":{parsed.port}" if parsed.port else ""
+    netloc = f"{host}{port}"
+    if parsed.username or parsed.password:
+        netloc = f"***:***@{host}{port}"
+
+    redacted_url = urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+    return {
+        "configured": True,
+        "scheme": parsed.scheme,
+        "host": host,
+        "redactedUrl": redacted_url,
     }
 
 
@@ -224,6 +331,8 @@ def _build_meta() -> SettingsMeta:
             "type": definition["value_type"],
             "editable": True,
             "restartRequired": definition["restart_required"],
+            "min": definition.get("min_value"),
+            "max": definition.get("max_value"),
         }
     return {
         "rag": editable_meta.get("rag", {}),
@@ -253,7 +362,7 @@ def _apply_overrides(values: dict[str, dict[str, Any]], overrides: dict[str, Sys
     }
     for key, row in overrides.items():
         definition = EDITABLE_SETTINGS[key]
-        merged.setdefault(definition["group"], {})[definition["field"]] = _coerce_value(row.value, row.value_type)
+        merged.setdefault(definition["group"], {})[definition["field"]] = _coerce_setting_value(definition, row.value)
     return merged
 
 
@@ -328,9 +437,10 @@ def update_settings(db: Session, user: User, payload: SettingsPayload) -> dict[s
     flattened = _flatten_update_payload(payload)
     overrides = _load_db_overrides(db)
     changed_keys: list[str] = []
+    audit_logs: list[SystemSettingAuditLog] = []
     for key, raw_value in flattened.items():
         definition = EDITABLE_SETTINGS[key]
-        coerced = _coerce_value(raw_value, definition["value_type"])
+        coerced = _coerce_setting_value(definition, raw_value)
         serialized = _serialize_value(coerced, definition["value_type"])
         row = overrides.get(key)
         if row is None:
@@ -342,12 +452,17 @@ def update_settings(db: Session, user: User, payload: SettingsPayload) -> dict[s
             )
             db.add(row)
             changed_keys.append(key)
+            audit_logs.append(_build_setting_audit_log(key, "", serialized, definition["value_type"], user))
             continue
         if row.value != serialized or row.value_type != definition["value_type"]:
+            old_value = row.value
             row.value = serialized
             row.value_type = definition["value_type"]
             row.updated_by = user.id
             changed_keys.append(key)
+            audit_logs.append(_build_setting_audit_log(key, old_value, serialized, definition["value_type"], user))
+    if audit_logs:
+        db.add_all(audit_logs)
     db.commit()
     restart_required = any(EDITABLE_SETTINGS[key]["restart_required"] for key in changed_keys)
     return {
@@ -355,5 +470,81 @@ def update_settings(db: Session, user: User, payload: SettingsPayload) -> dict[s
         "changedKeys": changed_keys,
         "restartRequired": restart_required,
     }
+
+
+def list_setting_audit_logs(
+    db: Session,
+    page_no: int = 1,
+    page_size: int = 20,
+    key: str | None = None,
+) -> dict[str, Any]:
+    """分页查询后台设置变更审计日志。"""
+
+    safe_page_no = max(1, int(page_no or 1))
+    safe_page_size = min(max(1, int(page_size or 20)), 100)
+    query = db.query(SystemSettingAuditLog)
+    normalized_key = (key or "").strip()
+    if normalized_key:
+        query = query.filter(SystemSettingAuditLog.key == normalized_key)
+
+    total = query.count()
+    rows = (
+        query.order_by(SystemSettingAuditLog.created_at.desc(), SystemSettingAuditLog.id.desc())
+        .offset((safe_page_no - 1) * safe_page_size)
+        .limit(safe_page_size)
+        .all()
+    )
+    return {
+        "items": [_serialize_setting_audit_log(row) for row in rows],
+        "total": total,
+        "pageNo": safe_page_no,
+        "pageSize": safe_page_size,
+    }
+
+
+def _serialize_setting_audit_log(row: SystemSettingAuditLog) -> dict[str, Any]:
+    """把设置审计 ORM 记录转换为前端友好的字段。"""
+
+    return {
+        "id": row.id,
+        "key": row.key,
+        "oldValue": _redact_setting_audit_value(row.key, row.old_value),
+        "newValue": _redact_setting_audit_value(row.key, row.new_value),
+        "valueType": row.value_type,
+        "changedBy": row.changed_by,
+        "createdAt": to_shanghai_iso(row.created_at),
+    }
+
+
+def _build_setting_audit_log(
+    key: str,
+    old_value: str,
+    new_value: str,
+    value_type: str,
+    user: User,
+) -> SystemSettingAuditLog:
+    """构造设置变更审计记录，集中控制审计字段。"""
+
+    return SystemSettingAuditLog(
+        key=key,
+        old_value=_redact_setting_audit_value(key, old_value),
+        new_value=_redact_setting_audit_value(key, new_value),
+        value_type=value_type,
+        changed_by=user.id,
+    )
+
+
+def _redact_setting_audit_value(key: str, value: str | None) -> str:
+    """敏感配置审计只记录发生过变更，不保留明文值。"""
+
+    if value in (None, ""):
+        return ""
+    definition = EDITABLE_SETTINGS.get(key)
+    if definition and definition.get("sensitive"):
+        return SENSITIVE_AUDIT_VALUE
+    normalized_key = "".join(ch for ch in key.lower() if ch.isalnum())
+    if any(part in normalized_key for part in SENSITIVE_SETTING_KEY_PARTS):
+        return SENSITIVE_AUDIT_VALUE
+    return str(value)
 
 

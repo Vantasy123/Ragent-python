@@ -189,8 +189,11 @@
                 <div class="font-semibold text-amber-500">此高危运维操作需要您的授权审批</div>
                 <div class="text-[10px] text-zinc-500 mt-0.5">风险等级: {{ event.riskLevel || '未标注' }} | 审批ID: {{ event.approvalId || '-' }}</div>
                 <div class="mt-2 flex gap-2">
-                  <button class="btn btn-primary !px-2.5 !py-1 text-[10px]" :disabled="chat.approvalLoading === event.approvalId" @click="approve(event, true)">批准执行</button>
-                  <button class="btn btn-secondary !px-2.5 !py-1 text-[10px]" :disabled="chat.approvalLoading === event.approvalId" @click="approve(event, false)">拒绝执行</button>
+                  <button class="btn btn-primary !px-2.5 !py-1 text-[10px]" :disabled="isApprovalBusyOrHandled(event)" @click="approve(event, true)">批准执行</button>
+                  <button class="btn btn-secondary !px-2.5 !py-1 text-[10px]" :disabled="isApprovalBusyOrHandled(event)" @click="approve(event, false)">拒绝执行</button>
+                </div>
+                <div v-if="approvalDecisionLabel(event)" class="mt-2 text-[10px] text-amber-600">
+                  {{ approvalDecisionLabel(event) }}
                 </div>
               </div>
             </div>
@@ -288,6 +291,21 @@ async function clearConversation(id: string) {
 
 async function approve(event: OpsAgentEvent, approved: boolean) {
   await chat.approveOpsEvent(event, approved)
+}
+
+function approvalDecisionLabel(event: OpsAgentEvent) {
+  if (!event.approvalId) return ''
+  for (let index = chat.opsEvents.length - 1; index >= 0; index -= 1) {
+    const item = chat.opsEvents[index]
+    if (item.approvalId === event.approvalId && ['approval_approved', 'approval_rejected'].includes(item.type)) {
+      return item.type === 'approval_approved' ? '审批已通过，不能重复提交。' : '审批已拒绝，不能重复提交。'
+    }
+  }
+  return ''
+}
+
+function isApprovalBusyOrHandled(event: OpsAgentEvent) {
+  return chat.approvalLoading === event.approvalId || Boolean(approvalDecisionLabel(event))
 }
 
 function agentTheme(agent?: string) {

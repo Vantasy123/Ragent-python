@@ -39,7 +39,7 @@ from app.services.common import page, success
 from app.services.dependencies import require_admin
 from app.services.knowledge_service import KnowledgeService
 from app.services.settings_service import get_runtime_settings
-from app.services.storage import create_storage_service
+from app.services.storage import UploadValidationError, create_storage_service
 
 router = APIRouter(tags=["knowledge"])
 storage = create_storage_service()
@@ -167,8 +167,10 @@ async def upload_document(
             max_file_size=runtime_settings.max_file_size,
             max_request_size=runtime_settings.max_request_size,
         )
+    except UploadValidationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=413, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     doc = service.create_document(
         kb_id=kb_id,
         doc_name=file.filename or "upload.bin",

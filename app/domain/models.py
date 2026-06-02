@@ -45,6 +45,24 @@ class User(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class UserAuditLog(Base):
+    """UserAuditLog 数据库模型：保存后台用户管理增删改的审计记录。"""
+    __tablename__ = "user_audit_log"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    # create/update/delete，表示用户管理动作类型。
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 被操作用户的信息快照；即使用户已删除，也能按 ID 和用户名追溯。
+    target_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_username: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 修改前后只保存非敏感字段，密码仅记录 passwordChanged 标记。
+    old_value: Mapped[dict] = mapped_column(JSON, default=dict)
+    new_value: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 执行操作的管理员用户 ID。
+    changed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
+
+
 class RevokedToken(Base):
     """RevokedToken 数据库模型：映射一张业务表，字段定义决定 MySQL 中保存什么数据，以及服务层如何读取和写入。"""
     __tablename__ = "revoked_tokens"
@@ -71,6 +89,22 @@ class SystemSetting(Base):
     # 最后修改该配置的用户 ID，便于审计配置变更。
     updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, onupdate=utc_now_naive, nullable=False)
+
+
+class SystemSettingAuditLog(Base):
+    """SystemSettingAuditLog 数据库模型：保存后台运行时配置变更的审计记录。"""
+    __tablename__ = "system_setting_audit_log"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    # 被修改的配置键，例如 rag.topK；用于按配置项追溯历史。
+    key: Mapped[str] = mapped_column(String(128), nullable=False)
+    # 修改前后的序列化值，均来自可编辑运行时配置，不保存外部密钥。
+    old_value: Mapped[str] = mapped_column(Text, default="")
+    new_value: Mapped[str] = mapped_column(Text, default="")
+    value_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 执行修改的管理员用户 ID，用于后台审计和排障。
+    changed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
 
 
 class KnowledgeBase(Base, TimestampMixin):

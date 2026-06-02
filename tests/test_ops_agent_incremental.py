@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import unittest
 
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 
+from app.api.routers.ops_agent import router as ops_agent_router
 from app.agents.base import AgentStep, ToolSpec
 from app.agents.ops_graph import OpsLangGraphRunner
 from app.agents.orchestrator import StepExecutorAgent
 from app.agents.tool_registry import ToolCallRequest, ToolCallResult, UnifiedTool, UnifiedToolRegistry
-from app.core.database import Base
+from app.core.database import Base, get_db
 from app.domain.models import AgentApproval, AgentRun, AgentToolCall, EvaluationRun, TraceRun, TraceSpan, User
+from app.services.dependencies import require_admin
 from app.services.evaluation_service import EvaluationService
 from app.services.ops_agent_service import OpsAgentService
 
@@ -197,7 +202,7 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
     """验证审批执行链路和新 trace 结构。"""
 
     def setUp(self) -> None:
-        self.engine = create_engine("sqlite:///:memory:")
+        self.engine = create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False}, poolclass=StaticPool)
         Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine)
         self.db = self.Session()
@@ -256,6 +261,63 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         self.db.refresh(self.tool_call)
         self.assertEqual(self.tool_call.approval_status, "rejected")
         self.assertEqual(self.tool_call.error_message, "approval_rejected")
+
+    async def test_processed_approval_cannot_be_submitted_again(self) -> None:
+        """已处理审批不能重复提交，避免写操作被二次执行。"""
+
+        service = OpsAgentService(self.db)
+        toolkit = FakeToolkit()
+        service.toolkit = toolkit
+
+        await service.approve(self.run.id, self.approval.id, True, "同意", self.user)
+        toolkit.called = False
+
+        with self.assertRaises(HTTPException) as context:
+            await service.approve(self.run.id, self.approval.id, True, "再次同意", self.user)
+
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertIn("重复", context.exception.detail)
+        self.assertFalse(toolkit.called)
+
+    async def test_approval_audit_lists_operator_and_filters_status(self) -> None:
+        """审批审计应能追溯审批人、工具参数和审批状态。"""
+
+        service = OpsAgentService(self.db)
+        toolkit = FakeToolkit()
+        service.toolkit = toolkit
+
+        await service.approve(self.run.id, self.approval.id, False, "风险过高", self.user)
+
+        payload = service.list_approval_audit_logs(page_no=1, page_size=10, status_filter="rejected")
+
+        self.assertEqual(payload["total"], 1)
+        item = payload["items"][0]
+        self.assertEqual(item["id"], self.approval.id)
+        self.assertEqual(item["runId"], self.run.id)
+        self.assertEqual(item["toolName"], "write_tool")
+        self.assertEqual(item["args"], {"service": "api"})
+        self.assertEqual(item["status"], "rejected")
+        self.assertEqual(item["requestedByName"], "admin")
+        self.assertEqual(item["approvedByName"], "admin")
+        self.assertEqual(item["comment"], "风险过高")
+        self.assertEqual(item["message"], "重启服务")
+        self.assertTrue(item["decidedAt"])
+
+    def test_approval_audit_router_returns_admin_page(self) -> None:
+        """审批审计接口应向管理员返回分页数据。"""
+
+        app = FastAPI()
+        app.include_router(ops_agent_router)
+        app.dependency_overrides[get_db] = lambda: self.db
+        app.dependency_overrides[require_admin] = lambda: self.user
+
+        response = TestClient(app).get("/agent/ops/approvals/audit", params={"pageNo": 1, "pageSize": 10})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["code"], 200)
+        self.assertEqual(body["data"]["total"], 1)
+        self.assertEqual(body["data"]["items"][0]["status"], "pending")
 
     def test_evaluation_reads_tool_name_from_structured_trace(self) -> None:
         span = TraceSpan(

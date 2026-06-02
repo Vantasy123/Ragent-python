@@ -95,6 +95,29 @@ def run_compatible_migrations(engine: Engine) -> None:
             updated_at DATETIME NOT NULL
         )
         """,
+        """
+        CREATE TABLE IF NOT EXISTS system_setting_audit_log (
+            id VARCHAR(64) PRIMARY KEY,
+            key VARCHAR(128) NOT NULL,
+            old_value TEXT,
+            new_value TEXT,
+            value_type VARCHAR(32) NOT NULL,
+            changed_by VARCHAR(64),
+            created_at DATETIME NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS user_audit_log (
+            id VARCHAR(64) PRIMARY KEY,
+            action VARCHAR(32) NOT NULL,
+            target_user_id VARCHAR(64) NOT NULL,
+            target_username VARCHAR(64) NOT NULL,
+            old_value JSON,
+            new_value JSON,
+            changed_by VARCHAR(64),
+            created_at DATETIME NOT NULL
+        )
+        """,
     ]
     with engine.begin() as conn:
         for statement in statements:

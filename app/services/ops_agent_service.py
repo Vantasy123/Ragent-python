@@ -267,6 +267,8 @@ class OpsAgentService:
         approval = self.db.query(AgentApproval).filter(AgentApproval.id == approval_id, AgentApproval.run_id == run_id).first()
         if not approval:
             raise HTTPException(status_code=404, detail="审批记录不存在")
+        if approval.status != "pending":
+            raise HTTPException(status_code=400, detail="审批已处理，不能重复提交")
 
         approval.status = "approved" if approved else "rejected"
         approval.approved_by = user.id
@@ -319,6 +321,69 @@ class OpsAgentService:
             )
         self.db.commit()
         return {"status": "approved", "result": result}
+
+    def list_approval_audit_logs(
+        self,
+        page_no: int = 1,
+        page_size: int = 20,
+        status_filter: str | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """分页查询运维审批记录，把高风险工具的人工决定暴露给后台审计页。"""
+
+        safe_page_no = max(1, int(page_no or 1))
+        safe_page_size = min(max(1, int(page_size or 20)), 100)
+        query = self.db.query(AgentApproval)
+        normalized_status = (status_filter or "").strip().lower()
+        if normalized_status:
+            query = query.filter(AgentApproval.status == normalized_status)
+        normalized_run_id = (run_id or "").strip()
+        if normalized_run_id:
+            query = query.filter(AgentApproval.run_id == normalized_run_id)
+
+        total = query.count()
+        rows = (
+            query.order_by(AgentApproval.decided_at.desc(), AgentApproval.created_at.desc(), AgentApproval.id.desc())
+            .offset((safe_page_no - 1) * safe_page_size)
+            .limit(safe_page_size)
+            .all()
+        )
+        users = self._users_by_id({user_id for row in rows for user_id in (row.requested_by, row.approved_by) if user_id})
+        return {
+            "items": [self._serialize_approval_audit_log(row, users) for row in rows],
+            "total": total,
+            "pageNo": safe_page_no,
+            "pageSize": safe_page_size,
+        }
+
+    def _users_by_id(self, user_ids: set[str]) -> dict[str, User]:
+        """批量读取审计涉及的用户，避免列表序列化时反复查询数据库。"""
+
+        if not user_ids:
+            return {}
+        return {row.id: row for row in self.db.query(User).filter(User.id.in_(user_ids)).all()}
+
+    def _serialize_approval_audit_log(self, row: AgentApproval, users: dict[str, User]) -> dict[str, Any]:
+        """把审批记录转换成前端可展示的审计字段。"""
+
+        requester = users.get(row.requested_by or "")
+        approver = users.get(row.approved_by or "")
+        return {
+            "id": row.id,
+            "runId": row.run_id,
+            "toolCallId": row.tool_call_id,
+            "toolName": row.tool_name,
+            "args": row.args or {},
+            "status": row.status,
+            "requestedBy": row.requested_by,
+            "requestedByName": requester.username if requester else row.requested_by,
+            "approvedBy": row.approved_by,
+            "approvedByName": approver.username if approver else row.approved_by,
+            "comment": row.comment or "",
+            "message": row.run.message if row.run else "",
+            "createdAt": to_shanghai_iso(row.created_at),
+            "decidedAt": to_shanghai_iso(row.decided_at),
+        }
 
     def stop(self, run_id: str, user: User) -> dict[str, Any]:
         """将指定运维运行标记为停止。"""

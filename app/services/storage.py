@@ -11,6 +11,34 @@ from pathlib import Path
 
 from fastapi import UploadFile
 
+ALLOWED_UPLOAD_SUFFIXES = frozenset(
+    {
+        ".csv",
+        ".doc",
+        ".docx",
+        ".json",
+        ".log",
+        ".markdown",
+        ".md",
+        ".pdf",
+        ".txt",
+        ".xls",
+        ".xlsx",
+        ".yaml",
+        ".yml",
+    }
+)
+
+
+class UploadValidationError(ValueError):
+    """上传文件校验失败时携带 HTTP 状态码，便于路由层返回准确错误。"""
+
+    def __init__(self, message: str, status_code: int = 400):
+        """初始化上传校验错误。"""
+
+        super().__init__(message)
+        self.status_code = status_code
+
 
 class LocalStorageService:
     """把上传的源文件保存到配置指定的本地上传目录。"""
@@ -27,20 +55,33 @@ class LocalStorageService:
         max_request_size: int | None = None,
     ) -> tuple[str, int]:
         """save_upload 函数：把处理结果保存到文件、数据库或缓存中，作为后续流程的输入。"""
-        suffix = Path(upload.filename or "").suffix
+        suffix = self._normalize_upload_suffix(upload.filename)
         filename = f"{uuid.uuid4()}{suffix}"
         target = self.base_dir / filename
         content = await upload.read()
         content_size = len(content)
+        if content_size == 0:
+            raise UploadValidationError("File is empty", status_code=400)
         if max_request_size is not None and content_size > max_request_size:
-            raise ValueError("File exceeds maxRequestSize")
+            raise UploadValidationError("File exceeds maxRequestSize", status_code=413)
         if max_file_size is not None and content_size > max_file_size:
-            raise ValueError("File exceeds maxFileSize")
+            raise UploadValidationError("File exceeds maxFileSize", status_code=413)
         existing = self._find_existing_by_hash(content)
         if existing is not None:
             return str(existing), content_size
         target.write_bytes(content)
         return str(target), content_size
+
+    def _normalize_upload_suffix(self, filename: str | None) -> str:
+        """校验并规范化上传文件扩展名，避免危险文件进入知识库处理链路。"""
+
+        suffix = Path(filename or "").suffix.lower()
+        if not suffix:
+            raise UploadValidationError("Unsupported file type: missing extension", status_code=415)
+        if suffix not in ALLOWED_UPLOAD_SUFFIXES:
+            allowed = ", ".join(sorted(ALLOWED_UPLOAD_SUFFIXES))
+            raise UploadValidationError(f"Unsupported file type: {suffix}; allowed: {allowed}", status_code=415)
+        return suffix
 
     def delete_file(self, file_path: str) -> bool:
         """delete_file 函数：删除业务记录，并在需要时同步清理关联资源或缓存。"""

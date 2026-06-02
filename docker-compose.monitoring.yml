@@ -94,6 +94,38 @@ services:
       - ragent-network
     restart: unless-stopped
 
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: ragent-node-exporter
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro  # 移除 ,rslave 属性，规避 WSL2 挂载传播致命报错
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+    ports:
+      - "9100:9100"
+    networks:
+      - ragent-network
+    restart: unless-stopped
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1  # 使用本地已持有的兼容版本
+    container_name: ragent-cadvisor
+    volumes:
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - "8080:8080"
+    privileged: true  # 容器监控特权
+    networks:
+      - ragent-network
+    restart: unless-stopped
+
+
 volumes:
   prometheus_data:
     driver: local
