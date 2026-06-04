@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
 from app.core.database import Base
-from app.domain.models import EvaluationBatchRun, EvaluationCase, EvaluationCaseResult, EvaluationDataset
+from app.domain.models import EvaluationBatchRun, EvaluationCase, EvaluationCaseResult, EvaluationDataset, TraceRun, TraceSpan
 from app.services.evaluation_service import EvaluationService
 
 
@@ -69,6 +69,45 @@ class HybridEvaluationMetricTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metrics["hit_at_k"]["status"], "skipped")
         self.assertEqual(metrics["mrr"]["status"], "skipped")
         self.assertGreaterEqual(score, 0.0)
+
+    async def test_execution_effect_metrics_read_trace_and_tool_outputs(self) -> None:
+        """执行效果指标应读取 Trace 状态、工具输出和最终回答交付情况。"""
+
+        trace = TraceRun(status="success", total_duration_ms=1200)
+        tool_span = TraceSpan(
+            trace_run=trace,
+            operation="tool_call",
+            status="success",
+            duration_ms=120,
+            metadata_json={
+                "input": {"toolName": "restart_service", "args": {"service": "api"}},
+                "output": {"result": {"success": True, "summary": "服务已重启", "data": {"status": "running"}}},
+                "context": {"riskLevel": "write"},
+            },
+        )
+        generation_span = TraceSpan(
+            trace_run=trace,
+            operation="generation",
+            status="success",
+            duration_ms=300,
+            metadata_json={"output": {"content": "服务已恢复，并给出后续观察建议。"}},
+        )
+        self.db.add_all([trace, tool_span, generation_span])
+        self.db.commit()
+
+        service = EvaluationService(self.db)
+        metrics, issues, score = await service.evaluate_case_metrics(
+            self.case,
+            "服务已重启，当前状态正常，并建议继续观察五分钟。",
+            [{"chunkId": "chunk-2", "preview": "重排模型可以提升相关性"}],
+            trace=trace,
+        )
+
+        self.assertEqual(metrics["execution_success"]["score"], 1.0)
+        self.assertEqual(metrics["tool_effectiveness"]["score"], 1.0)
+        self.assertEqual(metrics["execution_error_free"]["score"], 1.0)
+        self.assertGreater(score, 0.0)
+        self.assertFalse([issue for issue in issues if issue["issueKey"] == "low_execution_success"])
 
     async def test_invalid_judge_response_is_skipped(self) -> None:
         """裁判模型返回非法 JSON 时应降级为 skipped，而不是让评估失败。"""

@@ -107,6 +107,25 @@ class SystemSettingAuditLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
 
 
+class SecurityAuditLog(Base):
+    """SecurityAuditLog 数据库模型：保存导出、查询等跨模块安全操作审计记录。"""
+    __tablename__ = "security_audit_log"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    # 审计域，例如 export、access、security，便于安全中心按场景过滤。
+    category: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 具体动作，例如 export_audit_csv。
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 被操作对象类型和对象 ID，可为空；导出类动作通常记录导出的审计域。
+    target_type: Mapped[str] = mapped_column(String(64), default="")
+    target_id: Mapped[str] = mapped_column(String(128), default="")
+    # 操作上下文，不能保存密码、Token 等敏感明文。
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+    # 执行操作的管理员用户 ID。
+    operator_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
+
+
 class KnowledgeBase(Base, TimestampMixin):
     """KnowledgeBase 数据库模型：映射一张业务表，字段定义决定 MySQL 中保存什么数据，以及服务层如何读取和写入。"""
     __tablename__ = "knowledge_base"
@@ -513,6 +532,11 @@ class EvaluationBatchRun(Base, TimestampMixin):
     summary: Mapped[str] = mapped_column(Text, default="")
     error_message: Mapped[str] = mapped_column(Text, default="")
     created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 外部 OpenAI Evals 运行信息，便于把平台评估报告挂回本地批次。
+    openai_eval_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    openai_eval_run_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    openai_eval_status: Mapped[str] = mapped_column(String(32), default="")
+    openai_eval_report: Mapped[dict] = mapped_column(JSON, default=dict)
 
     dataset: Mapped["EvaluationDataset"] = relationship(back_populates="batch_runs")
     results: Mapped[list["EvaluationCaseResult"]] = relationship(back_populates="batch_run", cascade="all, delete-orphan")

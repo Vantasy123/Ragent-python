@@ -120,6 +120,15 @@ export const adminService = {
   async evaluationCaseResults(batchId: string, pageNo = 1, pageSize = 100) {
     return toTablePageResult(await apiClient.get(`/admin/evaluations/batch-runs/${batchId}/results?pageNo=${pageNo}&pageSize=${pageSize}`))
   },
+  async openAIEvalsPreview(batchId: string) {
+    return unwrapData(await apiClient.get(`/admin/evaluations/batch-runs/${batchId}/openai-evals/preview`), {})
+  },
+  async startOpenAIEvals(batchId: string) {
+    return unwrapData(await apiClient.post(`/admin/evaluations/batch-runs/${batchId}/openai-evals/start`), {})
+  },
+  async syncOpenAIEvals(batchId: string) {
+    return unwrapData(await apiClient.post(`/admin/evaluations/batch-runs/${batchId}/openai-evals/sync`), {})
+  },
   async users(pageNo = 1, pageSize = 100) {
     return toTablePageResult(await apiClient.get(`/users?pageNo=${pageNo}&pageSize=${pageSize}`))
   },
@@ -131,6 +140,29 @@ export const adminService = {
     if (targetUserId) params.set('targetUserId', targetUserId)
     if (action) params.set('action', action)
     return toTablePageResult(await apiClient.get(`/users/audit?${params.toString()}`))
+  },
+  async opsApprovalAuditLogs(pageNo = 1, pageSize = 10, status = '', runId = '') {
+    const params = new URLSearchParams({
+      pageNo: String(pageNo),
+      pageSize: String(pageSize),
+    })
+    if (status) params.set('status', status)
+    if (runId) params.set('runId', runId)
+    return toTablePageResult(await apiClient.get(`/agent/ops/approvals/audit?${params.toString()}`))
+  },
+  async securityAuditEvents(pageNo = 1, pageSize = 10, category = '', action = '', targetType = '', targetId = '') {
+    const params = new URLSearchParams({
+      pageNo: String(pageNo),
+      pageSize: String(pageSize),
+    })
+    if (category) params.set('category', category)
+    if (action) params.set('action', action)
+    if (targetType) params.set('targetType', targetType)
+    if (targetId) params.set('targetId', targetId)
+    return toTablePageResult(await apiClient.get(`/admin/security-audit/events?${params.toString()}`))
+  },
+  async recordSecurityAuditEvent(payload: Record<string, unknown>) {
+    return unwrapData(await apiClient.post('/admin/security-audit/events', payload), {})
   },
   createUser(payload: Record<string, unknown>) {
     return apiClient.post('/users', payload)

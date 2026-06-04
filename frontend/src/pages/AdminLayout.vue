@@ -69,6 +69,7 @@ const primaryItems = [
 
 const operationItems = [
   { to: '/admin/users', label: '用户管理', hint: '账号' },
+  { to: '/admin/security-audit', label: '安全审计', hint: '追责' },
   { to: '/admin/intent-tree', label: '意图树', hint: '总览' },
   { to: '/admin/intent-list', label: '意图列表', hint: '编辑' },
   { to: '/admin/sample-questions', label: '示例问题', hint: '提示' },

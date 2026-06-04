@@ -15,6 +15,10 @@ def run_compatible_migrations(engine: Engine) -> None:
         "ALTER TABLE knowledge_document ADD COLUMN content_hash VARCHAR(128)",
         "ALTER TABLE message_feedback ADD COLUMN reason_tags TEXT",
         "ALTER TABLE message_feedback ADD COLUMN expected_answer TEXT",
+        "ALTER TABLE evaluation_batch_run ADD COLUMN openai_eval_id VARCHAR(128)",
+        "ALTER TABLE evaluation_batch_run ADD COLUMN openai_eval_run_id VARCHAR(128)",
+        "ALTER TABLE evaluation_batch_run ADD COLUMN openai_eval_status VARCHAR(32)",
+        "ALTER TABLE evaluation_batch_run ADD COLUMN openai_eval_report JSON",
         """
         CREATE TABLE IF NOT EXISTS user_memory (
             id VARCHAR(64) PRIMARY KEY,
@@ -72,6 +76,10 @@ def run_compatible_migrations(engine: Engine) -> None:
             summary TEXT,
             error_message TEXT,
             created_by VARCHAR(64),
+            openai_eval_id VARCHAR(128),
+            openai_eval_run_id VARCHAR(128),
+            openai_eval_status VARCHAR(32),
+            openai_eval_report JSON,
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL
         )
@@ -115,6 +123,18 @@ def run_compatible_migrations(engine: Engine) -> None:
             old_value JSON,
             new_value JSON,
             changed_by VARCHAR(64),
+            created_at DATETIME NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS security_audit_log (
+            id VARCHAR(64) PRIMARY KEY,
+            category VARCHAR(64) NOT NULL,
+            action VARCHAR(64) NOT NULL,
+            target_type VARCHAR(64),
+            target_id VARCHAR(128),
+            detail JSON,
+            operator_id VARCHAR(64),
             created_at DATETIME NOT NULL
         )
         """,

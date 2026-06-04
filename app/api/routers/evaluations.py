@@ -18,6 +18,7 @@ from app.domain.models import EvaluationRun, User
 from app.services.common import page, success
 from app.services.dependencies import require_admin
 from app.services.evaluation_service import EvaluationService
+from app.services.openai_evals_service import OpenAIEvalsService
 
 router = APIRouter(prefix="/admin/evaluations", tags=["evaluations"])
 
@@ -225,6 +226,36 @@ def list_case_results(
     service = EvaluationService(db)
     rows, total = service.list_case_results(batch_id, pageNo, pageSize)
     return success(page([service.case_result_to_dict(row) for row in rows], total, pageNo, pageSize))
+
+
+@router.get("/batch-runs/{batch_id}/openai-evals/preview")
+def preview_openai_evals(batch_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """预览本地批次将提交到 OpenAI Evals 的请求体，不触发外部调用。"""
+
+    try:
+        return success(OpenAIEvalsService(db).preview_batch_payload(batch_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/batch-runs/{batch_id}/openai-evals/start")
+def start_openai_evals(batch_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """启动 OpenAI Evals 远程复评，并保存 eval/run 标识。"""
+
+    try:
+        return success(OpenAIEvalsService(db).start_batch_eval(batch_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/batch-runs/{batch_id}/openai-evals/sync")
+def sync_openai_evals(batch_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """同步 OpenAI Evals 远程运行状态。"""
+
+    try:
+        return success(OpenAIEvalsService(db).sync_batch_eval(batch_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/runs")

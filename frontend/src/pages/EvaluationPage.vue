@@ -286,6 +286,16 @@
                   <DataPreview :data="{ 指标均值: selectedBatch.metricSummary || {}, 批次摘要: selectedBatch.summary }" />
                 </SurfaceCard>
 
+                <SurfaceCard compact title="OpenAI Evals 复评" subtitle="把本地批次输出提交到 OpenAI Evals 做外部裁判和报告追踪。">
+                  <div class="inline-actions mb-3">
+                    <button class="btn btn-secondary !py-1 !px-2.5 text-xs" :disabled="openaiEvalLoading" @click="previewOpenAIEvals">预览请求</button>
+                    <button class="btn btn-primary !py-1 !px-2.5 text-xs" :disabled="openaiEvalLoading" @click="startOpenAIEvals">启动复评</button>
+                    <button class="btn btn-secondary !py-1 !px-2.5 text-xs" :disabled="openaiEvalLoading || !selectedBatch.openaiEval?.runId" @click="syncOpenAIEvals">同步状态</button>
+                  </div>
+                  <KeyValueGrid :items="openaiEvalFacts" />
+                  <DataPreview v-if="openaiEvalPreview" class="mt-3" :data="openaiEvalPreview" />
+                </SurfaceCard>
+
                 <div class="meta-label !text-slate-500 mt-4">用例评测记录</div>
                 <div class="table-wrap">
                   <table class="data-table">
@@ -293,6 +303,9 @@
                       <tr>
                         <th class="cell-truncate">问题</th>
                         <th class="cell-nowrap">综合评分</th>
+                        <th class="cell-nowrap">执行成功</th>
+                        <th class="cell-nowrap">工具有效</th>
+                        <th class="cell-nowrap">无错误</th>
                         <th class="cell-nowrap">检索命中</th>
                         <th class="cell-nowrap">上下文召回</th>
                         <th class="cell-nowrap">忠实度</th>
@@ -304,6 +317,9 @@
                       <tr v-for="item in selectedBatch.results || []" :key="item.id">
                         <td class="cell-truncate text-slate-800" :title="item.question">{{ truncate(item.question, 34) }}</td>
                         <td class="cell-nowrap cell-mono font-bold text-slate-700">{{ scoreText(item.overallScore) }}</td>
+                        <td class="cell-nowrap cell-mono text-slate-500">{{ metricScore(item, 'execution_success') }}</td>
+                        <td class="cell-nowrap cell-mono text-slate-500">{{ metricScore(item, 'tool_effectiveness') }}</td>
+                        <td class="cell-nowrap cell-mono text-slate-500">{{ metricScore(item, 'execution_error_free') }}</td>
                         <td class="cell-nowrap cell-mono text-slate-500">{{ metricScore(item, 'hit_at_k') }}</td>
                         <td class="cell-nowrap cell-mono text-slate-500">{{ metricScore(item, 'context_recall') }}</td>
                         <td class="cell-nowrap cell-mono text-slate-500">{{ metricScore(item, 'faithfulness') }}</td>
@@ -392,6 +408,12 @@ type EvaluationBatch = {
   overallScore: number
   metricSummary?: Record<string, number>
   summary?: string
+  openaiEval?: {
+    evalId?: string
+    runId?: string
+    status?: string
+    report?: Record<string, any>
+  }
   results?: Array<Record<string, any>>
 }
 
@@ -416,9 +438,11 @@ const loadingDetail = ref(false)
 const detailError = ref('')
 const caseLoading = ref(false)
 const batchLoading = ref(false)
+const openaiEvalLoading = ref(false)
 const selectedRun = ref<EvaluationRun | null>(null)
 const selectedDataset = ref<EvaluationDataset | null>(null)
 const selectedBatch = ref<EvaluationBatch | null>(null)
+const openaiEvalPreview = ref<Record<string, any> | null>(null)
 const datasetTagsText = ref('')
 const expectedChunkIdsText = ref('')
 const expectedKeywordsText = ref('')
@@ -459,6 +483,18 @@ const batchFacts = computed(() => {
     { label: '完成用例', value: `${batch.completedCases}/${batch.totalCases}` },
     { label: '失败用例', value: batch.failedCases },
     { label: '摘要', value: batch.summary || '-' },
+  ]
+})
+
+const openaiEvalFacts = computed(() => {
+  const remote = selectedBatch.value?.openaiEval
+  const report = remote?.report || {}
+  return [
+    { label: '远程状态', value: remote?.status || '未启动' },
+    { label: 'Eval ID', value: remote?.evalId || '-' },
+    { label: 'Run ID', value: remote?.runId || '-' },
+    { label: '报告链接', value: report.reportUrl || '-' },
+    { label: '结果统计', value: JSON.stringify(report.resultCounts || {}) },
   ]
 })
 
@@ -632,6 +668,7 @@ async function openBatch(batchId: string) {
   batchLoading.value = true
   try {
     selectedBatch.value = (await adminService.evaluationBatchRun(batchId)) as EvaluationBatch
+    openaiEvalPreview.value = null
   } finally {
     batchLoading.value = false
   }
@@ -640,6 +677,40 @@ async function openBatch(batchId: string) {
 async function viewBatchDetails(batchId: string) {
   batchDrawerOpen.value = true
   await openBatch(batchId)
+}
+
+async function previewOpenAIEvals() {
+  if (!selectedBatch.value) return
+  openaiEvalLoading.value = true
+  try {
+    openaiEvalPreview.value = await adminService.openAIEvalsPreview(selectedBatch.value.id)
+  } finally {
+    openaiEvalLoading.value = false
+  }
+}
+
+async function startOpenAIEvals() {
+  if (!selectedBatch.value) return
+  openaiEvalLoading.value = true
+  try {
+    const remote = await adminService.startOpenAIEvals(selectedBatch.value.id)
+    selectedBatch.value.openaiEval = remote
+    await openBatch(selectedBatch.value.id)
+  } finally {
+    openaiEvalLoading.value = false
+  }
+}
+
+async function syncOpenAIEvals() {
+  if (!selectedBatch.value) return
+  openaiEvalLoading.value = true
+  try {
+    const remote = await adminService.syncOpenAIEvals(selectedBatch.value.id)
+    selectedBatch.value.openaiEval = remote
+    await openBatch(selectedBatch.value.id)
+  } finally {
+    openaiEvalLoading.value = false
+  }
 }
 
 function resetDatasetForm() {
@@ -728,6 +799,7 @@ function formatDimension(dimension?: string) {
     outcome: '结果',
     process: '过程',
     tool: '工具使用',
+    execution: '执行效果',
     system: '系统',
     retrieval: '检索',
     answer: '答案',

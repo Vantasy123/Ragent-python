@@ -65,6 +65,8 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         ensure_default_admin(db)
+        from app.services.evaluation_service import ensure_default_evaluation_dataset
+        ensure_default_evaluation_dataset(db)
     finally:
         db.close()
 

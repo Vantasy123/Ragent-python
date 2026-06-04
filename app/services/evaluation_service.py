@@ -126,6 +126,7 @@ class EvaluationService:
         metrics.extend(self._outcome_metrics(run, trace, assistant_message, issues))
         metrics.extend(self._process_metrics(run, trace, issues))
         metrics.extend(self._tool_metrics(run, trace, issues))
+        metrics.extend(self._execution_metrics(run, trace, assistant_message, issues))
         metrics.extend(self._system_metrics(run, trace, issues))
 
         run.overall_score = round(sum(metric.score for metric in metrics) / max(len(metrics), 1), 4)
@@ -540,6 +541,11 @@ class EvaluationService:
         batch = self.get_batch_run(batch_id)
         if not batch:
             return None
+
+        # 同步数据集到 LangSmith
+        if batch.dataset:
+            self._sync_to_langsmith_dataset(batch.dataset)
+
         cases = (
             self.db.query(EvaluationCase)
             .filter(EvaluationCase.dataset_id == batch.dataset_id, EvaluationCase.enabled.is_(True))
@@ -582,6 +588,13 @@ class EvaluationService:
                         execution.get("trace"),
                     )
 
+                    # 注入 langchainRunId 到 evidence 中
+                    lc_run_id = execution.get("langchainRunId")
+                    if lc_run_id:
+                        for m_key, m_val in metrics.items():
+                            if isinstance(m_val, dict) and "evidence" in m_val:
+                                m_val["evidence"]["langchainRunId"] = lc_run_id
+
                     db_result = local_db.query(EvaluationCaseResult).filter(EvaluationCaseResult.id == result.id).first()
                     if db_result:
                         db_result.trace_id = execution.get("traceId")
@@ -592,6 +605,10 @@ class EvaluationService:
                         db_result.overall_score = score
                         db_result.status = "completed"
                     local_db.commit()
+
+                    # 上传 metrics 到 LangSmith 作为 feedback
+                    if lc_run_id:
+                        self._upload_metrics_to_langsmith(lc_run_id, metrics)
 
                     async with batch_lock:
                         batch.completed_cases += 1
@@ -635,32 +652,138 @@ class EvaluationService:
         self._finalize_batch(batch)
         self.db.commit()
         self.db.refresh(batch)
+
+        # 自动触发 OpenAI Evals 并轮询同步至终态
+        if settings.OPENAI_EVALS_ENABLED:
+            try:
+                from app.services.openai_evals_service import OpenAIEvalsService
+                eval_service = OpenAIEvalsService(self.db)
+                completed_results = [r for r in batch.results if r.status == "completed" and (r.answer or "").strip()]
+                if completed_results:
+                    eval_service.start_batch_eval(batch.id)
+                    # 轮询 10 次，每次间隔 3 秒
+                    for _ in range(10):
+                        await asyncio.sleep(3)
+                        state = eval_service.sync_batch_eval(batch.id)
+                        if state.get("status") in ("completed", "failed", "cancelled"):
+                            break
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error("Auto OpenAI Evals trigger/poll failed: %s", e, exc_info=True)
+
         return batch
+
+    def _sync_to_langsmith_dataset(self, dataset: EvaluationDataset, ls_dataset_name: str | None = None) -> str | None:
+        """增量同步本地数据集与用例至 LangSmith。"""
+        if not settings.LANGCHAIN_TRACING_V2 or not settings.LANGCHAIN_API_KEY:
+            return None
+
+        try:
+            from langsmith import Client
+            client = Client(api_key=settings.LANGCHAIN_API_KEY, api_url=settings.LANGCHAIN_ENDPOINT)
+            
+            name = ls_dataset_name or dataset.name
+            
+            if not client.has_dataset(dataset_name=name):
+                ls_dataset = client.create_dataset(
+                    dataset_name=name,
+                    description=dataset.description or f"Synced from local database dataset ID: {dataset.id}"
+                )
+            else:
+                ls_dataset = client.read_dataset(dataset_name=name)
+
+            existing_examples = list(client.list_examples(dataset_id=ls_dataset.id))
+            existing_questions = set()
+            for ex in existing_examples:
+                if ex.inputs and isinstance(ex.inputs, dict):
+                    q = ex.inputs.get("question") or ex.inputs.get("input")
+                    if q:
+                        existing_questions.add(q)
+
+            for case in dataset.cases:
+                if not case.enabled:
+                    continue
+                if case.question in existing_questions:
+                    continue
+                
+                client.create_example(
+                    inputs={"question": case.question},
+                    outputs={
+                        "expected_answer": case.expected_answer or "",
+                        "expected_keywords": case.expected_keywords or []
+                    },
+                    dataset_id=ls_dataset.id,
+                    metadata={
+                        "local_case_id": case.id,
+                        "tags": case.tags or []
+                    }
+                )
+            return str(ls_dataset.id)
+        except Exception as exc:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error("LangSmith dataset sync failed: %s", exc, exc_info=True)
+            return None
+
+    def _upload_metrics_to_langsmith(self, run_id: str, metrics: dict[str, Any]) -> None:
+        """回传本地计算得到的评估指标到 LangSmith 作为 Feedback。"""
+        if not settings.LANGCHAIN_TRACING_V2 or not settings.LANGCHAIN_API_KEY or not run_id:
+            return
+
+        try:
+            from langsmith import Client
+            client = Client(api_key=settings.LANGCHAIN_API_KEY, api_url=settings.LANGCHAIN_ENDPOINT)
+
+            for key, metric_val in metrics.items():
+                if not isinstance(metric_val, dict) or metric_val.get("status") == "skipped":
+                    continue
+                
+                score = metric_val.get("score")
+                if score is None:
+                    continue
+
+                client.create_feedback(
+                    run_id=run_id,
+                    key=key,
+                    score=float(score),
+                    comment=metric_val.get("reason") or ""
+                )
+        except Exception as exc:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error("LangSmith feedback upload failed: %s", exc, exc_info=True)
 
     async def _execute_case(self, case: EvaluationCase, user_id: str | None, db: Session) -> dict[str, Any]:
         """通过项目真实聊天链路执行单条评估用例，并收集回答与 Trace。"""
 
         from app.services.chat_service import ConversationService, stream_chat
+        from langchain_core.tracers.context import collect_runs
 
         conversation = ConversationService(db).create_conversation(user_id, f"评估：{case.question[:28]}")
         final_answer = ""
         token_parts: list[str] = []
         trace_id = ""
-        async for event in stream_chat(
-            db,
-            conversation.id,
-            case.question,
-            task_id=f"eval-{case.id}",
-            deep_thinking=False,
-        ):
-            if event.get("traceId"):
-                trace_id = str(event["traceId"])
-            if event.get("type") == "final_answer":
-                final_answer = str(event.get("content") or "")
-            elif event.get("type") == "token" and not final_answer:
-                token_parts.append(str(event.get("content") or ""))
-            elif event.get("type") == "error":
-                raise RuntimeError(str(event.get("content") or "评估用例执行失败"))
+        langchain_run_id = None
+        
+        with collect_runs() as cb:
+            async for event in stream_chat(
+                db,
+                conversation.id,
+                case.question,
+                task_id=f"eval-{case.id}",
+                deep_thinking=False,
+            ):
+                if event.get("traceId"):
+                    trace_id = str(event["traceId"])
+                if event.get("type") == "final_answer":
+                    final_answer = str(event.get("content") or "")
+                elif event.get("type") == "token" and not final_answer:
+                    token_parts.append(str(event.get("content") or ""))
+                elif event.get("type") == "error":
+                    raise RuntimeError(str(event.get("content") or "评估用例执行失败"))
+
+            if cb.traced_runs:
+                langchain_run_id = str(cb.traced_runs[0].id)
 
         answer = final_answer or "".join(token_parts)
         trace = db.query(TraceRun).filter(TraceRun.id == trace_id).first() if trace_id else None
@@ -669,7 +792,139 @@ class EvaluationService:
             "traceId": trace_id or None,
             "trace": trace,
             "retrievedContexts": self._retrieved_contexts(trace) if trace else [],
+            "langchainRunId": langchain_run_id,
         }
+
+    def _execution_effect_case_metrics(self, answer: str, trace: TraceRun | None) -> dict[str, Any]:
+        """评估真实 Trace 的执行效果，重点看任务是否跑通、工具是否产出有效结果。"""
+        if not trace:
+            return {
+                "execution_success": self._skipped_metric("执行成功率", "No trace recorded"),
+                "tool_effectiveness": self._skipped_metric("工具有效性", "No trace recorded"),
+                "execution_error_free": self._skipped_metric("执行无错误率", "No trace recorded"),
+                "output_delivery": self._case_metric(
+                    "结果交付有效性",
+                    1.0 if len(answer.strip()) >= 20 else 0.2,
+                    "模型是否产出足够完整的最终回答",
+                    {"answerLength": len(answer)},
+                )
+            }
+            
+        spans = list(trace.spans or [])
+        failed_spans = [span for span in spans if span.status != "success" or span.error_message]
+        tool_spans = self._tool_like_spans(trace)
+        effective_tools = [span for span in tool_spans if self._span_output_effective(span)]
+        span_success_score = 1.0 if not spans else (len(spans) - len(failed_spans)) / len(spans)
+        execution_success = 1.0 if trace.status == "success" and not failed_spans else span_success_score * (1.0 if trace.status == "success" else 0.4)
+        
+        return {
+            "execution_success": self._case_metric(
+                "执行成功率",
+                execution_success,
+                "智能体执行链路状态与节点失败情况",
+                {"traceStatus": trace.status, "spanCount": len(spans), "failedSpans": [span.operation for span in failed_spans]}
+            ),
+            "tool_effectiveness": self._case_metric(
+                "工具有效性",
+                len(effective_tools) / max(len(tool_spans), 1) if tool_spans else 1.0,
+                "动作调用是否成功并产出可用输出",
+                {"toolCount": len(tool_spans), "effectiveToolCount": len(effective_tools)}
+            ),
+            "execution_error_free": self._case_metric(
+                "执行无错误率",
+                1.0 if not failed_spans else max(0.0, 1 - len(failed_spans) / max(len(spans), 1)),
+                "执行链路中是否存在失败节点或错误信息",
+                {"failedSpanCount": len(failed_spans), "failedOperations": [span.operation for span in failed_spans]},
+            ),
+            "output_delivery": self._case_metric(
+                "结果交付有效性",
+                1.0 if len(answer.strip()) >= 20 else 0.2,
+                "模型是否产出足够完整的最终回答",
+                {"answerLength": len(answer)},
+            ),
+        }
+
+    def _execution_metrics(
+        self,
+        run: EvaluationRun,
+        trace: TraceRun,
+        assistant_message: ConversationMessage | None,
+        issues: list[EvaluationIssue],
+    ) -> list[EvaluationMetric]:
+        """评估真实 Trace 的执行效果，重点看任务是否跑通、工具是否产出有效结果。"""
+
+        answer = assistant_message.content if assistant_message else ""
+        spans = list(trace.spans or [])
+        failed_spans = [span for span in spans if span.status != "success" or span.error_message]
+        tool_spans = self._tool_like_spans(trace)
+        effective_tools = [span for span in tool_spans if self._span_output_effective(span)]
+        span_success_score = 1.0 if not spans else (len(spans) - len(failed_spans)) / len(spans)
+        execution_success = 1.0 if trace.status == "success" and not failed_spans else span_success_score * (1.0 if trace.status == "success" else 0.4)
+        output_delivery = 1.0 if len(answer.strip()) >= 20 else 0.2
+
+        metrics = [
+            self._metric(
+                run,
+                "execution",
+                "execution_success",
+                execution_success,
+                "Trace status and span failures indicate whether the task executed successfully",
+                {"traceStatus": trace.status, "spanCount": len(spans), "failedSpans": [span.operation for span in failed_spans]},
+            ),
+            self._metric(
+                run,
+                "execution",
+                "execution_error_free",
+                1.0 if not failed_spans else max(0.0, 1 - len(failed_spans) / max(len(spans), 1)),
+                "Execution path should not contain failed spans or error messages",
+                {"failedSpanCount": len(failed_spans), "failedOperations": [span.operation for span in failed_spans]},
+            ),
+            self._metric(
+                run,
+                "execution",
+                "output_delivery",
+                output_delivery,
+                "Assistant should deliver a usable final answer",
+                {"answerLength": len(answer)},
+            ),
+        ]
+        if tool_spans:
+            metrics.append(
+                self._metric(
+                    run,
+                    "execution",
+                    "tool_effectiveness",
+                    len(effective_tools) / max(len(tool_spans), 1),
+                    "Tool/action calls should return successful and usable outputs",
+                    {"toolCount": len(tool_spans), "effectiveToolCount": len(effective_tools)},
+                )
+            )
+        else:
+            metrics.append(self._metric(run, "execution", "tool_effectiveness", 1.0, "No tool/action call was required", {"toolCount": 0}))
+
+        if execution_success < 0.5:
+            issues.append(self._issue(run, "execution", "execution_failed", "high", "Trace execution did not complete reliably", metrics[0].evidence))
+        if output_delivery < 0.7:
+            issues.append(self._issue(run, "execution", "output_not_delivered", "high", "Assistant did not deliver a usable final answer", {"answerLength": len(answer)}))
+        return metrics
+
+    @staticmethod
+    def _tool_like_spans(trace: TraceRun) -> list[TraceSpan]:
+        """统一识别工具和动作调用 span，兼容 tool_call、action_call 和 tool_* 命名。"""
+        return [span for span in trace.spans if span.operation in {"tool_call", "action_call"} or span.operation.startswith("tool")]
+
+    def _span_output_effective(self, span: TraceSpan) -> bool:
+        """判断工具输出是否真正有效，避免只看 span 状态而忽略工具返回失败。"""
+        if span.status != "success" or span.error_message:
+            return False
+        meta = _metadata(span.metadata_json)
+        output_data = _span_part(meta, "output") or meta
+        result = output_data.get("result") if isinstance(output_data.get("result"), dict) else {}
+        if result and result.get("success") is False:
+            return False
+        summary = result.get("summary") or output_data.get("summary")
+        data = result.get("data") if isinstance(result.get("data"), (dict, list)) else output_data.get("data")
+        return bool(result or summary or data or output_data)
 
     async def evaluate_case_metrics(
         self,
@@ -684,6 +939,7 @@ class EvaluationService:
         issues: list[dict[str, Any]] = []
         metrics.update(self._retrieval_case_metrics(case, retrieved_contexts))
         metrics.update(self._answer_case_metrics(case, answer))
+        metrics.update(self._execution_effect_case_metrics(answer, trace))
         metrics.update(self._system_case_metrics(trace))
         judge_metrics, judge_issues = await self._judge_case_metrics(case, answer, retrieved_contexts)
         metrics.update(judge_metrics)
@@ -1139,5 +1395,70 @@ JSON 示例：
             return int(median(values))
         index = min(len(values) - 1, int(round((len(values) - 1) * quantile)))
         return int(values[index])
+
+
+def ensure_default_evaluation_dataset(db: Session) -> None:
+    """初始化内置评估数据集和基准用例。"""
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        # 检查是否已存在同名数据集
+        dataset = db.query(EvaluationDataset).filter(EvaluationDataset.name == "内置运维与 RAG 核心评估集").first()
+        if dataset:
+            return
+
+        # 创建数据集
+        dataset = EvaluationDataset(
+            name="内置运维与 RAG 核心评估集",
+            description="用于评估系统在运维动作调用与 RAG 知识检索两项核心能力上的基准数据集，包含 4 条代表性用例。",
+            tags=["基准测试", "内置"],
+            enabled=True
+        )
+        db.add(dataset)
+        db.flush()
+
+        # 4条基准用例
+        cases = [
+            EvaluationCase(
+                dataset_id=dataset.id,
+                question="如何检查系统当前的 CPU 和内存使用率？",
+                expected_answer="可以通过执行 top、free -m 或者查看 Prometheus 监控指标来检查 CPU 和内存使用率。",
+                expected_keywords=["CPU", "内存", "监控"],
+                tags=["运维"],
+                enabled=True
+            ),
+            EvaluationCase(
+                dataset_id=dataset.id,
+                question="什么是 RAG (Retrieval-Augmented Generation)？",
+                expected_answer="RAG（检索增强生成）是一种通过从外部知识库检索相关文档或信息，并将其作为上下文输入给大型语言模型（LLM），以生成更准确、最新的回答的技术。",
+                expected_keywords=["检索增强生成", "外部知识库", "上下文"],
+                tags=["RAG"],
+                enabled=True
+            ),
+            EvaluationCase(
+                dataset_id=dataset.id,
+                question="服务出现 502 Bad Gateway 错误时，应该如何排查？",
+                expected_answer="开首先检查后端服务是否存活，查看 Nginx 日志、后端应用日志，以及检查后端服务的端口和配置是否正确。",
+                expected_keywords=["Nginx", "日志", "502", "排查"],
+                tags=["运维"],
+                enabled=True
+            ),
+            EvaluationCase(
+                dataset_id=dataset.id,
+                question="向量检索中的 Hybrid Retrieval（混合检索）是什么？",
+                expected_answer="混合检索结合了稠密向量检索与稀疏分词检索（如 BM25）的优势，通过重排序（Reranking）或 RRF 算法合并结果，从而提高检索的准确率和召回率。",
+                expected_keywords=["混合检索", "向量检索", "BM25"],
+                tags=["RAG"],
+                enabled=True
+            )
+        ]
+        db.add_all(cases)
+        db.commit()
+        logger.info("内置运维与 RAG 核心评估集初始化成功")
+    except Exception as exc:
+        db.rollback()
+        logger.error("初始化内置评估数据集失败: %s", exc, exc_info=True)
+
 
 

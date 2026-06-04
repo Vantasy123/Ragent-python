@@ -55,6 +55,18 @@ class Settings(BaseSettings):
     CHAT_MODEL: str = "qwen-plus"
     EMBEDDING_MODEL: str = "text-embedding-v3"
     TEMPERATURE: float = 0.7
+    OPENAI_EVALS_ENABLED: bool = False
+    OPENAI_EVALS_API_KEY: str = ""
+    OPENAI_EVALS_API_BASE: str = "https://api.openai.com/v1"
+    OPENAI_EVALS_GRADER_MODEL: str = "o3-mini"
+    OPENAI_EVALS_TIMEOUT_SECONDS: float = 30.0
+
+    # LangSmith Tracing and Evaluation
+    LANGCHAIN_TRACING_V2: bool = False
+    LANGCHAIN_API_KEY: str = ""
+    LANGCHAIN_PROJECT: str = "ragent-python"
+    LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
+
     SILICONFLOW_API_KEY: str = ""
     OLLAMA_API_BASE: str = "http://localhost:11434"
 

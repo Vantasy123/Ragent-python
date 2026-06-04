@@ -75,3 +75,7 @@ docker-compose.override.yml
 
 # Local notes
 docs/agent-interview-guide.md
+
+# Scratch directories
+scratch/
+

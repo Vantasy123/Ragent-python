@@ -12,6 +12,7 @@ import TracePage from '@/pages/TracePage.vue'
 import TraceDetailPage from '@/pages/TraceDetailPage.vue'
 import SettingsPage from '@/pages/SettingsPage.vue'
 import UsersPage from '@/pages/UsersPage.vue'
+import SecurityAuditPage from '@/pages/SecurityAuditPage.vue'
 import IngestionPage from '@/pages/IngestionPage.vue'
 import IntentTreePage from '@/pages/IntentTreePage.vue'
 import IntentListPage from '@/pages/IntentListPage.vue'
@@ -47,6 +48,7 @@ const router = createRouter({
         { path: 'settings', component: SettingsPage },
         { path: 'project-config', component: ProjectConfigPage },
         { path: 'users', component: UsersPage },
+        { path: 'security-audit', component: SecurityAuditPage },
         { path: 'intent-tree', component: IntentTreePage },
         { path: 'intent-list', component: IntentListPage },
         { path: 'intent-list/:id/edit', component: IntentEditPage },
