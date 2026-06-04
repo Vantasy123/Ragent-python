@@ -5,17 +5,31 @@
 
 from __future__ import annotations
 
+import shlex
 import socket
 import subprocess
 import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
 from app.agents.base import ToolSpec
 from app.core.config import settings
 from app.services.monitoring_service import MonitoringService
+
+
+@dataclass(frozen=True)
+class SafeCommandTemplate:
+    """命令模板元数据，禁止 Agent 直接执行任意 shell 字符串。"""
+
+    command_id: str
+    description: str
+    risk_level: str
+    requires_approval: bool
+    build_args: Callable[["OpsToolkit", dict[str, Any]], list[str]]
+    timeout: int = 20
 
 
 class OpsToolkit:
@@ -57,8 +71,10 @@ class OpsToolkit:
             "alert_status": self.alert_status,
             "metric_trend": self.metric_trend,
             "prometheus_query": self.prometheus_query,
+            "safe_command": self.safe_command,
             "compose_restart_service": self.compose_restart_service,
         }
+        self.safe_command_templates = self._build_safe_command_templates()
 
     @property
     def tools(self) -> dict[str, Any]:
@@ -85,6 +101,12 @@ class OpsToolkit:
             ToolSpec("metric_trend", "查看指标趋势", {"metric": "string", "minutes": "integer"}),
             ToolSpec("prometheus_query", "执行 Prometheus 即时查询", {"query": "string", "time": "number"}),
             ToolSpec(
+                "safe_command",
+                "执行命令模板白名单；支持 docker_ps、docker_logs、docker_inspect、docker_stats、docker_restart，docker_restart 需要审批。",
+                {"commandId": "string", "args": "object", "command": "string"},
+                risk_level="dynamic",
+            ),
+            ToolSpec(
                 "compose_restart_service",
                 "重启指定 Compose 服务",
                 {"service": "string"},
@@ -92,6 +114,217 @@ class OpsToolkit:
                 requires_approval=True,
             ),
         ]
+
+    def approval_policy(self, tool_name: str) -> Callable[[dict[str, Any]], tuple[str, bool]] | None:
+        """返回工具的动态审批策略；普通工具沿用 ToolSpec 静态配置。"""
+
+        if tool_name != "safe_command":
+            return None
+        return self.safe_command_policy
+
+    def safe_command_policy(self, args: dict[str, Any]) -> tuple[str, bool]:
+        """根据 commandId 或命令文本判断 safe_command 的实际风险等级。"""
+
+        resolved = self._resolve_safe_command(args)
+        if not resolved.get("success"):
+            return "danger", False
+        template = resolved["template"]
+        return template.risk_level, template.requires_approval
+
+    def safe_command(
+        self,
+        commandId: str = "",
+        command_id: str = "",
+        args: dict[str, Any] | None = None,
+        command: str = "",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """执行命令模板白名单，不执行 LLM 原始 shell。"""
+
+        payload = {"commandId": commandId or command_id, "args": args or {}, "command": command, **kwargs}
+        resolved = self._resolve_safe_command(payload)
+        if not resolved.get("success"):
+            return {
+                "success": False,
+                "summary": resolved["error"],
+                "data": {"command": command, "commandId": commandId or command_id},
+                "error": "command_not_allowed",
+                "riskLevel": "danger",
+                "requiresApproval": False,
+            }
+        template: SafeCommandTemplate = resolved["template"]
+        safe_args: dict[str, Any] = resolved["args"]
+        try:
+            docker_args = template.build_args(self, safe_args)
+        except Exception as exc:
+            return {
+                "success": False,
+                "summary": str(exc),
+                "data": {"commandId": template.command_id},
+                "error": type(exc).__name__,
+                "riskLevel": template.risk_level,
+                "requiresApproval": template.requires_approval,
+            }
+        result = self._run_docker(docker_args, timeout=template.timeout)
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        result["data"] = {
+            **data,
+            "commandId": template.command_id,
+            "commandPreview": "docker " + " ".join(docker_args),
+            "riskLevel": template.risk_level,
+        }
+        result["riskLevel"] = template.risk_level
+        result["requiresApproval"] = template.requires_approval
+        return result
+
+    def _build_safe_command_templates(self) -> dict[str, SafeCommandTemplate]:
+        """构造允许执行的命令模板；新增命令必须显式写入这里。"""
+
+        return {
+            "docker_ps": SafeCommandTemplate(
+                "docker_ps",
+                "查看当前 Compose 项目容器状态",
+                "read",
+                False,
+                lambda toolkit, payload: [
+                    "container",
+                    "ls",
+                    "-a",
+                    "--filter",
+                    f"label=com.docker.compose.project={payload.get('project') or toolkit.compose_project}",
+                    "--format",
+                    "table {{.Names}}\t{{.Status}}\t{{.Ports}}",
+                ],
+            ),
+            "docker_logs": SafeCommandTemplate(
+                "docker_logs",
+                "读取白名单服务最近日志",
+                "read",
+                False,
+                lambda toolkit, payload: toolkit._docker_logs_args(payload),
+            ),
+            "docker_inspect": SafeCommandTemplate(
+                "docker_inspect",
+                "查看白名单服务容器元信息",
+                "read",
+                False,
+                lambda toolkit, payload: toolkit._docker_container_args(payload, ["inspect"]),
+            ),
+            "docker_stats": SafeCommandTemplate(
+                "docker_stats",
+                "读取白名单服务容器资源快照",
+                "read",
+                False,
+                lambda toolkit, payload: toolkit._docker_container_args(payload, ["container", "stats", "--no-stream", "--format", "json"]),
+            ),
+            "docker_restart": SafeCommandTemplate(
+                "docker_restart",
+                "重启白名单服务容器",
+                "write",
+                True,
+                lambda toolkit, payload: toolkit._docker_container_args(payload, ["restart"]),
+                timeout=60,
+            ),
+        }
+
+    def _resolve_safe_command(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """把 commandId 或命令文本解析为白名单模板和参数。"""
+
+        raw_args = payload.get("args") if isinstance(payload.get("args"), dict) else {}
+        args = {**raw_args}
+        for key, value in payload.items():
+            if key in {"args", "command", "commandId", "command_id"}:
+                continue
+            if value is not None and value != "":
+                args[key] = value
+        command_id = str(payload.get("commandId") or payload.get("command_id") or "").strip()
+        if not command_id and payload.get("command"):
+            parsed = self._parse_safe_command_text(str(payload.get("command") or ""))
+            if not parsed.get("success"):
+                return parsed
+            command_id = parsed["commandId"]
+            args.update(parsed.get("args") or {})
+        template = self.safe_command_templates.get(command_id)
+        if not template:
+            return {"success": False, "error": f"命令不在白名单中：{command_id or payload.get('command') or '空命令'}"}
+        try:
+            self._validate_safe_command_args(command_id, args)
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+        return {"success": True, "template": template, "args": args}
+
+    def _parse_safe_command_text(self, command: str) -> dict[str, Any]:
+        """只把少量 Docker 命令文本映射到模板，不透传原始命令。"""
+
+        text = command.strip()
+        if not text:
+            return {"success": False, "error": "命令不能为空"}
+        blocked = [";", "&&", "||", "|", ">", "<", "`", "$("]
+        if any(token in text for token in blocked):
+            return {"success": False, "error": "命令包含不允许的 shell 控制符"}
+        try:
+            parts = shlex.split(text)
+        except ValueError as exc:
+            return {"success": False, "error": f"命令解析失败：{exc}"}
+        if not parts or parts[0] != "docker":
+            return {"success": False, "error": "只允许 docker 白名单命令"}
+        normalized = parts[1:]
+        if normalized[:2] == ["container", "ls"] or normalized[:1] == ["ps"]:
+            return {"success": True, "commandId": "docker_ps", "args": {}}
+        if normalized[:2] == ["container", "logs"] or normalized[:1] == ["logs"]:
+            tail = 120
+            service = ""
+            tokens = normalized[2:] if normalized[:2] == ["container", "logs"] else normalized[1:]
+            index = 0
+            while index < len(tokens):
+                token = tokens[index]
+                if token == "--tail" and index + 1 < len(tokens):
+                    try:
+                        tail = int(tokens[index + 1])
+                    except ValueError:
+                        return {"success": False, "error": "日志 tail 必须是整数"}
+                    index += 2
+                    continue
+                if not token.startswith("-"):
+                    service = token
+                index += 1
+            return {"success": True, "commandId": "docker_logs", "args": {"service": service, "tail": tail}}
+        if normalized[:1] == ["inspect"] and len(normalized) >= 2:
+            return {"success": True, "commandId": "docker_inspect", "args": {"service": normalized[-1]}}
+        if normalized[:3] == ["container", "stats", "--no-stream"] or normalized[:2] == ["stats", "--no-stream"]:
+            return {"success": True, "commandId": "docker_stats", "args": {"service": normalized[-1]}}
+        if normalized[:1] == ["restart"] and len(normalized) >= 2:
+            return {"success": True, "commandId": "docker_restart", "args": {"service": normalized[-1]}}
+        return {"success": False, "error": "命令未匹配任何白名单模板"}
+
+    def _validate_safe_command_args(self, command_id: str, args: dict[str, Any]) -> None:
+        """校验模板参数，避免命令模板被异常参数污染。"""
+
+        if command_id in {"docker_logs", "docker_inspect", "docker_stats", "docker_restart"}:
+            self._safe_service(str(args.get("service") or "ragent-api"))
+        if command_id == "docker_logs":
+            tail = int(args.get("tail") or 120)
+            if tail <= 0 or tail > 1000:
+                raise ValueError("日志 tail 必须在 1 到 1000 之间")
+
+    def _docker_logs_args(self, payload: dict[str, Any]) -> list[str]:
+        """构造 docker logs 参数，容器 ID 由白名单服务名解析而来。"""
+
+        safe_service = self._safe_service(str(payload.get("service") or "ragent-api"))
+        container_id = self._resolve_container_id(safe_service)
+        if not container_id:
+            raise ValueError(f"未找到服务对应容器：{safe_service}")
+        tail = max(1, min(int(payload.get("tail") or 120), 1000))
+        return ["container", "logs", "--tail", str(tail), container_id]
+
+    def _docker_container_args(self, payload: dict[str, Any], prefix: list[str]) -> list[str]:
+        """构造需要容器 ID 的 Docker 命令参数。"""
+
+        safe_service = self._safe_service(str(payload.get("service") or "ragent-api"))
+        container_id = self._resolve_container_id(safe_service)
+        if not container_id:
+            raise ValueError(f"未找到服务对应容器：{safe_service}")
+        return [*prefix, container_id]
 
     def _run_docker(self, args: list[str], timeout: int = 20) -> dict[str, Any]:
         """执行受控 Docker 命令，并统一包装为工具返回结构。"""
@@ -148,6 +381,17 @@ class OpsToolkit:
 
         if not service or service.startswith("auto-detect"):
             return "ragent-api"
+        aliases = {
+            "api": "ragent-api",
+            "backend": "ragent-api",
+            "后端": "ragent-api",
+            "服务端": "ragent-api",
+            "frontend": "ragent-frontend",
+            "front": "ragent-frontend",
+            "nginx": "ragent-frontend",
+            "前端": "ragent-frontend",
+        }
+        service = aliases.get(str(service).lower(), service)
         # 白名单限制了 Agent 可以读写的 Compose 服务，避免误操作宿主机上的其他项目。
         allowed = {
             "ragent-api",

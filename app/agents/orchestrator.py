@@ -150,6 +150,7 @@ class PlannerAgent:
             "你是 Ragent 运维 Planner，需要生成安全、可执行的排障计划。\n"
             "只能输出 JSON，不要输出 Markdown。格式：{\"steps\":[{\"title\":\"步骤标题\",\"tool\":\"工具名\",\"args\":{},\"reasoning\":\"原因\"}]}\n"
             "要求：优先使用只读工具；优先查询 alert_status、metric_trend、health/log 等证据；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
+            "如果用户给出 docker 命令原文，只能使用 safe_command，并把命令放到 args.command；不要生成 shell、bash 或 powershell 工具。\n"
             f"可用工具：{json.dumps(tools, ensure_ascii=False)}\n"
             f"服务名白名单：{json.dumps(sorted(set(OPS_SERVICE_ALIASES.values())), ensure_ascii=False)}\n"
             "如果用户只说“后端/API/服务端”，service 必须使用 ragent-api；只说“前端/nginx”，service 必须使用 ragent-frontend。\n"
@@ -236,6 +237,13 @@ class PlannerAgent:
         """规范模型生成的工具参数，避免服务名越过运维白名单。"""
 
         normalized = dict(args)
+        if tool_name == "safe_command":
+            command = normalized.get("command") or normalized.get("commandText") or normalized.get("cmd")
+            if command:
+                normalized["command"] = str(command)
+            if "args" not in normalized or not isinstance(normalized.get("args"), dict):
+                normalized["args"] = {}
+            return normalized
         if tool_name not in OPS_SERVICE_TOOLS:
             return normalized
 
@@ -260,6 +268,9 @@ class PlannerAgent:
         """模型不可用时的稳定排障计划。"""
 
         text = task.lower()
+        command_step = self._safe_command_step(task)
+        if command_step:
+            return [command_step]
         steps = [
             PlanStep("检查 Compose 服务状态", "compose_ps", reasoning="先确认核心服务是否存在异常状态"),
             PlanStep("查询当前活跃告警", "alert_status", reasoning="先确认监控系统是否已有明确告警"),
@@ -290,6 +301,15 @@ class PlannerAgent:
             service = "ragent-frontend" if ("前端" in task or "frontend" in text or "nginx" in text) else "ragent-api"
             steps.append(PlanStep(f"申请重启服务 {service}", "compose_restart_service", {"service": service}, "重启是写操作，必须进入审批"))
         return steps
+
+    def _safe_command_step(self, task: str) -> PlanStep | None:
+        """用户直接给出 docker 命令时，交给 safe_command 做白名单解析。"""
+
+        text = task.strip()
+        lowered = text.lower()
+        if not lowered.startswith("docker "):
+            return None
+        return PlanStep("执行受控命令模板", "safe_command", {"command": text}, "用户给出了命令原文，必须通过命令模板白名单执行")
 
     def _parse_json(self, content: str) -> dict[str, Any]:
         """从模型输出中解析 JSON。"""

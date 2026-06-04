@@ -179,8 +179,10 @@ class OpsLangGraphRunner:
         step.assigned_agent = step.assigned_agent or "executor"
         events.append({"type": "step_started", "agent": "executor", "stepIndex": index, "step": self._step_to_dict(step)})
 
-        spec = self.registry.tools.get(step.tool_name).spec if step.tool_name in self.registry.tools else None
-        if spec and spec.requires_approval:
+        tool = self.registry.tools.get(step.tool_name)
+        spec = tool.spec if tool else None
+        risk_level, requires_approval = tool.policy_for(step.args) if tool else ("write", False)
+        if tool and requires_approval:
             # 高风险工具只进入审批节点，不在图中直接执行。
             return {
                 "remaining": remaining,
@@ -282,14 +284,16 @@ class OpsLangGraphRunner:
             result = ToolCallResult(success=False, summary="审批步骤缺失", error="approval_step_missing")
             return {"lastResult": result, "pendingApproval": True, "events": []}
 
-        spec = self.registry.tools.get(step.tool_name).spec if step.tool_name in self.registry.tools else None
+        tool = self.registry.tools.get(step.tool_name)
+        spec = tool.spec if tool else None
+        risk_level, _ = tool.policy_for(step.args) if tool else ("write", True)
         started = time.perf_counter()
         step.status = StepStatus.BLOCKED
         result = ToolCallResult(
             success=False,
             summary=f"工具需要审批：{step.tool_name}",
             error="approval_required",
-            risk_level=spec.risk_level if spec else "write",
+            risk_level=risk_level,
             requires_approval=True,
             source=spec.source if spec else "builtin",
             category=spec.category if spec else "ops",
@@ -417,7 +421,7 @@ class OpsLangGraphRunner:
 
         for step in steps:
             tool = self.registry.tools.get(step.tool_name)
-            if tool and tool.spec.requires_approval:
+            if tool and tool.policy_for(step.args)[1]:
                 return True
         return False
 
@@ -429,7 +433,7 @@ class OpsLangGraphRunner:
         for step in original_remaining:
             tool = self.registry.tools.get(step.tool_name)
             key = (step.tool_name, repr(sorted(step.args.items())))
-            if tool and tool.spec.requires_approval and key not in existing:
+            if tool and tool.policy_for(step.args)[1] and key not in existing:
                 merged.append(step)
                 existing.add(key)
         return merged

@@ -11,6 +11,7 @@ from app.infrastructure.mcp.tool_registry import ToolRegistry
 
 
 ToolHandler = Callable[..., Any | Awaitable[Any]]
+ApprovalPolicy = Callable[[dict[str, Any]], tuple[str, bool]]
 MAX_SUMMARY_CHARS = 1000
 MAX_DATA_STRING_CHARS = 2000
 MAX_LIST_ITEMS = 50
@@ -93,6 +94,14 @@ class UnifiedTool:
 
     spec: ToolSpec
     handler: ToolHandler
+    approval_policy: ApprovalPolicy | None = None
+
+    def policy_for(self, args: dict[str, Any] | None = None) -> tuple[str, bool]:
+        """按工具参数计算实际风险等级和审批要求。"""
+
+        if self.approval_policy:
+            return self.approval_policy(args or {})
+        return self.spec.risk_level, self.spec.requires_approval
 
     async def call(self, **kwargs: Any) -> ToolCallResult:
         """执行工具并规范化返回值。"""
@@ -187,12 +196,13 @@ class UnifiedToolRegistry:
         tool = self._tools.get(request.name)
         if tool is None:
             return ToolCallResult(success=False, summary=f"工具不存在：{request.name}", error="unknown_tool")
-        if tool.spec.requires_approval and not skip_approval:
+        risk_level, requires_approval = tool.policy_for(request.args)
+        if requires_approval and not skip_approval:
             return ToolCallResult(
                 success=False,
                 summary=f"工具需要审批：{request.name}",
                 error="approval_required",
-                risk_level=tool.spec.risk_level,
+                risk_level=risk_level,
                 requires_approval=True,
                 source=tool.spec.source,
                 category=tool.spec.category,
@@ -246,7 +256,9 @@ class UnifiedToolRegistry:
             spec.enabled_for = ["admin"]
             handler = self.toolkit.tools.get(spec.name)
             if handler:
-                self._tools[spec.name] = UnifiedTool(spec=spec, handler=handler)
+                policy_factory = getattr(self.toolkit, "approval_policy", None)
+                approval_policy = policy_factory(spec.name) if policy_factory else None
+                self._tools[spec.name] = UnifiedTool(spec=spec, handler=handler, approval_policy=approval_policy)
 
     def _mcp_args_schema(self, name: str) -> dict[str, Any]:
         """为当前内置 MCP 工具补充轻量参数描述。"""

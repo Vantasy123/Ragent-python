@@ -13,6 +13,7 @@ from app.agents.base import AgentStep, ToolSpec
 from app.agents.ops_graph import OpsLangGraphRunner
 from app.agents.orchestrator import StepExecutorAgent
 from app.agents.tool_registry import ToolCallRequest, ToolCallResult, UnifiedTool, UnifiedToolRegistry
+from app.agents.tools import OpsToolkit
 from app.core.database import Base, get_db
 from app.domain.models import AgentApproval, AgentRun, AgentToolCall, EvaluationRun, TraceRun, TraceSpan, User
 from app.services.dependencies import require_admin
@@ -87,6 +88,66 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(item["isReadOnly"])
         self.assertFalse(item["requiresApproval"])
+
+    async def test_safe_read_command_executes_without_approval(self) -> None:
+        """只读命令模板应直接执行，不能进入审批。"""
+
+        toolkit = OpsToolkit()
+        toolkit.executor_enabled = True
+        captured: list[list[str]] = []
+
+        def fake_run(args: list[str], timeout: int = 20) -> dict:
+            captured.append(args)
+            return {"success": True, "summary": "ok", "data": {"stdout": "ok", "stderr": "", "returncode": 0}, "error": ""}
+
+        toolkit._run_docker = fake_run  # type: ignore[method-assign]
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=toolkit)
+
+        result = await registry.call(ToolCallRequest("safe_command", {"commandId": "docker_ps"}))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.risk_level, "read")
+        self.assertFalse(result.requires_approval)
+        self.assertEqual(captured[0][0:2], ["container", "ls"])
+
+    async def test_safe_write_command_requires_approval_then_executes(self) -> None:
+        """写命令模板应先进入审批，审批通过后才执行。"""
+
+        toolkit = OpsToolkit()
+        toolkit.executor_enabled = True
+        captured: list[list[str]] = []
+        toolkit._resolve_container_id = lambda _service: "container-1"  # type: ignore[method-assign]
+
+        def fake_run(args: list[str], timeout: int = 20) -> dict:
+            captured.append(args)
+            return {"success": True, "summary": "restarted", "data": {"stdout": "restarted", "stderr": "", "returncode": 0}, "error": ""}
+
+        toolkit._run_docker = fake_run  # type: ignore[method-assign]
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=toolkit)
+        request = ToolCallRequest("safe_command", {"commandId": "docker_restart", "args": {"service": "ragent-api"}})
+
+        blocked = await registry.call(request)
+        executed = await registry.call(request, skip_approval=True)
+
+        self.assertEqual(blocked.error, "approval_required")
+        self.assertEqual(blocked.risk_level, "write")
+        self.assertTrue(blocked.requires_approval)
+        self.assertTrue(executed.success)
+        self.assertEqual(captured[-1], ["restart", "container-1"])
+
+    async def test_unknown_safe_command_is_rejected_without_approval(self) -> None:
+        """未知或危险命令不能被审批放行，只能拒绝。"""
+
+        toolkit = OpsToolkit()
+        toolkit.executor_enabled = True
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=toolkit)
+
+        result = await registry.call(ToolCallRequest("safe_command", {"command": "rm -rf /"}))
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "command_not_allowed")
+        self.assertEqual(result.risk_level, "danger")
+        self.assertFalse(result.requires_approval)
 
 
 class FakeRegistry:
