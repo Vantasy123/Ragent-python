@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
@@ -54,7 +55,7 @@ class ProjectConfigService:
     def save_servers(self, servers: list[dict[str, Any]]) -> dict[str, Any]:
         """保存业务服务器配置，供初始化向导或后台页面直接写入 YAML。"""
 
-        normalized = [self._normalize_server(item) for item in servers if isinstance(item, dict)]
+        normalized = [self._normalize_server(item, strict=True) for item in servers if isinstance(item, dict)]
         self._write_yaml(self.servers_path, {"servers": normalized})
         enabled_count = len([item for item in normalized if item.get("enabled", True) is not False])
         return {
@@ -69,11 +70,11 @@ class ProjectConfigService:
 
         normalized_monitoring = {
             "enabled": bool(monitoring.get("enabled", False)),
-            "prometheus_url": str(monitoring.get("prometheus_url") or "").strip(),
-            "alertmanager_url": str(monitoring.get("alertmanager_url") or "").strip(),
-            "timeout_seconds": float(monitoring.get("timeout_seconds") or 5),
+            "prometheus_url": self._normalize_http_url(monitoring.get("prometheus_url"), "Prometheus 地址"),
+            "alertmanager_url": self._normalize_http_url(monitoring.get("alertmanager_url"), "Alertmanager 地址"),
+            "timeout_seconds": self._normalize_timeout(monitoring.get("timeout_seconds") or 5),
         }
-        normalized_probes = [self._normalize_probe(item) for item in probes or [] if isinstance(item, dict)]
+        normalized_probes = [self._normalize_probe(item, strict=True) for item in probes or [] if isinstance(item, dict)]
         self._write_yaml(self.monitoring_path, {"monitoring": normalized_monitoring, "probes": normalized_probes})
         return {
             "path": str(self.monitoring_path),
@@ -134,30 +135,69 @@ class ProjectConfigService:
 
         return isinstance(item, dict) and item.get("enabled", True) is not False
 
-    def _normalize_server(self, item: dict[str, Any]) -> dict[str, Any]:
+    def validate_probe_url(self, url: str) -> str:
+        """校验手动探测地址，避免后台误触发非 HTTP 协议或空地址。"""
+
+        return self._normalize_http_url(url, "探测地址", required=True)
+
+    def _normalize_server(self, item: dict[str, Any], strict: bool = False) -> dict[str, Any]:
         """把业务服务器配置标准化，便于监控服务直接消费。"""
 
         server_id = str(item.get("id") or item.get("name") or item.get("base_url") or "").strip()
+        enabled = item.get("enabled", True) is not False
+        base_url = self._normalize_http_url(item.get("base_url"), "业务服务器 base_url") if strict else str(item.get("base_url") or "").strip()
+        health_url = (
+            self._normalize_http_url(item.get("health_url"), "业务服务器 health_url", required=enabled)
+            if strict
+            else str(item.get("health_url") or "").strip()
+        )
+        metrics_url = self._normalize_http_url(item.get("metrics_url"), "业务服务器 metrics_url") if strict else str(item.get("metrics_url") or "").strip()
         return {
             "id": server_id,
             "name": str(item.get("name") or server_id or "未命名服务").strip(),
             "env": str(item.get("env") or "").strip(),
-            "enabled": item.get("enabled", True) is not False,
-            "base_url": str(item.get("base_url") or "").strip(),
-            "health_url": str(item.get("health_url") or "").strip(),
-            "metrics_url": str(item.get("metrics_url") or "").strip(),
+            "enabled": enabled,
+            "base_url": base_url,
+            "health_url": health_url,
+            "metrics_url": metrics_url,
             "owner": str(item.get("owner") or "").strip(),
             "tags": item.get("tags") if isinstance(item.get("tags"), list) else [],
         }
 
-    def _normalize_probe(self, item: dict[str, Any]) -> dict[str, Any]:
+    def _normalize_probe(self, item: dict[str, Any], strict: bool = False) -> dict[str, Any]:
         """把额外探测目标配置标准化。"""
 
         probe_id = str(item.get("id") or item.get("name") or item.get("url") or "").strip()
+        enabled = item.get("enabled", True) is not False
+        url = self._normalize_http_url(item.get("url"), "探测地址", required=enabled) if strict else str(item.get("url") or "").strip()
         return {
             "id": probe_id,
             "name": str(item.get("name") or probe_id or "未命名探测").strip(),
-            "enabled": item.get("enabled", True) is not False,
-            "url": str(item.get("url") or "").strip(),
+            "enabled": enabled,
+            "url": url,
             "tags": item.get("tags") if isinstance(item.get("tags"), list) else [],
         }
+
+    def _normalize_http_url(self, value: Any, label: str, required: bool = False) -> str:
+        """校验 HTTP/HTTPS URL，保留内网域名但拒绝空值和危险协议。"""
+
+        text = str(value or "").strip()
+        if not text:
+            if required:
+                raise ValueError(f"{label}不能为空")
+            return ""
+        parsed = urlparse(text)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError(f"{label}必须是 http 或 https URL")
+        return text
+
+    def _normalize_timeout(self, value: Any) -> float:
+        """把监控超时限制在生产可控范围内，避免配置错误拖垮后台请求。"""
+
+        try:
+            timeout = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("监控超时时间必须是数字") from exc
+        if timeout <= 0 or timeout > 60:
+            raise ValueError("监控超时时间必须在 0 到 60 秒之间")
+        return timeout

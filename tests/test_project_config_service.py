@@ -78,6 +78,42 @@ class ProjectConfigServiceTest(unittest.TestCase):
             self.assertEqual(monitoring["prometheus_url"], "http://prometheus:9090")
             self.assertEqual(monitoring["probes"][0]["name"], "网关")
 
+    def test_rejects_non_http_monitoring_url(self) -> None:
+        """监控地址只允许 HTTP/HTTPS，避免保存 file 等危险协议。"""
+
+        with TemporaryDirectory() as temp_dir:
+            service = ProjectConfigService(
+                str(Path(temp_dir) / "servers.yml"),
+                str(Path(temp_dir) / "monitoring.yml"),
+            )
+
+            with self.assertRaisesRegex(ValueError, "http 或 https"):
+                service.save_monitoring({"enabled": True, "prometheus_url": "file:///etc/passwd"}, [])
+
+    def test_enabled_probe_requires_url(self) -> None:
+        """启用的探测目标必须有 URL，否则监控面板会出现不可解释的失败项。"""
+
+        with TemporaryDirectory() as temp_dir:
+            service = ProjectConfigService(
+                str(Path(temp_dir) / "servers.yml"),
+                str(Path(temp_dir) / "monitoring.yml"),
+            )
+
+            with self.assertRaisesRegex(ValueError, "不能为空"):
+                service.save_monitoring({"enabled": True}, [{"id": "gateway", "name": "网关", "enabled": True, "url": ""}])
+
+    def test_rejects_out_of_range_monitoring_timeout(self) -> None:
+        """监控超时时间必须限制在合理范围内。"""
+
+        with TemporaryDirectory() as temp_dir:
+            service = ProjectConfigService(
+                str(Path(temp_dir) / "servers.yml"),
+                str(Path(temp_dir) / "monitoring.yml"),
+            )
+
+            with self.assertRaisesRegex(ValueError, "0 到 60 秒"):
+                service.save_monitoring({"enabled": True, "timeout_seconds": 120}, [])
+
 
 if __name__ == "__main__":
     unittest.main()

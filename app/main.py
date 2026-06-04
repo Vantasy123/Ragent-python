@@ -20,6 +20,7 @@ from app.api.routers import (
     ops,
     ops_agent,
     project_config,
+    security_audit,
     settings as settings_router,
     trace,
     unified_chat,
@@ -126,6 +127,7 @@ ROUTERS = [
     ops_agent.router,
     monitoring.router,
     project_config.router,
+    security_audit.router,
 ]
 
 for router in ROUTERS:

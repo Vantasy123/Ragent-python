@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from app.domain.models import User
@@ -71,7 +71,10 @@ def save_servers(payload: ServersPayload, _: User = Depends(require_admin)):
 
     service = ProjectConfigService()
     rows = [item.model_dump() for item in payload.servers]
-    return success(service.save_servers(rows), message="servers config saved")
+    try:
+        return success(service.save_servers(rows), message="servers config saved")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/monitoring")
@@ -87,12 +90,19 @@ def save_monitoring(payload: MonitoringPayload, _: User = Depends(require_admin)
     """保存监控配置到 config/monitoring.yml。"""
 
     service = ProjectConfigService()
-    return success(service.save_monitoring(payload.monitoring, payload.probes), message="monitoring config saved")
+    try:
+        return success(service.save_monitoring(payload.monitoring, payload.probes), message="monitoring config saved")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/probe-test")
 async def probe_test(payload: ProbeTestPayload, _: User = Depends(require_admin)):
     """按用户输入的 URL 执行一次 HTTP 探测，不写入配置文件。"""
 
-    result = await MonitoringService().http_probe("manual", payload.name, payload.url, {"source": "manual"})
+    try:
+        url = ProjectConfigService().validate_probe_url(payload.url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result = await MonitoringService().http_probe("manual", payload.name, url, {"source": "manual"})
     return success(result)
