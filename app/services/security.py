@@ -13,6 +13,7 @@ import os
 import time
 import uuid
 from typing import Any
+from urllib.parse import urlparse
 
 from app.core.config import settings
 
@@ -35,6 +36,7 @@ MIN_PRODUCTION_JWT_SECRET_LENGTH = 32
 MIN_PRODUCTION_ADMIN_PASSWORD_LENGTH = 12
 SUPPORTED_JWT_ALGORITHM = "HS256"
 SUPPORTED_JWT_TYPE = "JWT"
+DEVELOPMENT_CORS_HOSTS = {"localhost", "127.0.0.1", "::1", "frontend"}
 
 
 def is_production_environment() -> bool:
@@ -54,6 +56,7 @@ def validate_production_security_settings() -> None:
     problems: list[str] = []
     jwt_secret = str(settings.JWT_SECRET or "")
     admin_password = str(settings.DEFAULT_ADMIN_PASSWORD or "")
+    allowed_origins = list(settings.ALLOWED_ORIGINS or [])
 
     if jwt_secret in WEAK_JWT_SECRETS:
         problems.append("JWT_SECRET 仍使用默认值或占位值")
@@ -63,9 +66,36 @@ def validate_production_security_settings() -> None:
         problems.append("DEFAULT_ADMIN_PASSWORD 仍使用默认弱密码")
     if len(admin_password) < MIN_PRODUCTION_ADMIN_PASSWORD_LENGTH:
         problems.append(f"DEFAULT_ADMIN_PASSWORD 长度必须至少 {MIN_PRODUCTION_ADMIN_PASSWORD_LENGTH} 个字符")
+    cors_problems = _production_cors_problems(allowed_origins)
+    if cors_problems:
+        problems.append("ALLOWED_ORIGINS 生产环境不合规：" + "，".join(cors_problems))
 
     if problems:
         raise RuntimeError("生产安全配置不合规：" + "；".join(problems))
+
+
+def _production_cors_problems(allowed_origins: list[str]) -> list[str]:
+    """检查生产 CORS 来源，避免把本地开发来源或通配符带到线上。"""
+
+    problems: list[str] = []
+    for origin in allowed_origins:
+        normalized = str(origin or "").strip()
+        if not normalized:
+            continue
+        if normalized == "*":
+            problems.append("不能使用通配符 *")
+            continue
+        parsed = urlparse(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            problems.append(f"{normalized} 不是合法 HTTP(S) 来源")
+            continue
+        hostname = (parsed.hostname or "").lower()
+        if hostname in DEVELOPMENT_CORS_HOSTS:
+            problems.append(f"{normalized} 是开发或容器内部来源")
+            continue
+        if parsed.scheme != "https":
+            problems.append(f"{normalized} 必须使用 HTTPS")
+    return problems
 
 
 def hash_password(password: str, salt: str | None = None) -> str:

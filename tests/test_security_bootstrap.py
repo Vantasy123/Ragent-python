@@ -16,6 +16,7 @@ class ProductionSecuritySettingsTest(unittest.TestCase):
         self.original_debug = settings.DEBUG
         self.original_jwt_secret = settings.JWT_SECRET
         self.original_admin_password = settings.DEFAULT_ADMIN_PASSWORD
+        self.original_allowed_origins = list(settings.ALLOWED_ORIGINS)
 
     def tearDown(self) -> None:
         """恢复全局 settings。"""
@@ -24,6 +25,7 @@ class ProductionSecuritySettingsTest(unittest.TestCase):
         settings.DEBUG = self.original_debug
         settings.JWT_SECRET = self.original_jwt_secret
         settings.DEFAULT_ADMIN_PASSWORD = self.original_admin_password
+        settings.ALLOWED_ORIGINS = self.original_allowed_origins
 
     def test_production_rejects_default_credentials(self) -> None:
         """生产环境不能使用默认 JWT 密钥和默认管理员密码。"""
@@ -43,6 +45,7 @@ class ProductionSecuritySettingsTest(unittest.TestCase):
         settings.DEBUG = "false"
         settings.JWT_SECRET = "ragent-production-secret-32-chars-min"
         settings.DEFAULT_ADMIN_PASSWORD = "StrongAdminPassword2026!"
+        settings.ALLOWED_ORIGINS = ["https://console.example.com"]
 
         validate_production_security_settings()
 
@@ -53,8 +56,33 @@ class ProductionSecuritySettingsTest(unittest.TestCase):
         settings.DEBUG = "false"
         settings.JWT_SECRET = "replace-with-at-least-32-random-characters"
         settings.DEFAULT_ADMIN_PASSWORD = "replace-with-a-strong-admin-password"
+        settings.ALLOWED_ORIGINS = ["https://console.example.com"]
 
         with self.assertRaisesRegex(RuntimeError, "占位值"):
+            validate_production_security_settings()
+
+    def test_production_rejects_development_cors_origins(self) -> None:
+        """生产环境不能继续放行 localhost 或容器内部前端来源。"""
+
+        settings.ENVIRONMENT = "production"
+        settings.DEBUG = "false"
+        settings.JWT_SECRET = "ragent-production-secret-32-chars-min"
+        settings.DEFAULT_ADMIN_PASSWORD = "StrongAdminPassword2026!"
+        settings.ALLOWED_ORIGINS = ["http://localhost:5173", "http://frontend:80"]
+
+        with self.assertRaisesRegex(RuntimeError, "ALLOWED_ORIGINS.*开发"):
+            validate_production_security_settings()
+
+    def test_production_rejects_wildcard_or_insecure_cors_origins(self) -> None:
+        """生产 CORS 来源不能使用通配符，也不能使用普通 HTTP。"""
+
+        settings.ENVIRONMENT = "production"
+        settings.DEBUG = "false"
+        settings.JWT_SECRET = "ragent-production-secret-32-chars-min"
+        settings.DEFAULT_ADMIN_PASSWORD = "StrongAdminPassword2026!"
+        settings.ALLOWED_ORIGINS = ["*", "http://console.example.com"]
+
+        with self.assertRaisesRegex(RuntimeError, "通配符.*HTTPS"):
             validate_production_security_settings()
 
     def test_debug_environment_allows_local_defaults(self) -> None:
@@ -64,6 +92,7 @@ class ProductionSecuritySettingsTest(unittest.TestCase):
         settings.DEBUG = "true"
         settings.JWT_SECRET = "ragent-python-secret"
         settings.DEFAULT_ADMIN_PASSWORD = "admin123"
+        settings.ALLOWED_ORIGINS = ["http://localhost:5173"]
 
         validate_production_security_settings()
 
