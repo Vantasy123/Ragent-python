@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
+from app.core.security_headers import SecurityHeadersMiddleware
 from app.api.routers import (
     auth,
     conversations,
@@ -85,6 +86,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.APP_NAME, version=settings.APP_VERSION, lifespan=lifespan)
+
+# 统一补齐浏览器安全响应头，降低点击劫持、MIME 嗅探和来源泄露风险。
+app.add_middleware(SecurityHeadersMiddleware)
 
 # 暴露 Prometheus 指标端点，便于监控服务抓取 FastAPI 运行指标。
 try:
