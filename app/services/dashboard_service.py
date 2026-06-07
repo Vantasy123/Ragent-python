@@ -93,4 +93,83 @@ class DashboardService:
             )
         return {"points": days}
 
+    def finops_stats(self) -> dict:
+        """finops_stats 函数：聚合大模型 Token 消费及算力成本统计，用于后台商业计费看板展示。"""
+        from sqlalchemy import func
+
+        # 1. 汇总总体用量和费用
+        total_stats = self.db.query(
+            func.sum(TraceRun.prompt_tokens),
+            func.sum(TraceRun.completion_tokens),
+            func.sum(TraceRun.total_tokens),
+            func.sum(TraceRun.cost)
+        ).first()
+
+        prompt_tokens = int(total_stats[0] or 0)
+        completion_tokens = int(total_stats[1] or 0)
+        total_tokens = int(total_stats[2] or 0)
+        total_cost = float(total_stats[3] or 0.0)
+
+        # 2. 汇总今日和昨日消费
+        now = shanghai_now()
+        today_start, today_end, _ = shanghai_day_utc_range(now, 0)
+        yesterday_start, yesterday_end, _ = shanghai_day_utc_range(now, 1)
+
+        today_cost = float(self.db.query(func.sum(TraceRun.cost)).filter(TraceRun.created_at >= today_start, TraceRun.created_at < today_end).scalar() or 0.0)
+        yesterday_cost = float(self.db.query(func.sum(TraceRun.cost)).filter(TraceRun.created_at >= yesterday_start, TraceRun.created_at < yesterday_end).scalar() or 0.0)
+
+        # 3. 最近 7 天的每日消费折线
+        points = []
+        for offset in range(6, -1, -1):
+            day_start, day_end, label = shanghai_day_utc_range(now, offset)
+            day_data = self.db.query(
+                func.sum(TraceRun.cost),
+                func.sum(TraceRun.total_tokens)
+            ).filter(TraceRun.created_at >= day_start, TraceRun.created_at < day_end).first()
+            points.append({
+                "date": label,
+                "cost": round(float(day_data[0] or 0.0), 6),
+                "tokens": int(day_data[1] or 0)
+            })
+
+        # 4. 不同大模型的消费占比 (分析最近 1000 条消费 Span 结构)
+        spans_with_cost = self.db.query(TraceSpan).filter(TraceSpan.cost > 0).order_by(TraceSpan.created_at.desc()).limit(1000).all()
+        model_costs = {}
+        for span in spans_with_cost:
+            model_name = "unknown"
+            meta = span.metadata_json or {}
+            for source in [meta.get("context"), meta.get("output"), meta.get("input")]:
+                if not source:
+                    continue
+                if "model" in source:
+                    model_name = source["model"]
+                    break
+                if "model_name" in source:
+                    model_name = source["model_name"]
+                    break
+            
+            if model_name == "unknown":
+                if span.operation == "embedding":
+                    model_name = "text-embedding-v3"
+                else:
+                    model_name = "qwen-plus"
+                    
+            model_costs[model_name] = model_costs.get(model_name, 0.0) + (span.cost or 0.0)
+
+        model_distribution = [
+            {"model": name, "cost": round(cost, 6)}
+            for name, cost in model_costs.items()
+        ]
+
+        return {
+            "totalCost": round(total_cost, 6),
+            "totalTokens": total_tokens,
+            "promptTokens": prompt_tokens,
+            "completionTokens": completion_tokens,
+            "todayCost": round(today_cost, 6),
+            "yesterdayCost": round(yesterday_cost, 6),
+            "points": points,
+            "modelDistribution": model_distribution
+        }
+
 

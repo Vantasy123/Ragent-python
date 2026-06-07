@@ -35,3 +35,9 @@ def trends(db: Session = Depends(get_db), _: User = Depends(require_admin)):
     return success(DashboardService(db).trends())
 
 
+@router.get("/finops")
+def finops(db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """finops 函数：查询算力成本看板的多维度统计值，包含今日消费、成本折线与模型占比。"""
+    return success(DashboardService(db).finops_stats())
+
+

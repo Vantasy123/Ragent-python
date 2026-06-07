@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.rag.retrieval.keyword_bm25 import KeywordBM25Retriever
@@ -52,6 +53,42 @@ class MultiChannelRetriever:
             self.embeddings = shared_embeddings
         return self.vector_store
 
+    def _get_kb_config(self, db: Session | None, kb_id: str | None) -> dict[str, Any] | None:
+        """从数据库读取知识库检索参数，若未传 db 则根据 SessionLocal 自主创建并关闭。"""
+        if not kb_id:
+            return None
+        from app.domain.models import KnowledgeBase
+        from app.core.database import SessionLocal
+
+        local_db = db
+        close_local = False
+        if local_db is None:
+            try:
+                local_db = SessionLocal()
+                close_local = True
+            except Exception:
+                return None
+
+        try:
+            # 兼容 uuid id 或 collection_name
+            kb = local_db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+            if not kb:
+                kb = local_db.query(KnowledgeBase).filter(KnowledgeBase.collection_name == kb_id).first()
+            if kb:
+                return {
+                    "vector_weight": kb.vector_weight,
+                    "bm25_weight": kb.bm25_weight,
+                    "rerank_enabled": kb.rerank_enabled,
+                    "rerank_threshold": kb.rerank_threshold,
+                    "top_k": kb.top_k,
+                }
+        except Exception as exc:
+            logger.warning("Failed to query KnowledgeBase config for kb_id %s: %s", kb_id, exc)
+        finally:
+            if close_local and local_db:
+                local_db.close()
+        return None
+
     async def retrieve(
         self,
         query: str,
@@ -59,9 +96,19 @@ class MultiChannelRetriever:
         collection_name: str | None = None,
         top_k: int | None = None,
         intent_nodes: list[dict[str, Any]] | None = None,
+        db: Session | None = None,
     ) -> list[RetrievedChunk]:
         """retrieve 函数：执行检索逻辑，从知识库或索引中找出和用户问题最相关的内容。"""
-        effective_top_k = top_k if top_k is not None else get_runtime_settings().top_k
+        # 尝试读取数据库中特定知识库的配置
+        kb_config = self._get_kb_config(db, kb_id or collection_name)
+
+        if top_k is not None:
+            effective_top_k = top_k
+        elif kb_config is not None and kb_config.get("top_k") is not None:
+            effective_top_k = kb_config["top_k"]
+        else:
+            effective_top_k = get_runtime_settings(db).top_k
+
         logger.info("Starting multi-channel retrieval: top_k=%s query=%s", effective_top_k, query[:50])
 
         tasks = []
@@ -95,7 +142,17 @@ class MultiChannelRetriever:
         if not vector_chunks:
             return self._rank_and_trim(keyword_chunks, effective_top_k)
 
-        return self._rrf_fuse(vector_chunks, keyword_chunks, effective_top_k)
+        # 提取融合权重参数
+        vector_weight = kb_config.get("vector_weight", 0.5) if kb_config else 0.5
+        bm25_weight = kb_config.get("bm25_weight", 0.5) if kb_config else 0.5
+
+        return self._rrf_fuse(
+            vector_chunks,
+            keyword_chunks,
+            effective_top_k,
+            vector_weight=vector_weight,
+            bm25_weight=bm25_weight,
+        )
 
     async def _intent_based_retrieve(
         self,
@@ -195,7 +252,14 @@ class MultiChannelRetriever:
         deduplicated.sort(key=lambda chunk: chunk.score, reverse=True)
         return deduplicated[:top_k]
 
-    def _rrf_fuse(self, vector_chunks: list[RetrievedChunk], keyword_chunks: list[RetrievedChunk], top_k: int) -> list[RetrievedChunk]:
+    def _rrf_fuse(
+        self,
+        vector_chunks: list[RetrievedChunk],
+        keyword_chunks: list[RetrievedChunk],
+        top_k: int,
+        vector_weight: float = 0.5,
+        bm25_weight: float = 0.5,
+    ) -> list[RetrievedChunk]:
         """用 Reciprocal Rank Fusion 融合向量和关键词两路结果。"""
 
         rrf_k = max(1, int(getattr(settings, "HYBRID_RRF_K", 60)))
@@ -206,9 +270,10 @@ class MultiChannelRetriever:
         merged: dict[str, RetrievedChunk] = {}
 
         for source_name, chunks in ranked_sources:
+            weight = vector_weight if source_name == "vector" else bm25_weight
             for rank, chunk in enumerate(chunks, start=1):
                 key = self._chunk_key(chunk)
-                rrf_score = 1.0 / (rrf_k + rank)
+                rrf_score = weight * (1.0 / (rrf_k + rank))
                 existing = merged.get(key)
                 if existing is None:
                     metadata = dict(chunk.metadata or {})

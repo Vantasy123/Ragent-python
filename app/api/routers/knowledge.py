@@ -51,6 +51,11 @@ class KnowledgeBasePayload(BaseModel):
     description: str = ""
     embedding_model: str = "text-embedding-v3"
     enabled: bool | None = None
+    vector_weight: float | None = None
+    bm25_weight: float | None = None
+    rerank_enabled: bool | None = None
+    rerank_threshold: float | None = None
+    top_k: int | None = None
 
 
 class DocumentUpdatePayload(BaseModel):
@@ -85,7 +90,16 @@ def chunk_strategies(db: Session = Depends(get_db), _: User = Depends(require_ad
 @router.post("/knowledge-base")
 def create_kb(payload: KnowledgeBasePayload, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     """create_kb 函数：创建新的业务记录，负责组织入库字段并返回创建后的结果。"""
-    kb = KnowledgeService(db).create_kb(payload.name, payload.description, payload.embedding_model)
+    kb = KnowledgeService(db).create_kb(
+        name=payload.name,
+        description=payload.description,
+        embedding_model=payload.embedding_model,
+        vector_weight=payload.vector_weight if payload.vector_weight is not None else 0.5,
+        bm25_weight=payload.bm25_weight if payload.bm25_weight is not None else 0.5,
+        rerank_enabled=payload.rerank_enabled if payload.rerank_enabled is not None else True,
+        rerank_threshold=payload.rerank_threshold if payload.rerank_threshold is not None else 0.0,
+        top_k=payload.top_k if payload.top_k is not None else 8,
+    )
     kb.created_by = user.id
     db.commit()
     return success({"id": kb.id, "name": kb.name, "collectionName": kb.collection_name})
@@ -123,6 +137,11 @@ def get_kb(kb_id: str, db: Session = Depends(get_db), _: User = Depends(require_
             "embeddingModel": kb.embedding_model,
             "enabled": kb.enabled,
             "createdAt": to_shanghai_iso(kb.created_at),
+            "vectorWeight": kb.vector_weight,
+            "bm25Weight": kb.bm25_weight,
+            "rerankEnabled": kb.rerank_enabled,
+            "rerankThreshold": kb.rerank_threshold,
+            "topK": kb.top_k,
         }
     )
 
@@ -145,6 +164,11 @@ def list_kb(
             "embeddingModel": row.embedding_model,
             "enabled": row.enabled,
             "createdAt": to_shanghai_iso(row.created_at),
+            "vectorWeight": row.vector_weight,
+            "bm25Weight": row.bm25_weight,
+            "rerankEnabled": row.rerank_enabled,
+            "rerankThreshold": row.rerank_threshold,
+            "topK": row.top_k,
         }
         for row in rows
     ]

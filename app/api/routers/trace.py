@@ -87,6 +87,10 @@ def list_runs(
             "status": row.status,
             "totalDurationMs": row.total_duration_ms,
             "createdAt": to_shanghai_iso(row.created_at),
+            "promptTokens": row.prompt_tokens,
+            "completionTokens": row.completion_tokens,
+            "totalTokens": row.total_tokens,
+            "cost": row.cost,
         }
         for row in rows
     ]
@@ -111,6 +115,10 @@ def get_run(trace_id: str, db: Session = Depends(get_db), _: User = Depends(requ
             "createdAt": to_shanghai_iso(row.created_at),
             "evaluationSummary": evaluation_service.run_to_dict(evaluation) if evaluation else None,
             "metrics": [evaluation_service.metric_to_dict(metric) for metric in evaluation.metrics] if evaluation else [],
+            "promptTokens": row.prompt_tokens,
+            "completionTokens": row.completion_tokens,
+            "totalTokens": row.total_tokens,
+            "cost": row.cost,
         }
     )
 
@@ -138,6 +146,10 @@ def get_nodes(trace_id: str, db: Session = Depends(get_db), _: User = Depends(re
                 "output": output_data,
                 "errorMessage": span.error_message,
                 "createdAt": to_shanghai_iso(span.created_at),
+                "promptTokens": span.prompt_tokens,
+                "completionTokens": span.completion_tokens,
+                "totalTokens": span.total_tokens,
+                "cost": span.cost,
             }
         )
     return success(nodes)

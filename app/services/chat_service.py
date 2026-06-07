@@ -286,16 +286,45 @@ async def _prepare_rag_context(service: ConversationService, conversation_id: st
         raise ChatGenerationError("query_rewrite", f"{type(exc).__name__}: {exc}") from exc
 
     try:
-        retrieved_chunks = await multi_channel_retriever.retrieve(query=rewritten, top_k=runtime.top_k)
+        retrieved_chunks = await multi_channel_retriever.retrieve(query=rewritten, top_k=runtime.top_k, db=service.db)
     except Exception as exc:
         raise ChatGenerationError("retrieval", f"{type(exc).__name__}: {exc}") from exc
 
     final_chunks = retrieved_chunks
     try:
-        documents = [getattr(chunk, "content", getattr(chunk, "page_content", str(chunk))) for chunk in retrieved_chunks]
-        reranked = reranker.rerank_with_threshold(rewritten, documents, threshold=settings.RERANK_THRESHOLD)
-        if reranked:
-            final_chunks = [retrieved_chunks[item["index"]] for item in reranked if item["index"] < len(retrieved_chunks)]
+        # 从检索结果中反推 kb_id
+        kb_id = None
+        for chunk in retrieved_chunks:
+            meta = _chunk_metadata(chunk)
+            if meta and meta.get("kb_id"):
+                kb_id = meta["kb_id"]
+                break
+
+        # 默认使用全局配置
+        rerank_enabled = getattr(settings, "RERANK_ENABLED", True)
+        rerank_threshold = getattr(settings, "RERANK_THRESHOLD", 0.0)
+
+        if kb_id and service.db:
+            try:
+                from app.domain.models import KnowledgeBase
+                kb = service.db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+                if not kb:
+                    kb = service.db.query(KnowledgeBase).filter(KnowledgeBase.collection_name == kb_id).first()
+                if kb:
+                    rerank_enabled = kb.rerank_enabled
+                    rerank_threshold = kb.rerank_threshold
+            except Exception as exc:
+                logger.warning("查询重排参数失败，使用默认配置: %s", exc)
+
+        if rerank_enabled:
+            documents = [getattr(chunk, "content", getattr(chunk, "page_content", str(chunk))) for chunk in retrieved_chunks]
+            reranked = reranker.rerank_with_threshold(rewritten, documents, threshold=rerank_threshold)
+            if reranked:
+                final_chunks = [retrieved_chunks[item["index"]] for item in reranked if item["index"] < len(retrieved_chunks)]
+            else:
+                final_chunks = []
+        else:
+            logger.info("当前知识库已配置关闭重排，跳过重排步骤")
     except Exception:
         logger.warning("重排失败，回退使用原始检索结果", exc_info=True)
 

@@ -50,12 +50,12 @@ class ToolRegistry:
         """_get_time 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
         return {"success": True, "data": {"now": to_shanghai_iso(shanghai_now())}}
 
-    async def _search_kb(self, query: str = "", top_k: int = 5, **kwargs) -> dict:
+    async def _search_kb(self, query: str = "", top_k: int = 5, kb_id: str | None = None, **kwargs) -> dict:
         """_search_kb 函数：执行检索逻辑，从知识库或索引中找出和用户问题最相关的内容。"""
         try:
             from app.rag.retrieval.multi_channel_retriever import MultiChannelRetriever
 
-            rows = MultiChannelRetriever().retrieve(query, top_k=top_k)
+            rows = await MultiChannelRetriever().retrieve(query, kb_id=kb_id, top_k=top_k)
             return {
                 "success": True,
                 "data": [

@@ -143,6 +143,13 @@ class KnowledgeBase(Base, TimestampMixin):
     created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # 混合检索与重排策略字段 (用于维度 B 动态调参)
+    vector_weight: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
+    bm25_weight: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
+    rerank_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    rerank_threshold: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    top_k: Mapped[int] = mapped_column(Integer, default=8, nullable=False)
+
     documents: Mapped[list["KnowledgeDocument"]] = relationship(back_populates="knowledge_base", cascade="all, delete-orphan")
 
 
@@ -377,6 +384,12 @@ class TraceRun(Base):
     total_duration_ms: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
 
+    # Token 用量与计费审计字段 (用于维度 D 算力审计)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cost: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+
     spans: Mapped[list["TraceSpan"]] = relationship(back_populates="trace_run", cascade="all, delete-orphan")
     evaluation_runs: Mapped[list["EvaluationRun"]] = relationship(back_populates="trace_run", cascade="all, delete-orphan")
 
@@ -399,6 +412,12 @@ class TraceSpan(Base):
     # 当前步骤失败时的错误信息。
     error_message: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
+
+    # 单步骤 Token 用量与计费 (用于维度 D)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    cost: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
 
     trace_run: Mapped["TraceRun"] = relationship(back_populates="spans")
 

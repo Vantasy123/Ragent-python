@@ -71,10 +71,30 @@ class KnowledgeService:
             {"value": "semantic", "label": "语义切分"},
         ]
 
-    def create_kb(self, name: str, description: str = "", embedding_model: str = settings.EMBEDDING_MODEL) -> KnowledgeBase:
+    def create_kb(
+        self,
+        name: str,
+        description: str = "",
+        embedding_model: str = settings.EMBEDDING_MODEL,
+        vector_weight: float = 0.5,
+        bm25_weight: float = 0.5,
+        rerank_enabled: bool = True,
+        rerank_threshold: float = 0.0,
+        top_k: int = 8,
+    ) -> KnowledgeBase:
         # 集合名改为东八区可读时间标识，避免界面或排障时看到 UTC 时间戳难以判断。
         """create_kb 函数：创建新的业务记录，负责组织入库字段并返回创建后的结果。"""
-        kb = KnowledgeBase(name=name, description=description, embedding_model=embedding_model, collection_name=shanghai_time_id("kb"))
+        kb = KnowledgeBase(
+            name=name,
+            description=description,
+            embedding_model=embedding_model,
+            collection_name=shanghai_time_id("kb"),
+            vector_weight=vector_weight,
+            bm25_weight=bm25_weight,
+            rerank_enabled=rerank_enabled,
+            rerank_threshold=rerank_threshold,
+            top_k=top_k,
+        )
         self.db.add(kb)
         self.db.commit()
         self.db.refresh(kb)
@@ -85,7 +105,18 @@ class KnowledgeService:
         kb = self.get_kb(kb_id)
         if not kb:
             return None
-        for field in ["name", "description", "embedding_model", "enabled"]:
+        allowed_fields = [
+            "name",
+            "description",
+            "embedding_model",
+            "enabled",
+            "vector_weight",
+            "bm25_weight",
+            "rerank_enabled",
+            "rerank_threshold",
+            "top_k",
+        ]
+        for field in allowed_fields:
             if field in payload and payload[field] is not None:
                 setattr(kb, field, payload[field])
         self.db.commit()
