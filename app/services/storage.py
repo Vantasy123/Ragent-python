@@ -28,6 +28,7 @@ ALLOWED_UPLOAD_SUFFIXES = frozenset(
         ".yml",
     }
 )
+UPLOAD_READ_CHUNK_SIZE = 1024 * 1024
 
 
 class UploadValidationError(ValueError):
@@ -58,19 +59,51 @@ class LocalStorageService:
         suffix = self._normalize_upload_suffix(upload.filename)
         filename = f"{uuid.uuid4()}{suffix}"
         target = self.base_dir / filename
-        content = await upload.read()
+        content = await self._read_upload_content(upload, max_file_size, max_request_size)
         content_size = len(content)
         if content_size == 0:
             raise UploadValidationError("File is empty", status_code=400)
-        if max_request_size is not None and content_size > max_request_size:
-            raise UploadValidationError("File exceeds maxRequestSize", status_code=413)
-        if max_file_size is not None and content_size > max_file_size:
-            raise UploadValidationError("File exceeds maxFileSize", status_code=413)
         existing = self._find_existing_by_hash(content)
         if existing is not None:
             return str(existing), content_size
         target.write_bytes(content)
         return str(target), content_size
+
+    async def _read_upload_content(
+        self,
+        upload: UploadFile,
+        max_file_size: int | None = None,
+        max_request_size: int | None = None,
+    ) -> bytes:
+        """分块读取上传内容，并在超限时提前终止，避免大文件一次性进入内存。"""
+
+        limit, error_message = self._effective_size_limit(max_file_size, max_request_size)
+        content = bytearray()
+        while True:
+            chunk = await upload.read(UPLOAD_READ_CHUNK_SIZE)
+            if not chunk:
+                break
+            content.extend(chunk)
+            if limit is not None and len(content) > limit:
+                raise UploadValidationError(error_message or "File exceeds size limit", status_code=413)
+        return bytes(content)
+
+    def _effective_size_limit(
+        self,
+        max_file_size: int | None = None,
+        max_request_size: int | None = None,
+    ) -> tuple[int | None, str | None]:
+        """计算最严格的上传大小限制，并保持旧接口的错误信息优先级。"""
+
+        if max_request_size is None and max_file_size is None:
+            return None, None
+        if max_request_size is None:
+            return max_file_size, "File exceeds maxFileSize"
+        if max_file_size is None:
+            return max_request_size, "File exceeds maxRequestSize"
+        if max_request_size <= max_file_size:
+            return max_request_size, "File exceeds maxRequestSize"
+        return max_file_size, "File exceeds maxFileSize"
 
     def _normalize_upload_suffix(self, filename: str | None) -> str:
         """校验并规范化上传文件扩展名，避免危险文件进入知识库处理链路。"""
