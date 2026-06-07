@@ -21,13 +21,13 @@ API 端点：
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.domain.models import User
-from app.services.auth import login, logout
+from app.services.auth import LoginRateLimitExceeded, login, logout
 from app.services.common import success
 from app.services.dependencies import get_current_user
 
@@ -41,10 +41,17 @@ class LoginRequest(BaseModel):
 
 
 @router.post("/auth/login")
-def login_api(payload: LoginRequest, db: Session = Depends(get_db)):
+def login_api(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     """登录接口：验证用户名和密码，成功后返回 JWT 令牌。"""
     try:
-        return success(login(db, payload.username, payload.password))
+        client_host = request.client.host if request.client else None
+        return success(login(db, payload.username, payload.password, client_host=client_host))
+    except LoginRateLimitExceeded as exc:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=str(exc),
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

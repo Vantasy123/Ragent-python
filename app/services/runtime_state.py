@@ -14,6 +14,7 @@ from app.core.redis_client import get_redis_client
 logger = logging.getLogger(__name__)
 
 _local_counters: dict[str, tuple[int, float]] = {}
+_local_values: dict[str, tuple[str, float]] = {}
 _local_lock = threading.Lock()
 
 
@@ -28,6 +29,14 @@ def _cleanup_local_counter(key: str) -> None:
     value = _local_counters.get(key)
     if value and value[1] <= _now():
         _local_counters.pop(key, None)
+
+
+def _cleanup_local_value(key: str) -> None:
+    """清理过期的本地临时值，避免 Redis 不可用时内存无限增长。"""
+
+    value = _local_values.get(key)
+    if value and value[1] <= _now():
+        _local_values.pop(key, None)
 
 
 def mark_token_revoked(jti: str, ttl_seconds: int) -> None:
@@ -51,6 +60,61 @@ def remember_token_revoked(jti: str, ttl_seconds: int) -> None:
     """MySQL 命中撤销记录后回填 Redis，降低后续鉴权查表成本。"""
 
     mark_token_revoked(jti, ttl_seconds)
+
+
+def set_temporary_value(key: str, value: str, ttl_seconds: int) -> None:
+    """写入带过期时间的运行时值；Redis 不可用时降级到进程内存。"""
+
+    if not key or ttl_seconds <= 0:
+        return
+    redis = get_redis_client()
+    if redis.set(key, value, ex=ttl_seconds):
+        return
+    with _local_lock:
+        _local_values[key] = (value, _now() + ttl_seconds)
+
+
+def get_temporary_value(key: str) -> str | None:
+    """读取带过期时间的运行时值；过期或不存在时返回 None。"""
+
+    if not key:
+        return None
+    redis = get_redis_client()
+    value = redis.get(key)
+    if value is not None:
+        return value
+    with _local_lock:
+        _cleanup_local_value(key)
+        local = _local_values.get(key)
+        return local[0] if local else None
+
+
+def delete_temporary_value(key: str) -> None:
+    """删除运行时临时值，同时清理 Redis 和本地降级存储。"""
+
+    if not key:
+        return
+    get_redis_client().delete(key)
+    with _local_lock:
+        _local_values.pop(key, None)
+        _local_counters.pop(key, None)
+
+
+def increment_temporary_counter(key: str, ttl_seconds: int) -> int:
+    """自增带 TTL 的运行时计数器，适合失败次数和短期风控计数。"""
+
+    if not key or ttl_seconds <= 0:
+        return 0
+    redis = get_redis_client()
+    value = redis.incr_with_ttl(key, ttl_seconds)
+    if value is not None:
+        return value
+    with _local_lock:
+        _cleanup_local_counter(key)
+        count, _ = _local_counters.get(key, (0, _now() + ttl_seconds))
+        count += 1
+        _local_counters[key] = (count, _now() + ttl_seconds)
+        return count
 
 
 def allow_fixed_window(key: str, limit: int, window_seconds: int) -> bool:
