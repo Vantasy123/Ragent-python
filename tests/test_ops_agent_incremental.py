@@ -133,6 +133,7 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(blocked.risk_level, "write")
         self.assertTrue(blocked.requires_approval)
         self.assertTrue(executed.success)
+        self.assertTrue(executed.requires_approval)
         self.assertEqual(captured[-1], ["restart", "container-1"])
 
     async def test_unknown_safe_command_is_rejected_without_approval(self) -> None:
@@ -245,18 +246,26 @@ class FakeToolkit:
 
     def __init__(self) -> None:
         self.called = False
-        self._tools = {"write_tool": self.write_tool}
+        self.read_called = False
+        self._tools = {"write_tool": self.write_tool, "read_tool": self.read_tool}
 
     @property
     def tools(self) -> dict:
         return self._tools
 
     def specs(self) -> list[ToolSpec]:
-        return [ToolSpec("write_tool", "写操作", risk_level="write", requires_approval=True)]
+        return [
+            ToolSpec("write_tool", "写操作", risk_level="write", requires_approval=True),
+            ToolSpec("read_tool", "只读操作"),
+        ]
 
     def write_tool(self, service: str = "api") -> dict:
         self.called = True
         return {"success": True, "summary": f"已处理 {service}", "data": {"service": service}}
+
+    def read_tool(self) -> dict:
+        self.read_called = True
+        return {"success": True, "summary": "已读取"}
 
 
 class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
@@ -339,6 +348,46 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.exception.status_code, 400)
         self.assertIn("重复", context.exception.detail)
         self.assertFalse(toolkit.called)
+
+    async def test_approval_rejects_tool_call_argument_drift(self) -> None:
+        """审批记录和原始工具调用参数不一致时，不能继续执行写操作。"""
+
+        self.approval.args = {"service": "api"}
+        self.tool_call.args = {"service": "frontend"}
+        self.db.commit()
+        service = OpsAgentService(self.db)
+        toolkit = FakeToolkit()
+        service.toolkit = toolkit
+
+        with self.assertRaises(HTTPException) as context:
+            await service.approve(self.run.id, self.approval.id, True, "同意", self.user)
+
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertIn("不一致", context.exception.detail)
+        self.assertFalse(toolkit.called)
+        self.db.refresh(self.approval)
+        self.assertEqual(self.approval.status, "pending")
+
+    async def test_approval_revalidates_current_tool_policy(self) -> None:
+        """审批接口只能放行当前仍需要审批的工具调用，不能借审批执行只读工具。"""
+
+        self.approval.tool_name = "read_tool"
+        self.approval.args = {}
+        self.tool_call.tool_name = "read_tool"
+        self.tool_call.args = {}
+        self.db.commit()
+        service = OpsAgentService(self.db)
+        toolkit = FakeToolkit()
+        service.toolkit = toolkit
+
+        with self.assertRaises(HTTPException) as context:
+            await service.approve(self.run.id, self.approval.id, True, "同意", self.user)
+
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertIn("不需要审批", context.exception.detail)
+        self.assertFalse(toolkit.read_called)
+        self.db.refresh(self.approval)
+        self.assertEqual(self.approval.status, "pending")
 
     async def test_approval_audit_lists_operator_and_filters_status(self) -> None:
         """审批审计应能追溯审批人、工具参数和审批状态。"""

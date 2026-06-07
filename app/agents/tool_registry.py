@@ -136,7 +136,7 @@ class UnifiedTool:
             data=data,
             error=str(payload.get("error") or ""),
             risk_level=str(payload.get("riskLevel") or self.spec.risk_level),
-            requires_approval=self.spec.requires_approval,
+            requires_approval=bool(payload.get("requiresApproval", self.spec.requires_approval)),
             source=self.spec.source,
             category=self.spec.category,
         )

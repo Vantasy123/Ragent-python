@@ -270,32 +270,36 @@ class OpsAgentService:
         if approval.status != "pending":
             raise HTTPException(status_code=400, detail="审批已处理，不能重复提交")
 
-        approval.status = "approved" if approved else "rejected"
+        tool_call = self._approval_tool_call(run_id, approval)
+
+        if not approved:
+            approval.status = "rejected"
+            approval.approved_by = user.id
+            approval.comment = comment or ""
+            approval.decided_at = utc_now_naive()
+            tool_call.status = "blocked"
+            tool_call.approval_status = "rejected"
+            tool_call.error_message = "approval_rejected"
+            self.db.commit()
+            return {"status": "rejected"}
+
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=self.toolkit)
+        risk_level = self._validate_approval_policy(registry, approval)
+        tool_call.risk_level = risk_level
+        approval.status = "approved"
         approval.approved_by = user.id
         approval.comment = comment or ""
         approval.decided_at = utc_now_naive()
 
-        if not approved:
-            tool_call = self.db.query(AgentToolCall).filter(AgentToolCall.id == approval.tool_call_id).first()
-            if tool_call:
-                tool_call.status = "blocked"
-                tool_call.approval_status = "rejected"
-                tool_call.error_message = "approval_rejected"
-            self.db.commit()
-            return {"status": "rejected"}
-
         started = time.perf_counter()
-        registry = UnifiedToolRegistry(include_ops=True, toolkit=self.toolkit)
         result_obj = await registry.call(ToolCallRequest(name=approval.tool_name, args=approval.args), skip_approval=True)
         result = result_obj.to_dict()
         duration_ms = max(1, int((time.perf_counter() - started) * 1000))
-        tool_call = self.db.query(AgentToolCall).filter(AgentToolCall.id == approval.tool_call_id).first()
-        if tool_call:
-            tool_call.status = "success" if result_obj.success else "failed"
-            tool_call.result = result
-            tool_call.duration_ms = duration_ms
-            tool_call.approval_status = "approved"
-            tool_call.error_message = result_obj.error
+        tool_call.status = "success" if result_obj.success else "failed"
+        tool_call.result = result
+        tool_call.duration_ms = duration_ms
+        tool_call.approval_status = "approved"
+        tool_call.error_message = result_obj.error
         run = self.db.query(AgentRun).filter(AgentRun.id == run_id).first()
         if run and run.trace_id:
             trace_service = TraceService(self.db)
@@ -321,6 +325,35 @@ class OpsAgentService:
             )
         self.db.commit()
         return {"status": "approved", "result": result}
+
+    def _approval_tool_call(self, run_id: str, approval: AgentApproval) -> AgentToolCall:
+        """读取并校验审批绑定的原始工具调用，避免审批记录漂移后越权执行。"""
+
+        if not approval.tool_call_id:
+            raise HTTPException(status_code=400, detail="审批缺少绑定的工具调用")
+        tool_call = (
+            self.db.query(AgentToolCall)
+            .filter(AgentToolCall.id == approval.tool_call_id, AgentToolCall.run_id == run_id)
+            .first()
+        )
+        if not tool_call:
+            raise HTTPException(status_code=400, detail="审批绑定的工具调用不存在")
+        if tool_call.approval_status != "pending" or tool_call.status != "blocked":
+            raise HTTPException(status_code=400, detail="审批绑定的工具调用状态异常")
+        if tool_call.tool_name != approval.tool_name or (tool_call.args or {}) != (approval.args or {}):
+            raise HTTPException(status_code=400, detail="审批记录与工具调用不一致")
+        return tool_call
+
+    def _validate_approval_policy(self, registry: UnifiedToolRegistry, approval: AgentApproval) -> str:
+        """按当前工具策略复核审批必要性，防止历史审批放行非写操作或未知工具。"""
+
+        tool = registry.tools.get(approval.tool_name)
+        if not tool:
+            raise HTTPException(status_code=400, detail="审批工具不存在或已被禁用")
+        risk_level, requires_approval = tool.policy_for(approval.args or {})
+        if not requires_approval:
+            raise HTTPException(status_code=400, detail="该工具调用当前不需要审批，拒绝通过审批接口执行")
+        return risk_level
 
     def list_approval_audit_logs(
         self,
