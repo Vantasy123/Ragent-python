@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -35,7 +35,7 @@ from app.core.database import get_db
 from app.core.time_utils import to_shanghai_iso
 from app.domain.models import User
 from app.services.chat_service import ConversationService
-from app.services.common import page, success
+from app.services.common import MAX_PAGE_SIZE, page, success
 from app.services.dependencies import get_current_user
 
 router = APIRouter(tags=["conversations"])
@@ -55,7 +55,12 @@ class FeedbackRequest(BaseModel):
 
 
 @router.get("/conversations")
-def list_conversations(pageNo: int = 1, pageSize: int = 10, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+def list_conversations(
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(10, ge=1, le=MAX_PAGE_SIZE),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """list_conversations 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
     rows, total = ConversationService(db).list_conversations(user.id, pageNo, pageSize)
     items = [{"id": row.id, "title": row.title, "messageCount": row.message_count, "updatedAt": to_shanghai_iso(row.updated_at)} for row in rows]

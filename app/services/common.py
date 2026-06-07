@@ -8,6 +8,10 @@ from __future__ import annotations
 from typing import Any
 
 
+MAX_PAGE_SIZE = 100
+MAX_DETAIL_PAGE_SIZE = 200
+
+
 def success(data: Any = None, message: str = "success") -> dict:
     """success 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     return {"code": 200, "message": message, "data": data}

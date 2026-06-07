@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     OPENAI_API_BASE: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     CHAT_MODEL: str = "qwen-plus"
     EMBEDDING_MODEL: str = "text-embedding-v3"
+    EMBEDDING_API_KEY: str = ""
+    EMBEDDING_API_BASE: str = ""
     TEMPERATURE: float = 0.7
     OPENAI_EVALS_ENABLED: bool = False
     OPENAI_EVALS_API_KEY: str = ""

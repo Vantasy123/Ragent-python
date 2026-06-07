@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.time_utils import to_shanghai_iso
 from app.domain.models import TraceRun, User
-from app.services.common import page, success
+from app.services.common import MAX_PAGE_SIZE, page, success
 from app.services.dependencies import require_admin
 from app.services.evaluation_service import EvaluationService
 
@@ -71,7 +71,7 @@ def _split_span_metadata(metadata: dict[str, Any] | None) -> tuple[dict[str, Any
 @router.get("/rag/traces/runs")
 def list_runs(
     pageNo: int = Query(1, ge=1),
-    pageSize: int = Query(20, ge=1, le=100),
+    pageSize: int = Query(20, ge=1, le=MAX_PAGE_SIZE),
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):

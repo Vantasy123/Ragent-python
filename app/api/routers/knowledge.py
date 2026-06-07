@@ -35,7 +35,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.time_utils import to_shanghai_iso
 from app.domain.models import KnowledgeChunk, User
-from app.services.common import page, success
+from app.services.common import MAX_DETAIL_PAGE_SIZE, MAX_PAGE_SIZE, page, success
 from app.services.dependencies import require_admin
 from app.services.knowledge_service import KnowledgeService
 from app.services.settings_service import get_runtime_settings
@@ -128,7 +128,12 @@ def get_kb(kb_id: str, db: Session = Depends(get_db), _: User = Depends(require_
 
 
 @router.get("/knowledge-base")
-def list_kb(pageNo: int = 1, pageSize: int = 10, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def list_kb(
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(10, ge=1, le=MAX_PAGE_SIZE),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
     """list_kb 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
     rows, total = KnowledgeService(db).page_kbs(pageNo, pageSize)
     items = [
@@ -202,6 +207,18 @@ def delete_document(doc_id: str, db: Session = Depends(get_db), _: User = Depend
     return success()
 
 
+@router.get("/knowledge-base/docs/search")
+def search_docs(
+    keyword: str = Query("", alias="keyword"),
+    limit: int = Query(8, ge=1, le=MAX_PAGE_SIZE),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """search_docs 函数：执行检索逻辑，从知识库或索引中找出和用户问题最相关的内容。"""
+    rows = KnowledgeService(db).search_documents(keyword, limit)
+    return success([{"id": row.id, "name": row.doc_name, "kbId": row.kb_id} for row in rows])
+
+
 @router.get("/knowledge-base/docs/{doc_id}")
 def get_document(doc_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
     """get_document 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
@@ -240,8 +257,8 @@ def update_document(doc_id: str, payload: DocumentUpdatePayload, db: Session = D
 @router.get("/knowledge-base/{kb_id}/docs")
 def list_documents(
     kb_id: str,
-    pageNo: int = 1,
-    pageSize: int = 10,
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(10, ge=1, le=MAX_PAGE_SIZE),
     keyword: str | None = None,
     status: str | None = None,
     db: Session = Depends(get_db),
@@ -266,13 +283,6 @@ def list_documents(
     return success(page(items, total, pageNo, pageSize))
 
 
-@router.get("/knowledge-base/docs/search")
-def search_docs(keyword: str = Query("", alias="keyword"), limit: int = 8, db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    """search_docs 函数：执行检索逻辑，从知识库或索引中找出和用户问题最相关的内容。"""
-    rows = KnowledgeService(db).search_documents(keyword, limit)
-    return success([{"id": row.id, "name": row.doc_name, "kbId": row.kb_id} for row in rows])
-
-
 @router.patch("/knowledge-base/docs/{doc_id}/enable")
 def enable_document(doc_id: str, value: bool, db: Session = Depends(get_db), _: User = Depends(require_admin)):
     """enable_document 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
@@ -290,7 +300,13 @@ def chunk_logs(doc_id: str, db: Session = Depends(get_db), _: User = Depends(req
 
 
 @router.get("/knowledge-base/docs/{doc_id}/chunks")
-def list_chunks(doc_id: str, pageNo: int = 1, pageSize: int = 20, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+def list_chunks(
+    doc_id: str,
+    pageNo: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=MAX_DETAIL_PAGE_SIZE),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
     """list_chunks 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
     rows, total = KnowledgeService(db).page_chunks(doc_id, pageNo, pageSize)
     items = [{"id": row.id, "content": row.content, "chunkIndex": row.chunk_index, "enabled": row.enabled, "metadata": row.meta_data} for row in rows]

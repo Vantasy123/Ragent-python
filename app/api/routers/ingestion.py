@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.time_utils import to_shanghai_iso
 from app.domain.models import User
-from app.services.common import page, success
+from app.services.common import MAX_PAGE_SIZE, page, success
 from app.services.dependencies import require_admin
 from app.services.ingestion_service import IngestionService
 
@@ -44,7 +44,7 @@ def _iso(value):
 @router.get("/pipelines")
 def list_pipelines(
     pageNo: int = Query(1, ge=1),
-    pageSize: int = Query(20, ge=1),
+    pageSize: int = Query(20, ge=1, le=MAX_PAGE_SIZE),
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):
@@ -111,7 +111,7 @@ def delete_pipeline(pipeline_id: str, db: Session = Depends(get_db), _: User = D
 @router.get("/tasks")
 def list_tasks(
     pageNo: int = Query(1, ge=1),
-    pageSize: int = Query(20, ge=1),
+    pageSize: int = Query(20, ge=1, le=MAX_PAGE_SIZE),
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):

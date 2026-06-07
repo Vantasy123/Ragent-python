@@ -24,8 +24,8 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-BAILIAN_API_KEY = settings.OPENAI_API_KEY
-BAILIAN_BASE_URL = settings.OPENAI_API_BASE
+BAILIAN_API_KEY = settings.EMBEDDING_API_KEY or settings.OPENAI_API_KEY
+BAILIAN_BASE_URL = settings.EMBEDDING_API_BASE or settings.OPENAI_API_BASE
 COLLECTION_NAME = settings.COLLECTION_NAME
 VECTOR_DIMENSION = settings.VECTOR_DIMENSION
 

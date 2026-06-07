@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.time_utils import to_shanghai_iso
 from app.domain.models import User, UserAuditLog
-from app.services.common import page, success
+from app.services.common import MAX_PAGE_SIZE, page, success
 from app.services.dependencies import require_admin
 from app.services.security import hash_password
 
@@ -111,7 +111,7 @@ def _serialize_user_audit_log(row: UserAuditLog) -> dict:
 @router.get("/users")
 def list_users(
     pageNo: int = Query(1, ge=1),
-    pageSize: int = Query(20, ge=1),
+    pageSize: int = Query(20, ge=1, le=MAX_PAGE_SIZE),
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):
@@ -158,7 +158,7 @@ def create_user(payload: UserPayload, db: Session = Depends(get_db), operator: U
 @router.get("/users/audit")
 def list_user_audit_logs(
     pageNo: int = Query(1, ge=1),
-    pageSize: int = Query(20, ge=1, le=100),
+    pageSize: int = Query(20, ge=1, le=MAX_PAGE_SIZE),
     targetUserId: str | None = None,
     action: str | None = None,
     db: Session = Depends(get_db),
