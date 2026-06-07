@@ -33,6 +33,8 @@ WEAK_ADMIN_PASSWORDS = {
 }
 MIN_PRODUCTION_JWT_SECRET_LENGTH = 32
 MIN_PRODUCTION_ADMIN_PASSWORD_LENGTH = 12
+SUPPORTED_JWT_ALGORITHM = "HS256"
+SUPPORTED_JWT_TYPE = "JWT"
 
 
 def is_production_environment() -> bool:
@@ -93,7 +95,7 @@ def _b64url_decode(data: str) -> bytes:
 
 def create_token(payload: dict[str, Any], expires_in_minutes: int | None = None) -> str:
     """create_token 函数：创建新的业务记录，负责组织入库字段并返回创建后的结果。"""
-    header = {"alg": "HS256", "typ": "JWT"}
+    header = {"alg": SUPPORTED_JWT_ALGORITHM, "typ": SUPPORTED_JWT_TYPE}
     now = int(time.time())
     payload = payload.copy()
     payload["iat"] = now
@@ -111,17 +113,49 @@ def create_token(payload: dict[str, Any], expires_in_minutes: int | None = None)
 
 def decode_token(token: str) -> dict[str, Any]:
     """decode_token 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
-    header_segment, payload_segment, signature_segment = token.split(".", 2)
+    segments = token.split(".")
+    if len(segments) != 3 or any(not segment for segment in segments):
+        raise ValueError("Malformed token")
+
+    header_segment, payload_segment, signature_segment = segments
+    header = _decode_json_object(header_segment, "header")
+    if header.get("alg") != SUPPORTED_JWT_ALGORITHM:
+        raise ValueError("Unsupported token algorithm")
+    if header.get("typ") != SUPPORTED_JWT_TYPE:
+        raise ValueError("Unsupported token type")
+
     expected_signature = hmac.new(
         settings.JWT_SECRET.encode("utf-8"),
         f"{header_segment}.{payload_segment}".encode("utf-8"),
         hashlib.sha256,
     ).digest()
-    if not hmac.compare_digest(expected_signature, _b64url_decode(signature_segment)):
+    try:
+        actual_signature = _b64url_decode(signature_segment)
+    except Exception as exc:
+        raise ValueError("Invalid token signature") from exc
+    if not hmac.compare_digest(expected_signature, actual_signature):
         raise ValueError("Invalid token signature")
-    payload = json.loads(_b64url_decode(payload_segment))
-    if payload.get("exp", 0) < int(time.time()):
+
+    payload = _decode_json_object(payload_segment, "payload")
+    exp = payload.get("exp")
+    if not isinstance(exp, int):
+        raise ValueError("Token missing exp")
+    if not payload.get("jti"):
+        raise ValueError("Token missing jti")
+    if exp < int(time.time()):
         raise ValueError("Token expired")
     return payload
+
+
+def _decode_json_object(segment: str, name: str) -> dict[str, Any]:
+    """解码 JWT JSON 片段，并确保结果是对象而不是数组或标量。"""
+
+    try:
+        value = json.loads(_b64url_decode(segment))
+    except Exception as exc:
+        raise ValueError(f"Invalid token {name}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"Invalid token {name}")
+    return value
 
 
