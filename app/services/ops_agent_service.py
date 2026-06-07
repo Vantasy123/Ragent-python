@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.agents.orchestrator import AGENT_REGISTRY, OrchestratorAgent
 from app.agents.tool_registry import ToolCallRequest, UnifiedToolRegistry
 from app.agents.tools import OpsToolkit
+from app.core.text_sanitizer import redact_sensitive_payload
 from app.core.time_utils import to_shanghai_iso, utc_now_naive
 from app.domain.models import AgentApproval, AgentRun, AgentStep as AgentStepModel, AgentToolCall, User
 from app.services.chat_service import ConversationService
@@ -109,7 +110,9 @@ class OpsAgentService:
 
         if event.get("type") == "plan_created":
             steps = event.get("steps") or []
-            run.plan = steps
+            safe_steps = self._redact_for_audit(steps)
+            event["steps"] = safe_steps
+            run.plan = safe_steps
             for index, item in enumerate(steps):
                 self.db.add(
                     AgentStepModel(
@@ -117,7 +120,7 @@ class OpsAgentService:
                         step_index=index,
                         title=item.get("title") or "",
                         tool_name=item.get("tool_name") or item.get("toolName") or "",
-                        args=item.get("args") or {},
+                        args=self._redact_for_audit(item.get("args") or {}),
                         status=item.get("status") or "pending",
                         assigned_agent=item.get("assigned_agent") or item.get("assignedAgent") or "executor",
                         agent_reasoning=item.get("reasoning") or "",
@@ -132,12 +135,14 @@ class OpsAgentService:
                 self.db.commit()
 
         if event.get("type") == "tool_call":
+            safe_args = self._redact_for_audit(event.get("args") or {})
+            event["args"] = safe_args
             self.db.add(
                 AgentToolCall(
                     run_id=run.id,
                     step_id=self._step_id_by_index(run.id, int(event.get("stepIndex", -1))),
                     tool_name=event.get("tool") or "",
-                    args=event.get("args") or {},
+                    args=safe_args,
                     status=event.get("status") or "running",
                     approval_status="not_required",
                 )
@@ -146,11 +151,13 @@ class OpsAgentService:
 
         if event.get("type") == "observation":
             result = event.get("result") or {}
+            safe_result = self._redact_for_audit(result)
+            event["result"] = safe_result
             # 当前事件流串行执行，最近一条 running tool_call 就是该 observation 对应工具。
             tool = self.db.query(AgentToolCall).filter(AgentToolCall.run_id == run.id).order_by(AgentToolCall.created_at.desc()).first()
             if tool:
                 tool.status = "success" if result.get("success") else "failed"
-                tool.result = result
+                tool.result = safe_result
                 tool.error_message = result.get("error", "")
                 tool.duration_ms = int(event.get("durationMs") or 0)
             step = self._step_by_index(run.id, int(event.get("stepIndex", -1)))
@@ -161,10 +168,12 @@ class OpsAgentService:
 
         if event.get("type") == "approval_required":
             # 审批事件需要同时创建 tool_call 和 approval，后续 approve 接口会继续执行该工具。
+            safe_args = self._redact_for_audit(event.get("args") or {})
+            event["args"] = safe_args
             tool_call = AgentToolCall(
                 run_id=run.id,
                 tool_name=event.get("tool") or "",
-                args=event.get("args") or {},
+                args=safe_args,
                 status="blocked",
                 risk_level=event.get("riskLevel") or "write",
                 approval_status="pending",
@@ -293,7 +302,7 @@ class OpsAgentService:
 
         started = time.perf_counter()
         result_obj = await registry.call(ToolCallRequest(name=approval.tool_name, args=approval.args), skip_approval=True)
-        result = result_obj.to_dict()
+        result = self._redact_for_audit(result_obj.to_dict())
         duration_ms = max(1, int((time.perf_counter() - started) * 1000))
         tool_call.status = "success" if result_obj.success else "failed"
         tool_call.result = result
@@ -325,6 +334,11 @@ class OpsAgentService:
             )
         self.db.commit()
         return {"status": "approved", "result": result}
+
+    def _redact_for_audit(self, value: Any) -> Any:
+        """统一生成可落库、可展示的脱敏审计副本。"""
+
+        return redact_sensitive_payload(value)
 
     def _approval_tool_call(self, run_id: str, approval: AgentApproval) -> AgentToolCall:
         """读取并校验审批绑定的原始工具调用，避免审批记录漂移后越权执行。"""

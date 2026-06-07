@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.text_sanitizer import redact_sensitive_payload
 from app.core.time_utils import to_shanghai_iso
 from app.domain.models import SecurityAuditLog, User
 from app.services.common import page, success
@@ -115,12 +116,5 @@ def _validate_security_event(payload: SecurityAuditEventPayload) -> None:
 def _sanitize_detail(detail: dict[str, Any]) -> dict[str, Any]:
     """导出审计只保存筛选条件和数量，不保留任何凭证或敏感明文。"""
 
-    blocked_parts = ("password", "secret", "token", "credential", "apikey", "accesskey")
-    safe: dict[str, Any] = {}
-    for key, value in (detail or {}).items():
-        normalized = "".join(ch for ch in str(key).lower() if ch.isalnum())
-        if any(part in normalized for part in blocked_parts):
-            safe[str(key)] = "<redacted>"
-            continue
-        safe[str(key)] = value
-    return safe
+    redacted = redact_sensitive_payload(detail or {})
+    return redacted if isinstance(redacted, dict) else {}

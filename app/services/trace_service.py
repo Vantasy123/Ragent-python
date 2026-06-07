@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.text_sanitizer import redact_sensitive_payload
 from app.domain.models import TraceRun, TraceSpan
 
 
@@ -81,9 +82,9 @@ class TraceService:
             resolved_output.update(legacy_output)
 
         span_metadata = {
-            "input": handle.input_data,
-            "output": resolved_output,
-            "context": handle.context_data,
+            "input": redact_sensitive_payload(handle.input_data),
+            "output": redact_sensitive_payload(resolved_output),
+            "context": redact_sensitive_payload(handle.context_data),
         }
 
         resolved_duration_ms = duration_ms if duration_ms is not None else int((time.time() - handle.started_at) * 1000)

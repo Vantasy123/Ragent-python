@@ -19,6 +19,7 @@ from app.domain.models import AgentApproval, AgentRun, AgentToolCall, Evaluation
 from app.services.dependencies import require_admin
 from app.services.evaluation_service import EvaluationService
 from app.services.ops_agent_service import OpsAgentService
+from app.services.trace_service import TraceService
 
 
 class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
@@ -318,6 +319,58 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         span = self.db.query(TraceSpan).filter(TraceSpan.trace_id == self.trace.id, TraceSpan.operation == "tool_call").first()
         self.assertEqual(span.metadata_json["context"]["toolName"], "write_tool")
         self.assertNotEqual(span.metadata_json["input"], span.metadata_json["output"])
+
+    def test_trace_service_redacts_sensitive_payloads(self) -> None:
+        """Trace 入库前应递归脱敏，避免回放页面暴露凭证。"""
+
+        trace_service = TraceService(self.db)
+        span = trace_service.create_span(
+            self.trace.id,
+            "tool_call",
+            input_data={
+                "headers": {"Authorization": "Bearer secret-token"},
+                "url": "https://user:pass@example.com/api?token=secret-token&safe=1",
+            },
+            metadata={"apiKey": "secret-key"},
+        )
+        trace_service.complete_span(span, output_data={"password": "secret-password", "summary": "ok"})
+
+        row = self.db.query(TraceSpan).filter(TraceSpan.operation == "tool_call").one()
+        text = str(row.metadata_json)
+        self.assertIn("<redacted>", text)
+        self.assertNotIn("secret-token", text)
+        self.assertNotIn("secret-key", text)
+        self.assertNotIn("secret-password", text)
+        self.assertNotIn("user:pass", text)
+
+    def test_persist_event_redacts_tool_args_and_results(self) -> None:
+        """运维事件落库和 SSE 事件对象都应使用脱敏后的工具参数与结果。"""
+
+        service = OpsAgentService(self.db)
+        tool_event = {
+            "type": "tool_call",
+            "tool": "write_tool",
+            "stepIndex": 0,
+            "args": {"service": "api", "apiToken": "secret-token"},
+            "status": "running",
+        }
+        service._persist_event(self.run, tool_event, self.user)
+        observation = {
+            "type": "observation",
+            "tool": "write_tool",
+            "stepIndex": 0,
+            "durationMs": 3,
+            "result": {"success": True, "summary": "ok", "data": {"password": "secret-password"}},
+        }
+        service._persist_event(self.run, observation, self.user)
+
+        row = self.db.query(AgentToolCall).order_by(AgentToolCall.created_at.desc()).first()
+        self.assertEqual(tool_event["args"]["apiToken"], "<redacted>")
+        self.assertEqual(row.args["apiToken"], "<redacted>")
+        self.assertEqual(observation["result"]["data"]["password"], "<redacted>")
+        self.assertEqual(row.result["data"]["password"], "<redacted>")
+        self.assertNotIn("secret-token", str(row.args))
+        self.assertNotIn("secret-password", str(row.result))
 
     async def test_rejected_approval_does_not_execute_tool(self) -> None:
         service = OpsAgentService(self.db)

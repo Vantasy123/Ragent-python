@@ -93,15 +93,22 @@ class SecurityAuditRouterTest(unittest.TestCase):
                 "action": "export_audit_csv",
                 "targetType": "audit",
                 "targetId": "ops",
-                "detail": {"token": "secret-token", "safeFilter": "ops"},
+                "detail": {
+                    "token": "secret-token",
+                    "safeFilter": "ops",
+                    "nested": {"apiKey": "secret-key"},
+                    "callback": "https://user:pass@example.com/export?access_token=secret-token&scope=ops",
+                },
             },
         )
 
         self.assertEqual(response.status_code, 200)
         row = self.db.query(SecurityAuditLog).one()
         self.assertEqual(row.detail["token"], "<redacted>")
+        self.assertEqual(row.detail["nested"]["apiKey"], "<redacted>")
         self.assertEqual(row.detail["safeFilter"], "ops")
         self.assertNotIn("secret-token", str(row.detail))
+        self.assertNotIn("user:pass", str(row.detail))
 
     def test_compatible_migration_creates_security_audit_log_table(self) -> None:
         """兼容迁移应能为已有部署补建安全审计事件表。"""
