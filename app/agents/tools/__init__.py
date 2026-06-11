@@ -17,7 +17,9 @@ import httpx
 
 from app.agents.base import ToolSpec
 from app.core.config import settings
+from app.core.database import SessionLocal
 from app.services.monitoring_service import MonitoringService
+from app.services.trace_analysis_service import TraceAnalysisService
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,7 @@ class OpsToolkit:
             "alert_status": self.alert_status,
             "alert_correlations": self.alert_correlations,
             "kubernetes_events": self.kubernetes_events,
+            "trace_analysis": self.trace_analysis,
             "change_correlations": self.change_correlations,
             "service_topology": self.service_topology,
             "metric_trend": self.metric_trend,
@@ -105,6 +108,7 @@ class OpsToolkit:
             ToolSpec("alert_status", "查看当前告警状态"),
             ToolSpec("alert_correlations", "聚合活跃告警，输出降噪分组、影响面和 RCA 初筛线索"),
             ToolSpec("kubernetes_events", "分析 Kubernetes Pod、工作负载和节点事件线索"),
+            ToolSpec("trace_analysis", "分析最近 Trace 调用链，输出慢 span、失败 span 和耗时热点", {"limit": "integer", "slowThresholdMs": "integer"}),
             ToolSpec("change_correlations", "关联活跃告警中的发布、提交、镜像和流水线变更线索"),
             ToolSpec("service_topology", "分析服务拓扑、上下游依赖和故障影响传播路径"),
             ToolSpec("metric_trend", "查看指标趋势", {"metric": "string", "minutes": "integer"}),
@@ -559,6 +563,23 @@ class OpsToolkit:
         """读取 Kubernetes Pod、工作负载和节点事件线索。"""
 
         return await self.monitoring_service.tool_kubernetes_events()
+
+    async def trace_analysis(self, limit: int = 20, slowThresholdMs: int = 1000, slow_threshold_ms: int | None = None) -> dict[str, Any]:
+        """读取最近 Trace 调用链的慢 span、失败 span 和耗时热点。"""
+
+        db = SessionLocal()
+        try:
+            threshold = slow_threshold_ms if slow_threshold_ms is not None else slowThresholdMs
+            result = TraceAnalysisService(db).analyze_recent(limit=limit, slow_threshold_ms=threshold)
+            data = result.get("data", {}) if isinstance(result.get("data"), dict) else {}
+            return {
+                "success": result.get("status") in {"healthy", "degraded", "critical"},
+                "summary": result.get("summary", ""),
+                "data": data,
+                "error": "" if result.get("status") in {"healthy", "degraded", "critical"} else result.get("error", "trace_analysis_failed"),
+            }
+        finally:
+            db.close()
 
     async def change_correlations(self) -> dict[str, Any]:
         """读取告警中的变更线索，辅助判断故障是否与发布或提交相关。"""

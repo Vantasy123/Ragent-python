@@ -229,6 +229,33 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.requires_approval)
         self.assertEqual(result.data["eventCount"], 1)
 
+    async def test_trace_analysis_tool_is_readonly_and_callable(self) -> None:
+        """Trace 分析应作为只读工具暴露给运维 Agent。"""
+
+        toolkit = OpsToolkit()
+
+        async def fake_trace_analysis(limit: int = 20, slowThresholdMs: int = 1000) -> dict:
+            return {
+                "success": True,
+                "summary": f"分析 {limit} 条 Trace，慢阈值 {slowThresholdMs} ms",
+                "data": {"runCount": limit, "slowThresholdMs": slowThresholdMs, "slowSpans": [{"operation": "llm"}]},
+                "error": "",
+            }
+
+        toolkit.trace_analysis = fake_trace_analysis  # type: ignore[method-assign]
+        toolkit._tools["trace_analysis"] = toolkit.trace_analysis
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=toolkit)
+
+        metadata = next(tool for tool in registry.list_tools("admin") if tool["name"] == "trace_analysis")
+        result = await registry.call(ToolCallRequest("trace_analysis", {"limit": 5, "slowThresholdMs": 800}))
+
+        self.assertTrue(metadata["isReadOnly"])
+        self.assertFalse(metadata["requiresApproval"])
+        self.assertTrue(result.success)
+        self.assertEqual(result.risk_level, "read")
+        self.assertFalse(result.requires_approval)
+        self.assertEqual(result.data["runCount"], 5)
+
     async def test_service_topology_tool_is_readonly_and_callable(self) -> None:
         """服务拓扑分析应作为只读工具暴露给运维 Agent。"""
 
@@ -291,13 +318,15 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(steps[1].tool_name, "alert_correlations")
         self.assertEqual(steps[2].tool_name, "kubernetes_events")
-        self.assertEqual(steps[3].tool_name, "service_topology")
-        self.assertEqual(steps[4].tool_name, "change_correlations")
+        self.assertEqual(steps[3].tool_name, "trace_analysis")
+        self.assertEqual(steps[4].tool_name, "service_topology")
+        self.assertEqual(steps[5].tool_name, "change_correlations")
         self.assertTrue(any(step.tool_name == "metric_anomalies" for step in steps))
         self.assertIn("影响面", steps[1].reasoning)
         self.assertIn("Pod", steps[2].reasoning)
-        self.assertIn("拓扑", steps[3].reasoning)
-        self.assertIn("变更", steps[4].reasoning)
+        self.assertIn("span", steps[3].reasoning)
+        self.assertIn("拓扑", steps[4].reasoning)
+        self.assertIn("变更", steps[5].reasoning)
 
     def test_final_report_includes_alert_impact_and_rca_hints(self) -> None:
         """最终报告应把告警关联工具的影响面和 RCA 线索结构化呈现。"""
@@ -431,6 +460,37 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("受影响工作负载：order-api", report)
         self.assertIn("CrashLoopBackOff", report)
         self.assertIn("previous logs", report)
+
+    def test_final_report_includes_trace_analysis_context(self) -> None:
+        """最终报告应把 Trace 慢节点和失败节点结构化呈现。"""
+
+        orchestrator = OrchestratorAgent(OpsToolkit())
+        step = AgentStep(
+            title="分析 Trace 调用链证据",
+            tool_name="trace_analysis",
+            status="success",
+            observation="分析 1 条 Trace、3 个 span，发现 1 个失败 span 和 1 个慢 span",
+            result={
+                "success": True,
+                "summary": "分析 1 条 Trace、3 个 span，发现 1 个失败 span 和 1 个慢 span",
+                "data": {
+                    "errorSpans": [{"traceId": "trace-1", "operation": "tool_call", "status": "failed", "errorMessage": "connection refused"}],
+                    "slowSpans": [{"traceId": "trace-1", "operation": "llm", "durationMs": 1800}],
+                    "topOperations": [{"operation": "llm", "count": 1, "totalDurationMs": 1800, "errorCount": 0}],
+                    "rootCauseHints": ["模型调用耗时靠前，优先检查模型响应时间"],
+                    "recommendedNextSteps": ["打开 Trace trace-1，查看失败节点 tool_call 的 input/output"],
+                },
+            },
+        )
+
+        report = orchestrator._build_report("后端请求慢", [step], ReplanDecision("complete", "完成"))
+
+        self.assertIn("### Trace 调用链", report)
+        self.assertIn("失败 span：tool_call", report)
+        self.assertIn("慢 span：llm", report)
+        self.assertIn("耗时热点：llm", report)
+        self.assertIn("模型调用耗时靠前", report)
+        self.assertIn("打开 Trace trace-1", report)
 
     def test_final_report_includes_metric_anomaly_context(self) -> None:
         """最终报告应把指标异常信号结构化呈现。"""

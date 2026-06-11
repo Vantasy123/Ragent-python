@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
+from app.core.database import get_db
 from app.domain.models import User
 from app.services.common import success
 from app.services.dependencies import require_admin
 from app.services.monitoring_service import MonitoringService
+from app.services.trace_analysis_service import TraceAnalysisService
 
 router = APIRouter(prefix="/admin/monitoring", tags=["monitoring"])
 
@@ -53,6 +56,18 @@ async def kubernetes_events(_: User = Depends(require_admin)):
     """返回 Kubernetes Pod、工作负载和节点事件分析结果。"""
 
     return success(await MonitoringService().kubernetes_events())
+
+
+@router.get("/trace-analysis")
+async def trace_analysis(
+    limit: int = Query(20, ge=1, le=100),
+    slowThresholdMs: int = Query(1000, ge=1, le=600000),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """返回最近 Trace 调用链中的慢 span、失败 span 和耗时热点。"""
+
+    return success(TraceAnalysisService(db).analyze_recent(limit=limit, slow_threshold_ms=slowThresholdMs))
 
 
 @router.get("/change-correlations")
