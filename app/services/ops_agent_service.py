@@ -13,7 +13,7 @@ from app.agents.tool_registry import ToolCallRequest, UnifiedToolRegistry
 from app.agents.tools import OpsToolkit
 from app.core.text_sanitizer import redact_sensitive_payload
 from app.core.time_utils import to_shanghai_iso, utc_now_naive
-from app.domain.models import AgentApproval, AgentRun, AgentStep as AgentStepModel, AgentToolCall, User
+from app.domain.models import AgentApproval, AgentCollaboration, AgentRun, AgentStep as AgentStepModel, AgentToolCall, User
 from app.services.chat_service import ConversationService
 from app.services.trace_service import TraceService
 
@@ -160,6 +160,19 @@ class OpsAgentService:
                 tool.result = safe_result
                 tool.error_message = result.get("error", "")
                 tool.duration_ms = int(event.get("durationMs") or 0)
+                if not result.get("success"):
+                    self._record_handoff(
+                        run,
+                        from_agent=event.get("agent") or "executor",
+                        content=f"工具 {tool.tool_name} 执行失败，需要人工复核或接管",
+                        data={
+                            "eventType": "tool_failure",
+                            "toolName": tool.tool_name,
+                            "stepIndex": event.get("stepIndex"),
+                            "error": result.get("error", ""),
+                            "summary": result.get("summary", ""),
+                        },
+                    )
             step = self._step_by_index(run.id, int(event.get("stepIndex", -1)))
             if step:
                 step.status = "success" if result.get("success") else "failed"
@@ -192,8 +205,34 @@ class OpsAgentService:
             step = self._step_by_index(run.id, int(event.get("stepIndex", -1)))
             if step:
                 step.status = "blocked"
+            self._record_handoff(
+                run,
+                from_agent=event.get("agent") or "executor",
+                content=f"高风险工具 {tool_call.tool_name} 等待人工审批",
+                data={
+                    "eventType": "approval_required",
+                    "toolName": tool_call.tool_name,
+                    "args": tool_call.args,
+                    "riskLevel": tool_call.risk_level,
+                    "approvalId": approval.id,
+                    "stepIndex": event.get("stepIndex"),
+                },
+                commit=False,
+            )
             self.db.commit()
             event["approvalId"] = approval.id
+
+        if event.get("type") == "replan_decision" and event.get("action") == "blocked":
+            self._record_handoff(
+                run,
+                from_agent=event.get("agent") or "replanner",
+                content=f"重规划阻塞：{event.get('reason') or '需要人工接管'}",
+                data={
+                    "eventType": "replan_blocked",
+                    "reason": event.get("reason"),
+                    "remaining": event.get("remaining") or [],
+                },
+            )
 
         if event.get("type") in {"report", "final_answer"}:
             run.final_report = event.get("content") or run.final_report
@@ -246,6 +285,30 @@ class OpsAgentService:
         span = trace_service.create_span(trace_id, operation, input_data=input_data, metadata=context_data)
         status = "error" if event_type == "observation" and not result.get("success", False) else "success"
         trace_service.complete_span(span, status=status, output_data=output_data, duration_ms=event.get("durationMs"))
+
+    def _record_handoff(
+        self,
+        run: AgentRun,
+        *,
+        from_agent: str,
+        content: str,
+        data: dict[str, Any],
+        commit: bool = True,
+    ) -> None:
+        """记录需要人工审批、复核或接管的协作事件，供审计复盘查询。"""
+
+        self.db.add(
+            AgentCollaboration(
+                run_id=run.id,
+                from_agent=from_agent or "ops_agent",
+                to_agent="human_sre",
+                event_type="handoff",
+                content=content,
+                data=self._redact_for_audit(data),
+            )
+        )
+        if commit:
+            self.db.commit()
 
     def _step_by_index(self, run_id: str, index: int) -> AgentStepModel | None:
         """根据步骤序号查找持久化步骤。"""
@@ -570,5 +633,17 @@ class OpsAgentService:
                     "decidedAt": to_shanghai_iso(item.decided_at),
                 }
                 for item in run.approvals
+            ],
+            "collaborations": [
+                {
+                    "id": item.id,
+                    "fromAgent": item.from_agent,
+                    "toAgent": item.to_agent,
+                    "eventType": item.event_type,
+                    "content": item.content,
+                    "data": item.data,
+                    "createdAt": to_shanghai_iso(item.created_at),
+                }
+                for item in run.collaborations
             ],
         }

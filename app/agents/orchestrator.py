@@ -500,6 +500,8 @@ class OrchestratorAgent(BaseAgent):
         topology_context = []
         change_context = []
         recommended_actions = []
+        rollback_plan = []
+        handoff_actions = []
         for step in steps:
             status = step.status.value if isinstance(step.status, StepStatus) else str(step.status)
             observation = step.observation or "无观察结果"
@@ -524,8 +526,10 @@ class OrchestratorAgent(BaseAgent):
                 gaps.append(f"- {step.title}：{observation}")
             elif status == StepStatus.BLOCKED.value:
                 suggestions.append(f"- {step.title}：需要审批后才能继续")
+                handoff_actions.append(f"{step.title} 已阻塞，需要人工审批或 SRE 接管后继续")
             else:
                 suspected.append(f"- {step.title}：{observation}")
+                handoff_actions.append(f"{step.title} 执行异常，建议人工复核工具结果和现场状态")
 
         if not facts:
             facts.append("- 暂无成功采集的直接事实，请优先查看失败步骤和监控配置。")
@@ -534,8 +538,13 @@ class OrchestratorAgent(BaseAgent):
         if gaps:
             suggestions.append("- 补齐 Prometheus/Alertmanager 配置后重新运行，可获得更完整的指标和告警证据。")
         for item in self._deduplicate_lines(recommended_actions)[:5]:
-            suggestions.append(f"- {item}")
+            if "回滚" in item or "rollback" in item.lower():
+                rollback_plan.append(item)
+            else:
+                suggestions.append(f"- {item}")
         suggestions.append(f"- 重规划结论：{decision.final_report or decision.reason}")
+        if getattr(decision, "action", "") == "blocked":
+            handoff_actions.append(f"重规划结论为 blocked：{decision.reason}")
 
         lines = ["## 运维 Agent 诊断报告", f"问题：{task}", "", "### 已确认事实", *facts, "", "### 疑似原因", *suspected]
         if impact:
@@ -548,6 +557,12 @@ class OrchestratorAgent(BaseAgent):
             lines.extend(["", "### 变更关联", *[f"- {item}" for item in self._deduplicate_lines(change_context)[:8]]])
         if gaps:
             lines.extend(["", "### 数据缺口", *gaps])
+        if rollback_plan or handoff_actions:
+            lines.extend(["", "### 回滚与人工接管"])
+            for item in self._deduplicate_lines(rollback_plan)[:5]:
+                lines.append(f"- 回滚预案：{item}")
+            for item in self._deduplicate_lines(handoff_actions)[:5]:
+                lines.append(f"- 人工接管：{item}")
         lines.extend(["", "### 下一步建议", *suggestions, "", "### 执行明细"])
         for index, step in enumerate(steps, start=1):
             status = step.status.value if isinstance(step.status, StepStatus) else str(step.status)

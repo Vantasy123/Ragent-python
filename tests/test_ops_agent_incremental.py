@@ -15,7 +15,7 @@ from app.agents.orchestrator import OrchestratorAgent, PlannerAgent, ReplanDecis
 from app.agents.tool_registry import ToolCallRequest, ToolCallResult, UnifiedTool, UnifiedToolRegistry
 from app.agents.tools import OpsToolkit
 from app.core.database import Base, get_db
-from app.domain.models import AgentApproval, AgentRun, AgentToolCall, EvaluationRun, TraceRun, TraceSpan, User
+from app.domain.models import AgentApproval, AgentCollaboration, AgentRun, AgentToolCall, EvaluationRun, TraceRun, TraceSpan, User
 from app.services.dependencies import require_admin
 from app.services.evaluation_service import EvaluationService
 from app.services.ops_agent_service import OpsAgentService
@@ -305,6 +305,7 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         report = orchestrator._build_report("订单服务发布后告警", [step], ReplanDecision("complete", "完成"))
 
         self.assertIn("### 变更关联", report)
+        self.assertIn("### 回滚与人工接管", report)
         self.assertIn("疑似相关变更 2026.06.11.1", report)
         self.assertIn("高置信变更候选", report)
         self.assertIn("回滚 Runbook", report)
@@ -611,6 +612,58 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row.result["data"]["password"], "<redacted>")
         self.assertNotIn("secret-token", str(row.args))
         self.assertNotIn("secret-password", str(row.result))
+
+    def test_persist_failed_observation_records_handoff(self) -> None:
+        """工具执行失败时应记录人工接管协作事件，供审计复盘查询。"""
+
+        service = OpsAgentService(self.db)
+        tool_event = {
+            "type": "tool_call",
+            "tool": "write_tool",
+            "stepIndex": 0,
+            "args": {"service": "api"},
+            "status": "running",
+        }
+        service._persist_event(self.run, tool_event, self.user)
+        observation = {
+            "type": "observation",
+            "agent": "executor",
+            "tool": "write_tool",
+            "stepIndex": 0,
+            "durationMs": 3,
+            "result": {"success": False, "summary": "执行失败", "error": "boom"},
+        }
+
+        service._persist_event(self.run, observation, self.user)
+
+        row = self.db.query(AgentCollaboration).filter(AgentCollaboration.run_id == self.run.id).one()
+        self.assertEqual(row.event_type, "handoff")
+        self.assertEqual(row.to_agent, "human_sre")
+        self.assertEqual(row.data["eventType"], "tool_failure")
+        self.assertIn("人工复核", row.content)
+
+    def test_approval_required_records_handoff_and_run_detail(self) -> None:
+        """高风险审批阻塞应进入人工接管审计，并在运行详情中返回。"""
+
+        service = OpsAgentService(self.db)
+        event = {
+            "type": "approval_required",
+            "agent": "executor",
+            "tool": "compose_restart_service",
+            "stepIndex": 0,
+            "args": {"service": "ragent-api"},
+            "riskLevel": "write",
+        }
+
+        service._persist_event(self.run, event, self.user)
+
+        row = self.db.query(AgentCollaboration).filter(AgentCollaboration.run_id == self.run.id).one()
+        self.assertEqual(row.event_type, "handoff")
+        self.assertEqual(row.data["eventType"], "approval_required")
+        self.assertEqual(row.data["toolName"], "compose_restart_service")
+        detail = service.get_run(self.run.id)
+        self.assertEqual(detail["collaborations"][0]["eventType"], "handoff")
+        self.assertEqual(detail["collaborations"][0]["toAgent"], "human_sre")
 
     async def test_rejected_approval_does_not_execute_tool(self) -> None:
         service = OpsAgentService(self.db)
