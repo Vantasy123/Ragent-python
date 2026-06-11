@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
-from tempfile import TemporaryDirectory
+import shutil
+import uuid
 
 from app.core.config import settings
 from app.services.monitoring_service import MonitoringService
@@ -20,6 +21,7 @@ class MonitoringServiceTest(unittest.IsolatedAsyncioTestCase):
         self.old_alertmanager = settings.ALERTMANAGER_URL
         self.old_servers_config = settings.SERVERS_CONFIG_PATH
         self.old_monitoring_config = settings.MONITORING_CONFIG_PATH
+        self.created_dirs: list[Path] = []
         settings.MONITORING_ENABLED = True
         settings.PROMETHEUS_URL = "http://prometheus:9090"
         settings.ALERTMANAGER_URL = "http://alertmanager:9093"
@@ -32,6 +34,18 @@ class MonitoringServiceTest(unittest.IsolatedAsyncioTestCase):
         settings.ALERTMANAGER_URL = self.old_alertmanager
         settings.SERVERS_CONFIG_PATH = self.old_servers_config
         settings.MONITORING_CONFIG_PATH = self.old_monitoring_config
+        for directory in self.created_dirs:
+            shutil.rmtree(directory, ignore_errors=True)
+
+    def _make_directory(self) -> Path:
+        """创建本测试专用配置目录，避免 Windows 沙箱下 tempfile 目录权限异常。"""
+
+        root = Path("scratch") / "test-monitoring-service"
+        root.mkdir(parents=True, exist_ok=True)
+        directory = root / uuid.uuid4().hex
+        directory.mkdir(parents=True, exist_ok=False)
+        self.created_dirs.append(directory)
+        return directory
 
     async def test_targets_parse_prometheus_active_targets(self) -> None:
         """Prometheus targets 响应应转换为前端可直接展示的中文状态。"""
@@ -83,6 +97,55 @@ class MonitoringServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["data"]["items"][0]["severityLabel"], "严重")
         self.assertEqual(result["data"]["items"][0]["summary"], "采集目标不可用")
 
+    async def test_alert_correlations_group_duplicate_alerts_and_emit_rca_hints(self) -> None:
+        """告警关联分析应聚合同一影响面的重复告警，并输出 RCA 初筛线索。"""
+
+        service = MonitoringService()
+
+        async def fake_alerts():
+            return {
+                "status": "critical",
+                "data": {
+                    "items": [
+                        {
+                            "name": "TargetDown",
+                            "severity": "critical",
+                            "summary": "订单服务探活失败",
+                            "startsAt": "2026-06-11T10:00:00Z",
+                            "labels": {"service": "order-api", "instance": "10.0.0.1:8080", "severity": "critical"},
+                        },
+                        {
+                            "name": "HighCPU",
+                            "severity": "critical",
+                            "summary": "订单服务 CPU 使用率过高",
+                            "startsAt": "2026-06-11T10:01:00Z",
+                            "labels": {"service": "order-api", "instance": "10.0.0.1:8080", "severity": "critical"},
+                        },
+                        {
+                            "name": "RedisDown",
+                            "severity": "warning",
+                            "summary": "Redis 连接失败",
+                            "startsAt": "2026-06-11T10:02:00Z",
+                            "labels": {"job": "redis", "instance": "redis:6379", "severity": "warning"},
+                        },
+                    ]
+                },
+            }
+
+        service.alerts = fake_alerts  # type: ignore[method-assign]
+
+        result = await service.alert_correlations()
+
+        self.assertEqual(result["status"], "critical")
+        self.assertEqual(result["data"]["alertCount"], 3)
+        self.assertEqual(result["data"]["groupCount"], 2)
+        self.assertEqual(result["data"]["noiseReduction"], 1)
+        self.assertIn("order-api", result["data"]["affectedServices"])
+        first_group = result["data"]["groups"][0]
+        self.assertEqual(first_group["affectedServices"], ["order-api"])
+        self.assertEqual(first_group["alertCount"], 2)
+        self.assertTrue(any("探活失败" in hint or "资源饱和" in hint for hint in first_group["rootCauseHints"]))
+
     async def test_missing_monitoring_config_returns_degraded(self) -> None:
         """未启用监控时接口应降级，而不是抛出异常。"""
 
@@ -130,11 +193,11 @@ class MonitoringServiceTest(unittest.IsolatedAsyncioTestCase):
     async def test_probe_targets_include_user_configured_servers(self) -> None:
         """业务服务器配置应自动进入服务探测列表。"""
 
-        with TemporaryDirectory() as temp_dir:
-            servers_path = Path(temp_dir) / "servers.yml"
-            monitoring_path = Path(temp_dir) / "monitoring.yml"
-            servers_path.write_text(
-                """
+        temp_dir = self._make_directory()
+        servers_path = temp_dir / "servers.yml"
+        monitoring_path = temp_dir / "monitoring.yml"
+        servers_path.write_text(
+            """
 servers:
   - id: order-service
     name: 订单服务
@@ -146,10 +209,10 @@ servers:
     tags:
       - order
 """,
-                encoding="utf-8",
-            )
-            monitoring_path.write_text(
-                """
+            encoding="utf-8",
+        )
+        monitoring_path.write_text(
+            """
 monitoring:
   enabled: true
   prometheus_url: http://custom-prometheus:9090
@@ -160,17 +223,17 @@ probes:
     enabled: true
     url: http://gateway:8080/health
 """,
-                encoding="utf-8",
-            )
-            settings.PROMETHEUS_URL = ""
-            settings.ALERTMANAGER_URL = ""
-            service = MonitoringService(config_service=ProjectConfigService(str(servers_path), str(monitoring_path)))
+            encoding="utf-8",
+        )
+        settings.PROMETHEUS_URL = ""
+        settings.ALERTMANAGER_URL = ""
+        service = MonitoringService(config_service=ProjectConfigService(str(servers_path), str(monitoring_path)))
 
-            targets = service.probe_targets()
+        targets = service.probe_targets()
 
-            self.assertEqual(service.prometheus_url, "http://custom-prometheus:9090")
-            self.assertTrue(any(item["name"] == "订单服务" and item["source"] == "server" for item in targets))
-            self.assertTrue(any(item["name"] == "网关服务" and item["source"] == "probe" for item in targets))
+        self.assertEqual(service.prometheus_url, "http://custom-prometheus:9090")
+        self.assertTrue(any(item["name"] == "订单服务" and item["source"] == "server" for item in targets))
+        self.assertTrue(any(item["name"] == "网关服务" and item["source"] == "probe" for item in targets))
 
 
 if __name__ == "__main__":

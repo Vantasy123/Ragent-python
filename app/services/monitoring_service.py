@@ -305,6 +305,150 @@ class MonitoringService:
             "data": {"items": items, "count": len(items)},
         }
 
+    async def alert_correlations(self) -> dict[str, Any]:
+        """对当前活跃告警做轻量降噪和影响面聚合，作为 AIOps RCA 的入口上下文。"""
+
+        alerts = await self.alerts()
+        if alerts.get("status") == "degraded":
+            return self._degraded("告警关联分析", alerts.get("summary", "Alertmanager 不可用"), {"groups": [], "affectedServices": []})
+
+        items = alerts.get("data", {}).get("items", [])
+        groups = self._group_alerts(items if isinstance(items, list) else [])
+        affected_services = sorted({service for group in groups for service in group["affectedServices"]})
+        critical_groups = [group for group in groups if group["severity"] == "critical"]
+        noise_reduction = max(0, len(items) - len(groups))
+        return {
+            "status": "healthy" if not critical_groups else "critical",
+            "displayName": "告警关联分析",
+            "summary": (
+                "当前没有需要关联分析的活跃告警"
+                if not groups
+                else f"聚合 {len(items)} 条活跃告警为 {len(groups)} 个告警组，涉及 {len(affected_services)} 个服务"
+            ),
+            "updatedAt": self._now(),
+            "data": {
+                "alertCount": len(items),
+                "groupCount": len(groups),
+                "noiseReduction": noise_reduction,
+                "affectedServices": affected_services,
+                "groups": groups,
+            },
+        }
+
+    def _group_alerts(self, alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """按服务、实例和严重等级聚合告警，降低重复告警对诊断 Agent 的干扰。"""
+
+        buckets: dict[str, dict[str, Any]] = {}
+        for alert in alerts:
+            labels = alert.get("labels") if isinstance(alert.get("labels"), dict) else {}
+            service = self._alert_service(labels)
+            instance = str(labels.get("instance") or labels.get("pod") or labels.get("node") or "unknown")
+            severity = str(alert.get("severity") or labels.get("severity") or "unknown")
+            alert_name = str(alert.get("name") or labels.get("alertname") or "unknown")
+            group_key = f"{service}|{instance}|{severity}"
+            bucket = buckets.setdefault(
+                group_key,
+                {
+                    "groupKey": group_key,
+                    "severity": severity,
+                    "severityLabel": self._severity_label(severity),
+                    "affectedServices": set(),
+                    "instances": set(),
+                    "alertNames": set(),
+                    "alerts": [],
+                    "rootCauseHints": set(),
+                    "recommendedNextSteps": set(),
+                    "firstSeenAt": alert.get("startsAt"),
+                },
+            )
+            bucket["affectedServices"].add(service)
+            bucket["instances"].add(instance)
+            bucket["alertNames"].add(alert_name)
+            bucket["alerts"].append(alert)
+            for hint in self._root_cause_hints(alert_name, labels, alert.get("summary", "")):
+                bucket["rootCauseHints"].add(hint)
+            for step in self._recommended_steps(alert_name, labels):
+                bucket["recommendedNextSteps"].add(step)
+            if alert.get("startsAt") and (not bucket["firstSeenAt"] or str(alert.get("startsAt")) < str(bucket["firstSeenAt"])):
+                bucket["firstSeenAt"] = alert.get("startsAt")
+
+        results = []
+        for bucket in buckets.values():
+            alerts_in_group = bucket["alerts"]
+            results.append(
+                {
+                    "groupKey": bucket["groupKey"],
+                    "severity": bucket["severity"],
+                    "severityLabel": bucket["severityLabel"],
+                    "affectedServices": sorted(bucket["affectedServices"]),
+                    "instances": sorted(bucket["instances"]),
+                    "alertNames": sorted(bucket["alertNames"]),
+                    "alertCount": len(alerts_in_group),
+                    "firstSeenAt": bucket["firstSeenAt"],
+                    "summary": self._alert_group_summary(bucket),
+                    "rootCauseHints": sorted(bucket["rootCauseHints"]),
+                    "recommendedNextSteps": sorted(bucket["recommendedNextSteps"]),
+                    "sampleAlerts": alerts_in_group[:3],
+                }
+            )
+        return sorted(results, key=lambda item: (self._severity_rank(item["severity"]), -item["alertCount"], item["groupKey"]))
+
+    def _alert_service(self, labels: dict[str, Any]) -> str:
+        """从常见 Alertmanager 标签中提取服务名，缺失时回退到 job。"""
+
+        for key in ("service", "app", "application", "component", "job", "namespace"):
+            value = str(labels.get(key) or "").strip()
+            if value:
+                return value
+        return "unknown"
+
+    def _root_cause_hints(self, alert_name: str, labels: dict[str, Any], summary: str) -> list[str]:
+        """根据告警名称和标签给出 RCA 初筛线索。"""
+
+        text = f"{alert_name} {summary} {' '.join(str(value) for value in labels.values())}".lower()
+        hints: list[str] = []
+        if any(token in text for token in ("targetdown", "up == 0", "probe", "unreachable", "connection refused")):
+            hints.append("采集目标或服务探活失败，优先检查实例存活、网络连通性和服务端口")
+        if any(token in text for token in ("cpu", "load", "throttle")):
+            hints.append("资源饱和风险，优先检查 CPU 使用率、容器限额和最近流量变化")
+        if any(token in text for token in ("memory", "oom", "outofmemory")):
+            hints.append("内存压力风险，优先检查内存水位、OOM 记录和缓存增长")
+        if any(token in text for token in ("latency", "duration", "timeout", "slow")):
+            hints.append("请求延迟异常，优先关联 Trace 慢 span、下游依赖和数据库慢查询")
+        if any(token in text for token in ("mysql", "redis", "database", "db")):
+            hints.append("中间件或数据库异常，优先检查连接数、慢查询、主从状态和错误日志")
+        if any(token in text for token in ("pod", "kube", "container", "deployment")):
+            hints.append("Kubernetes 工作负载异常，优先检查 Pod 事件、重启次数和最近发布变更")
+        return hints or ["需要结合 Metrics、Logs、Traces 和近期变更继续分析根因"]
+
+    def _recommended_steps(self, alert_name: str, labels: dict[str, Any]) -> list[str]:
+        """为告警组生成后续诊断动作建议，供计划 Agent 生成 Runbook 步骤。"""
+
+        service = self._alert_service(labels)
+        instance = str(labels.get("instance") or labels.get("pod") or labels.get("node") or "")
+        steps = [
+            f"查看 {service} 的最近指标趋势和同一时间窗口内的活跃告警",
+            f"检索 {service} 的 Runbook、历史事故和最近变更记录",
+        ]
+        if instance:
+            steps.append(f"检查实例 {instance} 的日志、重启记录和资源水位")
+        if "down" in alert_name.lower() or "up" in alert_name.lower():
+            steps.append("执行服务探活并确认是否存在网络、端口或依赖不可达")
+        return steps
+
+    def _alert_group_summary(self, bucket: dict[str, Any]) -> str:
+        """生成告警组摘要，方便前端和诊断 Agent 快速理解影响面。"""
+
+        service_text = "、".join(sorted(bucket["affectedServices"]))
+        alert_text = "、".join(sorted(bucket["alertNames"]))
+        instance_count = len(bucket["instances"])
+        return f"{service_text} 出现 {len(bucket['alerts'])} 条 {bucket['severityLabel']}告警，涉及 {instance_count} 个实例，主要告警：{alert_text}"
+
+    def _severity_rank(self, severity: str) -> int:
+        """严重等级排序，数值越小优先级越高。"""
+
+        return {"critical": 0, "warning": 1, "info": 2}.get(severity, 3)
+
     async def metric_value(self, metric: str) -> dict[str, Any]:
         """查询单个指标的即时值。"""
 

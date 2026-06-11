@@ -41,6 +41,13 @@ async def alerts(_: User = Depends(require_admin)):
     return success(await MonitoringService().alerts())
 
 
+@router.get("/alert-correlations")
+async def alert_correlations(_: User = Depends(require_admin)):
+    """返回活跃告警的降噪聚合、影响面和 RCA 初筛线索。"""
+
+    return success(await MonitoringService().alert_correlations())
+
+
 @router.post("/query")
 async def query(payload: PrometheusQueryPayload, _: User = Depends(require_admin)):
     """执行受控 PromQL 即时查询，仅管理员可用。"""
