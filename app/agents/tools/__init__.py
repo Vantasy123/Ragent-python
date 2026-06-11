@@ -69,6 +69,7 @@ class OpsToolkit:
             "container_stats": self.container_stats,
             "response_time_probe": self.response_time_probe,
             "alert_status": self.alert_status,
+            "alert_correlations": self.alert_correlations,
             "metric_trend": self.metric_trend,
             "prometheus_query": self.prometheus_query,
             "safe_command": self.safe_command,
@@ -98,6 +99,7 @@ class OpsToolkit:
             ToolSpec("container_stats", "读取容器资源指标", {"service": "string"}),
             ToolSpec("response_time_probe", "探测接口响应时间", {"url": "string", "count": "integer"}),
             ToolSpec("alert_status", "查看当前告警状态"),
+            ToolSpec("alert_correlations", "聚合活跃告警，输出降噪分组、影响面和 RCA 初筛线索"),
             ToolSpec("metric_trend", "查看指标趋势", {"metric": "string", "minutes": "integer"}),
             ToolSpec("prometheus_query", "执行 Prometheus 即时查询", {"query": "string", "time": "number"}),
             ToolSpec(
@@ -539,6 +541,11 @@ class OpsToolkit:
         """从 Alertmanager 查询当前告警状态。"""
 
         return await self.monitoring_service.tool_alert_status()
+
+    async def alert_correlations(self) -> dict[str, Any]:
+        """读取告警降噪分组、影响面和 RCA 初筛线索。"""
+
+        return await self.monitoring_service.tool_alert_correlations()
 
     async def metric_trend(self, metric: str = "cpu_percent", minutes: int = 30) -> dict[str, Any]:
         """从 Prometheus 查询指定指标最近一段时间的趋势。"""

@@ -650,6 +650,18 @@ class MonitoringService:
             "error": "" if result.get("status") in {"healthy", "critical"} else "monitoring_not_configured",
         }
 
+    async def tool_alert_correlations(self) -> dict[str, Any]:
+        """为 OpsToolkit 适配告警关联分析结果，供诊断 Agent 直接消费。"""
+
+        result = await self.alert_correlations()
+        data = result.get("data", {}) if isinstance(result.get("data"), dict) else {}
+        return {
+            "success": result.get("status") in {"healthy", "critical"},
+            "summary": result.get("summary", ""),
+            "data": data,
+            "error": "" if result.get("status") in {"healthy", "critical"} else result.get("error", "monitoring_not_configured"),
+        }
+
     async def tool_metric_trend(self, metric: str = "cpu_percent", minutes: int = 30) -> dict[str, Any]:
         """为 OpsToolkit 适配旧 metric_trend 返回结构。"""
 

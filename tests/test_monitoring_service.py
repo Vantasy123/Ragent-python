@@ -146,6 +146,26 @@ class MonitoringServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first_group["alertCount"], 2)
         self.assertTrue(any("探活失败" in hint or "资源饱和" in hint for hint in first_group["rootCauseHints"]))
 
+    async def test_tool_alert_correlations_adapts_result_for_ops_toolkit(self) -> None:
+        """OpsToolkit 使用的告警关联工具应返回标准工具结果结构。"""
+
+        service = MonitoringService()
+
+        async def fake_alert_correlations():
+            return {
+                "status": "critical",
+                "summary": "聚合 2 条活跃告警为 1 个告警组，涉及 1 个服务",
+                "data": {"alertCount": 2, "groupCount": 1, "groups": [{"affectedServices": ["api"]}]},
+            }
+
+        service.alert_correlations = fake_alert_correlations  # type: ignore[method-assign]
+
+        result = await service.tool_alert_correlations()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["error"], "")
+        self.assertEqual(result["data"]["groupCount"], 1)
+
     async def test_missing_monitoring_config_returns_degraded(self) -> None:
         """未启用监控时接口应降级，而不是抛出异常。"""
 

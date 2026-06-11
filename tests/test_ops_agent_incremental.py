@@ -151,6 +151,32 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.risk_level, "danger")
         self.assertFalse(result.requires_approval)
 
+    async def test_alert_correlations_tool_is_readonly_and_callable(self) -> None:
+        """告警关联分析应作为只读工具暴露给运维 Agent。"""
+
+        toolkit = OpsToolkit()
+
+        async def fake_tool_alert_correlations() -> dict:
+            return {
+                "success": True,
+                "summary": "聚合 2 条活跃告警为 1 个告警组",
+                "data": {"groupCount": 1, "affectedServices": ["order-api"]},
+                "error": "",
+            }
+
+        toolkit.monitoring_service.tool_alert_correlations = fake_tool_alert_correlations  # type: ignore[method-assign]
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=toolkit)
+
+        metadata = next(tool for tool in registry.list_tools("admin") if tool["name"] == "alert_correlations")
+        result = await registry.call(ToolCallRequest("alert_correlations"))
+
+        self.assertTrue(metadata["isReadOnly"])
+        self.assertFalse(metadata["requiresApproval"])
+        self.assertTrue(result.success)
+        self.assertEqual(result.risk_level, "read")
+        self.assertFalse(result.requires_approval)
+        self.assertEqual(result.data["groupCount"], 1)
+
 
 class FakeRegistry:
     """最小工具注册表，用于验证 LangGraph 编排行为。"""
