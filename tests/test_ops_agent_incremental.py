@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app.api.routers.ops_agent import router as ops_agent_router
 from app.agents.base import AgentStep, ToolSpec
 from app.agents.ops_graph import OpsLangGraphRunner
-from app.agents.orchestrator import StepExecutorAgent
+from app.agents.orchestrator import OrchestratorAgent, PlannerAgent, ReplanDecision, StepExecutorAgent
 from app.agents.tool_registry import ToolCallRequest, ToolCallResult, UnifiedTool, UnifiedToolRegistry
 from app.agents.tools import OpsToolkit
 from app.core.database import Base, get_db
@@ -176,6 +176,50 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.risk_level, "read")
         self.assertFalse(result.requires_approval)
         self.assertEqual(result.data["groupCount"], 1)
+
+    async def test_deterministic_plan_uses_alert_correlations_for_alert_task(self) -> None:
+        """告警类任务应优先生成告警关联分析步骤，降低重复告警噪声。"""
+
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=OpsToolkit())
+        planner = PlannerAgent(registry)
+
+        steps = await planner.create_plan("订单服务出现 critical 告警，需要定位根因")
+
+        self.assertEqual(steps[1].tool_name, "alert_correlations")
+        self.assertIn("影响面", steps[1].reasoning)
+
+    def test_final_report_includes_alert_impact_and_rca_hints(self) -> None:
+        """最终报告应把告警关联工具的影响面和 RCA 线索结构化呈现。"""
+
+        orchestrator = OrchestratorAgent(OpsToolkit())
+        step = AgentStep(
+            title="分析活跃告警关联与影响面",
+            tool_name="alert_correlations",
+            status="success",
+            observation="聚合 2 条活跃告警为 1 个告警组",
+            result={
+                "success": True,
+                "summary": "聚合 2 条活跃告警为 1 个告警组",
+                "data": {
+                    "affectedServices": ["order-api"],
+                    "groups": [
+                        {
+                            "summary": "order-api 出现 2 条严重告警，涉及 1 个实例",
+                            "rootCauseHints": ["资源饱和风险，优先检查 CPU 使用率"],
+                            "recommendedNextSteps": ["查看 order-api 的最近指标趋势"],
+                        }
+                    ],
+                },
+            },
+        )
+
+        report = orchestrator._build_report("订单服务告警根因定位", [step], ReplanDecision("complete", "完成"))
+
+        self.assertIn("### 影响面", report)
+        self.assertIn("受影响服务：order-api", report)
+        self.assertIn("### RCA 初筛线索", report)
+        self.assertIn("资源饱和风险", report)
+        self.assertIn("查看 order-api 的最近指标趋势", report)
 
 
 class FakeRegistry:

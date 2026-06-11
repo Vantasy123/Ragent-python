@@ -199,7 +199,6 @@ class OpsLangGraphRunner:
         if spec and not state.get("autoExecuteReadOnly", True):
             step.status = StepStatus.PENDING
             step.observation = "只读工具自动执行已关闭，等待人工确认后再执行。"
-            completed.append(step)
             result = ToolCallResult(
                 success=True,
                 summary=step.observation,
@@ -209,6 +208,8 @@ class OpsLangGraphRunner:
                 source=spec.source,
                 category=spec.category,
             )
+            step.result = result.to_dict()
+            completed.append(step)
             observations.append({"stepIndex": index, "tool": step.tool_name, "result": result.to_dict()})
             events.append(
                 {
@@ -241,12 +242,13 @@ class OpsLangGraphRunner:
         duration_ms = self._elapsed_ms(tool_started)
         step.status = StepStatus.SUCCESS if result.success else StepStatus.FAILED
         step.observation = result.summary
+        result_payload = result.to_dict()
+        step.result = result_payload
         completed.append(step)
-        observations.append({"stepIndex": index, "tool": step.tool_name, "result": result.to_dict()})
+        observations.append({"stepIndex": index, "tool": step.tool_name, "result": result_payload})
 
         memory = state.get("memory") or self.memory
         memory.add("executor", "observation", result.summary, result.to_dict())
-        result_payload = result.to_dict()
         events.append(
             {
                 "type": "observation",
@@ -298,6 +300,7 @@ class OpsLangGraphRunner:
             source=spec.source if spec else "builtin",
             category=spec.category if spec else "ops",
         )
+        step.result = result.to_dict()
         completed.append(step)
         observations.append({"stepIndex": index, "tool": step.tool_name, "result": result.to_dict()})
         return {

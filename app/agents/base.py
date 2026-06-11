@@ -57,6 +57,7 @@ class AgentStep:
     status: StepStatus = StepStatus.PENDING
     observation: str = ""
     reasoning: str = ""
+    result: dict[str, Any] = field(default_factory=dict)
 
 
 class BaseAgent:
