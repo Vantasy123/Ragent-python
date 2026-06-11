@@ -318,7 +318,13 @@ class FakeToolkit:
     def __init__(self) -> None:
         self.called = False
         self.read_called = False
-        self._tools = {"write_tool": self.write_tool, "read_tool": self.read_tool}
+        self._tools = {
+            "write_tool": self.write_tool,
+            "read_tool": self.read_tool,
+            "compose_restart_service": self.compose_restart_service,
+            "api_health_check": self.api_health_check,
+            "nginx_proxy_check": self.nginx_proxy_check,
+        }
 
     @property
     def tools(self) -> dict:
@@ -328,6 +334,9 @@ class FakeToolkit:
         return [
             ToolSpec("write_tool", "写操作", risk_level="write", requires_approval=True),
             ToolSpec("read_tool", "只读操作"),
+            ToolSpec("compose_restart_service", "重启服务", {"service": "string"}, risk_level="write", requires_approval=True),
+            ToolSpec("api_health_check", "检查后端健康接口"),
+            ToolSpec("nginx_proxy_check", "检查前端代理"),
         ]
 
     def write_tool(self, service: str = "api") -> dict:
@@ -337,6 +346,18 @@ class FakeToolkit:
     def read_tool(self) -> dict:
         self.read_called = True
         return {"success": True, "summary": "已读取"}
+
+    def compose_restart_service(self, service: str = "ragent-api") -> dict:
+        self.called = True
+        return {"success": True, "summary": f"已重启 {service}", "data": {"service": service}}
+
+    async def api_health_check(self) -> dict:
+        self.read_called = True
+        return {"success": True, "summary": "后端健康", "data": {"statusCode": 200}}
+
+    async def nginx_proxy_check(self) -> dict:
+        self.read_called = True
+        return {"success": True, "summary": "前端代理健康", "data": {"statusCode": 200}}
 
 
 class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
@@ -389,6 +410,35 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         span = self.db.query(TraceSpan).filter(TraceSpan.trace_id == self.trace.id, TraceSpan.operation == "tool_call").first()
         self.assertEqual(span.metadata_json["context"]["toolName"], "write_tool")
         self.assertNotEqual(span.metadata_json["input"], span.metadata_json["output"])
+
+    async def test_approved_restart_runs_post_verification_and_writes_trace(self) -> None:
+        """重启类写操作审批通过后，应自动执行只读健康验证并写入 trace。"""
+
+        self.approval.tool_name = "compose_restart_service"
+        self.approval.args = {"service": "ragent-api"}
+        self.tool_call.tool_name = "compose_restart_service"
+        self.tool_call.args = {"service": "ragent-api"}
+        self.db.commit()
+        service = OpsAgentService(self.db)
+        toolkit = FakeToolkit()
+        service.toolkit = toolkit
+
+        result = await service.approve(self.run.id, self.approval.id, True, "同意", self.user)
+
+        self.assertEqual(result["status"], "approved")
+        self.assertEqual(result["verification"]["toolName"], "api_health_check")
+        self.assertTrue(toolkit.called)
+        self.assertTrue(toolkit.read_called)
+        verification_call = (
+            self.db.query(AgentToolCall)
+            .filter(AgentToolCall.run_id == self.run.id, AgentToolCall.tool_name == "api_health_check")
+            .one()
+        )
+        self.assertEqual(verification_call.status, "success")
+        self.assertEqual(verification_call.approval_status, "not_required")
+        span = self.db.query(TraceSpan).filter(TraceSpan.trace_id == self.trace.id, TraceSpan.operation == "verification").one()
+        self.assertEqual(span.metadata_json["context"]["sourceTool"], "compose_restart_service")
+        self.assertTrue(span.metadata_json["output"]["result"]["success"])
 
     def test_trace_service_redacts_sensitive_payloads(self) -> None:
         """Trace 入库前应递归脱敏，避免回放页面暴露凭证。"""

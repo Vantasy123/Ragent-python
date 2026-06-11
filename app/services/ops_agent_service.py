@@ -332,8 +332,102 @@ class OpsAgentService:
                 output_data={"summary": result_obj.summary, "result": result},
                 duration_ms=duration_ms,
             )
+            verification = await self._run_post_approval_verification(registry, run, approval, result_obj, trace_service)
+        else:
+            verification = None
         self.db.commit()
-        return {"status": "approved", "result": result}
+        return {"status": "approved", "result": result, "verification": verification}
+
+    async def _run_post_approval_verification(
+        self,
+        registry: UnifiedToolRegistry,
+        run: AgentRun,
+        approval: AgentApproval,
+        execution_result: ToolCallResult,
+        trace_service: TraceService,
+    ) -> dict[str, Any] | None:
+        """高风险操作执行成功后自动补一个只读验证步骤，形成执行-验证闭环。"""
+
+        if not execution_result.success:
+            return None
+        request = self._verification_request_for_approval(approval)
+        if request is None:
+            return None
+        tool = registry.tools.get(request.name)
+        if tool is None:
+            return None
+        risk_level, requires_approval = tool.policy_for(request.args)
+        if requires_approval:
+            return None
+
+        started = time.perf_counter()
+        verification_result = await registry.call(request)
+        duration_ms = max(1, int((time.perf_counter() - started) * 1000))
+        safe_args = self._redact_for_audit(request.args)
+        safe_result = self._redact_for_audit(verification_result.to_dict())
+        tool_call = AgentToolCall(
+            run_id=run.id,
+            tool_name=request.name,
+            args=safe_args,
+            status="success" if verification_result.success else "failed",
+            result=safe_result,
+            duration_ms=duration_ms,
+            risk_level=risk_level,
+            approval_status="not_required",
+            error_message=verification_result.error,
+        )
+        self.db.add(tool_call)
+        span = trace_service.create_span(
+            run.trace_id or "",
+            "verification",
+            input_data={"eventType": "post_approval_verification", "toolName": request.name, "tool": request.name, "args": safe_args},
+            metadata={
+                "runId": run.id,
+                "agent": "verification",
+                "toolName": request.name,
+                "riskLevel": risk_level,
+                "requiresApproval": False,
+                "approvalId": approval.id,
+                "sourceTool": approval.tool_name,
+            },
+        )
+        trace_service.complete_span(
+            span,
+            status="success" if verification_result.success else "error",
+            error_message=verification_result.error,
+            output_data={"summary": verification_result.summary, "result": safe_result},
+            duration_ms=duration_ms,
+        )
+        return {
+            "toolName": request.name,
+            "args": safe_args,
+            "status": "success" if verification_result.success else "failed",
+            "result": safe_result,
+        }
+
+    def _verification_request_for_approval(self, approval: AgentApproval) -> ToolCallRequest | None:
+        """根据已审批写操作选择后置验证工具，避免修复动作执行后无人确认效果。"""
+
+        args = approval.args or {}
+        tool_name = approval.tool_name
+        service = str(args.get("service") or "")
+        if tool_name == "compose_restart_service":
+            return self._service_health_verification(service)
+        if tool_name == "safe_command":
+            command_id = str(args.get("commandId") or args.get("command_id") or "")
+            nested_args = args.get("args") if isinstance(args.get("args"), dict) else {}
+            service = str(nested_args.get("service") or service)
+            if command_id == "docker_restart" or "restart" in str(args.get("command") or "").lower():
+                return self._service_health_verification(service)
+        return None
+
+    def _service_health_verification(self, service: str) -> ToolCallRequest:
+        """把服务名映射到重启后的只读健康验证工具。"""
+
+        normalized = str(service or "").lower()
+        if normalized in {"ragent-frontend", "frontend", "nginx", "front"}:
+            return ToolCallRequest("nginx_proxy_check", {})
+        return ToolCallRequest("api_health_check", {})
 
     def _redact_for_audit(self, value: Any) -> Any:
         """统一生成可落库、可展示的脱敏审计副本。"""
