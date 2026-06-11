@@ -74,6 +74,7 @@ class OpsToolkit:
             "alert_correlations": self.alert_correlations,
             "kubernetes_events": self.kubernetes_events,
             "trace_analysis": self.trace_analysis,
+            "database_middleware_health": self.database_middleware_health,
             "change_correlations": self.change_correlations,
             "service_topology": self.service_topology,
             "metric_trend": self.metric_trend,
@@ -109,6 +110,7 @@ class OpsToolkit:
             ToolSpec("alert_correlations", "聚合活跃告警，输出降噪分组、影响面和 RCA 初筛线索"),
             ToolSpec("kubernetes_events", "分析 Kubernetes Pod、工作负载和节点事件线索"),
             ToolSpec("trace_analysis", "分析最近 Trace 调用链，输出慢 span、失败 span 和耗时热点", {"limit": "integer", "slowThresholdMs": "integer"}),
+            ToolSpec("database_middleware_health", "分析 Redis、MySQL、PostgreSQL 等数据库和中间件健康状态"),
             ToolSpec("change_correlations", "关联活跃告警中的发布、提交、镜像和流水线变更线索"),
             ToolSpec("service_topology", "分析服务拓扑、上下游依赖和故障影响传播路径"),
             ToolSpec("metric_trend", "查看指标趋势", {"metric": "string", "minutes": "integer"}),
@@ -580,6 +582,11 @@ class OpsToolkit:
             }
         finally:
             db.close()
+
+    async def database_middleware_health(self) -> dict[str, Any]:
+        """读取数据库和中间件健康状态、告警信号和 RCA 初筛线索。"""
+
+        return await self.monitoring_service.tool_database_middleware_health()
 
     async def change_correlations(self) -> dict[str, Any]:
         """读取告警中的变更线索，辅助判断故障是否与发布或提交相关。"""

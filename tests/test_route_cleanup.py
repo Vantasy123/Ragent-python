@@ -42,6 +42,7 @@ class RouteCleanupTest(unittest.TestCase):
         self.assertIn("GET", route_methods("/api/admin/monitoring/alert-correlations"))
         self.assertIn("GET", route_methods("/api/admin/monitoring/kubernetes-events"))
         self.assertIn("GET", route_methods("/api/admin/monitoring/trace-analysis"))
+        self.assertIn("GET", route_methods("/api/admin/monitoring/database-middleware"))
         self.assertIn("GET", route_methods("/api/admin/monitoring/change-correlations"))
         self.assertIn("GET", route_methods("/api/admin/monitoring/service-topology"))
         self.assertIn("GET", route_methods("/api/admin/monitoring/anomalies/{metric}"))

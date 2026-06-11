@@ -25,6 +25,7 @@ class MonitoringService:
         "container_memory": 'container_memory_usage_bytes{name!=""}',
         "redis_up": 'up{job="redis"}',
         "mysql_up": 'up{job="mysql"}',
+        "postgres_up": 'up{job=~"postgres|postgresql"}',
         "target_up": "up",
         "probe_success": "probe_success",
     }
@@ -370,6 +371,54 @@ class MonitoringService:
                 "rootCauseHints": self._kubernetes_root_cause_hints(events),
                 "recommendedNextSteps": self._kubernetes_recommended_steps(events, data_gaps),
                 "dataGaps": data_gaps,
+            },
+        }
+
+    async def database_middleware_health(self) -> dict[str, Any]:
+        """聚合数据库和中间件的只读健康状态，供 AIOps RCA 使用。"""
+
+        metric_checks = [
+            ("redis", "Redis", "middleware", "redis_up"),
+            ("mysql", "MySQL", "database", "mysql_up"),
+            ("postgres", "PostgreSQL", "database", "postgres_up"),
+        ]
+        components = []
+        data_gaps: list[str] = []
+        for key, name, component_type, metric in metric_checks:
+            result = await self.metric_value(metric)
+            component = self._database_component_from_metric(key, name, component_type, metric, result)
+            components.append(component)
+            if component["status"] == "degraded":
+                data_gaps.append(f"{name} 指标不可用：{component['message']}")
+
+        alerts = await self.alerts()
+        alert_items = alerts.get("data", {}).get("items", []) if alerts.get("status") in {"healthy", "critical"} else []
+        alert_items = alert_items if isinstance(alert_items, list) else []
+        alert_signals = self._database_middleware_alert_signals(alert_items)
+        if alerts.get("status") == "degraded":
+            data_gaps.append(alerts.get("summary", "Alertmanager 不可用，无法提取数据库/中间件告警"))
+
+        for signal in alert_signals:
+            target = str(signal.get("component") or "").lower()
+            for component in components:
+                if target and target in component["key"]:
+                    component["status"] = "critical" if signal.get("severity") == "critical" else component["status"]
+                    component["alertCount"] += 1
+
+        critical_components = [item for item in components if item["status"] == "critical"]
+        degraded_components = [item for item in components if item["status"] == "degraded"]
+        status = "critical" if critical_components or any(item.get("severity") == "critical" for item in alert_signals) else "degraded" if degraded_components else "healthy"
+        return {
+            "status": status,
+            "displayName": "数据库与中间件健康分析",
+            "summary": self._database_middleware_summary(components, alert_signals),
+            "updatedAt": self._now(),
+            "data": {
+                "components": components,
+                "alertSignals": alert_signals,
+                "rootCauseHints": self._database_middleware_root_cause_hints(components, alert_signals),
+                "recommendedNextSteps": self._database_middleware_recommended_steps(components, alert_signals, data_gaps),
+                "dataGaps": self._deduplicate(data_gaps),
             },
         }
 
@@ -879,6 +928,144 @@ class MonitoringService:
             if source_key is not None and payload.get(source_key) not in (None, ""):
                 result[source_key] = payload[source_key]
         return result
+
+    def _database_component_from_metric(self, key: str, name: str, component_type: str, metric: str, result: dict[str, Any]) -> dict[str, Any]:
+        """把数据库/中间件 up 指标转换为组件健康状态。"""
+
+        if result.get("status") != "healthy":
+            return {
+                "key": key,
+                "name": name,
+                "type": component_type,
+                "metric": metric,
+                "status": "degraded",
+                "value": None,
+                "alertCount": 0,
+                "message": result.get("summary", "指标查询不可用"),
+            }
+        value = float(result.get("data", {}).get("value") or 0)
+        healthy = value > 0
+        return {
+            "key": key,
+            "name": name,
+            "type": component_type,
+            "metric": metric,
+            "status": "healthy" if healthy else "critical",
+            "value": value,
+            "alertCount": 0,
+            "message": f"{name} up={value:g}" if healthy else f"{name} 采集目标不可用或实例 down",
+        }
+
+    def _database_middleware_alert_signals(self, alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """从活跃告警中提取数据库和中间件相关信号。"""
+
+        signals: list[dict[str, Any]] = []
+        for alert in alerts:
+            if not isinstance(alert, dict):
+                continue
+            labels = alert.get("labels") if isinstance(alert.get("labels"), dict) else {}
+            annotations = alert.get("annotations") if isinstance(alert.get("annotations"), dict) else {}
+            alert_name = str(alert.get("name") or labels.get("alertname") or "")
+            summary = str(alert.get("summary") or annotations.get("summary") or annotations.get("description") or "")
+            text = " ".join([alert_name, summary, " ".join(str(value) for value in labels.values()), " ".join(str(value) for value in annotations.values())]).lower()
+            component = self._database_middleware_component(text, labels)
+            if not component:
+                continue
+            signal_type = self._database_middleware_signal_type(text)
+            signals.append(
+                {
+                    "component": component,
+                    "signalType": signal_type,
+                    "severity": str(alert.get("severity") or labels.get("severity") or "unknown"),
+                    "summary": summary or alert_name,
+                    "startsAt": alert.get("startsAt"),
+                    "evidence": {
+                        "alertName": alert_name,
+                        "labels": self._pick_keys(labels, ["alertname", "severity", "job", "instance", "service", "db", "database"]),
+                        "annotations": self._pick_keys(annotations, ["summary", "description"]),
+                    },
+                }
+            )
+        return signals
+
+    def _database_middleware_component(self, text: str, labels: dict[str, Any]) -> str:
+        """根据告警文本和标签判断数据库/中间件组件。"""
+
+        labeled = " ".join(str(labels.get(key) or "") for key in ("job", "service", "app", "component", "database", "db")).lower()
+        merged = f"{text} {labeled}"
+        if "redis" in merged:
+            return "redis"
+        if "mysql" in merged or "mysqld" in merged or "innodb" in merged:
+            return "mysql"
+        if "postgres" in merged or "postgresql" in merged or "pg_" in merged:
+            return "postgres"
+        if any(token in merged for token in ("database", "db ", "slow query", "connection pool", "jdbc", "sql")):
+            return "database"
+        return ""
+
+    def _database_middleware_signal_type(self, text: str) -> str:
+        """把数据库/中间件告警归类为便于 RCA 的信号类型。"""
+
+        if any(token in text for token in ("down", "up == 0", "unreachable", "connection refused")):
+            return "availability"
+        if any(token in text for token in ("slow", "slow query", "latency", "duration", "timeout")):
+            return "latency"
+        if any(token in text for token in ("connection", "pool", "too many connections", "maxclients")):
+            return "connection_pool"
+        if any(token in text for token in ("replication", "replica", "slave", "lag")):
+            return "replication_lag"
+        if any(token in text for token in ("memory", "oom", "evicted", "eviction")):
+            return "resource_pressure"
+        return "database_middleware_alert"
+
+    def _database_middleware_summary(self, components: list[dict[str, Any]], alert_signals: list[dict[str, Any]]) -> str:
+        """生成数据库/中间件健康摘要。"""
+
+        critical = [item for item in components if item.get("status") == "critical"]
+        degraded = [item for item in components if item.get("status") == "degraded"]
+        if critical or alert_signals:
+            return f"发现 {len(critical)} 个异常组件和 {len(alert_signals)} 条数据库/中间件告警信号"
+        if degraded:
+            return f"数据库/中间件指标存在 {len(degraded)} 个数据缺口"
+        return "数据库与中间件健康状态正常"
+
+    def _database_middleware_root_cause_hints(self, components: list[dict[str, Any]], alert_signals: list[dict[str, Any]]) -> list[str]:
+        """根据组件状态和告警信号生成 RCA 初筛线索。"""
+
+        hints: list[str] = []
+        for component in components:
+            if component.get("status") == "critical":
+                hints.append(f"{component.get('name')} 不可用，优先检查实例存活、网络连通性、Exporter 和服务端口")
+        signal_types = {str(item.get("signalType") or "") for item in alert_signals}
+        components_in_alerts = "、".join(sorted({str(item.get("component") or "") for item in alert_signals if item.get("component")}))
+        if "latency" in signal_types:
+            hints.append(f"{components_in_alerts or '数据库/中间件'} 存在慢查询或延迟信号，优先关联 Trace 慢 span、慢 SQL 和连接池等待")
+        if "connection_pool" in signal_types:
+            hints.append(f"{components_in_alerts or '数据库/中间件'} 存在连接池风险，优先检查最大连接数、活跃连接、应用连接泄漏和限流")
+        if "replication_lag" in signal_types:
+            hints.append("复制延迟异常，优先检查主从复制状态、网络抖动、写入峰值和备库资源")
+        if "resource_pressure" in signal_types:
+            hints.append("资源压力信号，优先检查内存、磁盘、缓存淘汰和实例规格")
+        return self._deduplicate(hints) or ["数据库/中间件暂无明确异常，继续结合指标、日志、Trace 和近期变更验证"]
+
+    def _database_middleware_recommended_steps(
+        self,
+        components: list[dict[str, Any]],
+        alert_signals: list[dict[str, Any]],
+        data_gaps: list[str],
+    ) -> list[str]:
+        """生成数据库/中间件后续排查建议。"""
+
+        steps: list[str] = []
+        for component in components:
+            if component.get("status") == "critical":
+                steps.append(f"检查 {component.get('name')} 实例、Exporter、网络连通性和最近重启记录")
+        for signal in alert_signals[:5]:
+            component = signal.get("component") or "database"
+            steps.append(f"围绕 {component} 的 {signal.get('signalType')} 告警，关联同一时间窗口的应用日志、Trace 慢 span 和发布变更")
+        if data_gaps:
+            steps.append("补齐 Redis/MySQL/PostgreSQL Exporter、连接池、慢查询和复制延迟指标，提升数据库 RCA 精度")
+        return self._deduplicate(steps) or ["持续观察数据库/中间件指标，并与活跃告警、Trace 和应用日志保持时间线对齐"]
 
     def _topology_nodes(self) -> tuple[list[dict[str, Any]], dict[str, str]]:
         """从业务服务器和探测目标构造拓扑节点及别名索引。"""
@@ -1412,6 +1599,18 @@ class MonitoringService:
             "summary": result.get("summary", ""),
             "data": data,
             "error": "" if result.get("status") in {"healthy", "critical"} else result.get("error", "monitoring_not_configured"),
+        }
+
+    async def tool_database_middleware_health(self) -> dict[str, Any]:
+        """为 OpsToolkit 适配数据库与中间件健康分析结果。"""
+
+        result = await self.database_middleware_health()
+        data = result.get("data", {}) if isinstance(result.get("data"), dict) else {}
+        return {
+            "success": result.get("status") in {"healthy", "degraded", "critical"},
+            "summary": result.get("summary", ""),
+            "data": data,
+            "error": "" if result.get("status") in {"healthy", "degraded", "critical"} else result.get("error", "monitoring_not_configured"),
         }
 
     async def tool_change_correlations(self) -> dict[str, Any]:

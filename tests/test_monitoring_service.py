@@ -246,6 +246,77 @@ class MonitoringServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error"], "")
         self.assertEqual(result["data"]["eventCount"], 1)
 
+    async def test_database_middleware_health_combines_metrics_and_alerts(self) -> None:
+        """数据库与中间件健康分析应结合 up 指标和告警信号输出 RCA 线索。"""
+
+        service = MonitoringService()
+
+        async def fake_metric_value(metric: str):
+            values = {"redis_up": 1.0, "mysql_up": 0.0, "postgres_up": 1.0}
+            return {
+                "status": "healthy",
+                "summary": f"{metric} 当前值 {values[metric]}",
+                "data": {"metric": metric, "value": values[metric]},
+            }
+
+        async def fake_alerts():
+            return {
+                "status": "critical",
+                "data": {
+                    "items": [
+                        {
+                            "name": "RedisConnectionPoolHigh",
+                            "severity": "warning",
+                            "summary": "Redis connection pool nearly exhausted",
+                            "startsAt": "2026-06-11T10:00:00Z",
+                            "labels": {"alertname": "RedisConnectionPoolHigh", "job": "redis", "severity": "warning"},
+                            "annotations": {"summary": "Redis 连接池接近耗尽"},
+                        },
+                        {
+                            "name": "MysqlSlowQueryHigh",
+                            "severity": "critical",
+                            "summary": "MySQL slow query latency high",
+                            "startsAt": "2026-06-11T10:03:00Z",
+                            "labels": {"alertname": "MysqlSlowQueryHigh", "job": "mysql", "severity": "critical"},
+                            "annotations": {"description": "慢查询延迟升高"},
+                        },
+                    ]
+                },
+            }
+
+        service.metric_value = fake_metric_value  # type: ignore[method-assign]
+        service.alerts = fake_alerts  # type: ignore[method-assign]
+
+        result = await service.database_middleware_health()
+
+        self.assertEqual(result["status"], "critical")
+        components = {item["key"]: item for item in result["data"]["components"]}
+        self.assertEqual(components["redis"]["status"], "healthy")
+        self.assertEqual(components["mysql"]["status"], "critical")
+        self.assertEqual(result["data"]["alertSignals"][0]["component"], "redis")
+        self.assertTrue(any("慢查询" in item or "连接池" in item for item in result["data"]["rootCauseHints"]))
+        self.assertTrue(any("Trace 慢 span" in item for item in result["data"]["recommendedNextSteps"]))
+
+    async def test_tool_database_middleware_health_adapts_result_for_ops_toolkit(self) -> None:
+        """OpsToolkit 使用的数据库与中间件健康工具应返回标准工具结果结构。"""
+
+        service = MonitoringService()
+
+        async def fake_database_middleware_health():
+            return {
+                "status": "critical",
+                "summary": "发现 1 个异常组件",
+                "data": {"components": [{"key": "mysql", "status": "critical"}]},
+            }
+
+        service.database_middleware_health = fake_database_middleware_health  # type: ignore[method-assign]
+
+        result = await service.tool_database_middleware_health()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["error"], "")
+        self.assertEqual(result["data"]["components"][0]["key"], "mysql")
+
     async def test_change_correlations_extract_release_metadata_from_alerts(self) -> None:
         """变更关联分析应从告警标签中提取发布、提交和流水线线索。"""
 

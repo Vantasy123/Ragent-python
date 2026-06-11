@@ -70,6 +70,13 @@ async def trace_analysis(
     return success(TraceAnalysisService(db).analyze_recent(limit=limit, slow_threshold_ms=slowThresholdMs))
 
 
+@router.get("/database-middleware")
+async def database_middleware(_: User = Depends(require_admin)):
+    """返回 Redis、MySQL、PostgreSQL 等数据库和中间件健康分析结果。"""
+
+    return success(await MonitoringService().database_middleware_health())
+
+
 @router.get("/change-correlations")
 async def change_correlations(_: User = Depends(require_admin)):
     """返回活跃告警中的发布、提交、镜像和流水线变更关联线索。"""

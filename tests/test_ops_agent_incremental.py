@@ -256,6 +256,32 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.requires_approval)
         self.assertEqual(result.data["runCount"], 5)
 
+    async def test_database_middleware_health_tool_is_readonly_and_callable(self) -> None:
+        """数据库与中间件健康分析应作为只读工具暴露给运维 Agent。"""
+
+        toolkit = OpsToolkit()
+
+        async def fake_tool_database_middleware_health() -> dict:
+            return {
+                "success": True,
+                "summary": "发现 1 个异常组件",
+                "data": {"components": [{"key": "mysql", "status": "critical"}]},
+                "error": "",
+            }
+
+        toolkit.monitoring_service.tool_database_middleware_health = fake_tool_database_middleware_health  # type: ignore[method-assign]
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=toolkit)
+
+        metadata = next(tool for tool in registry.list_tools("admin") if tool["name"] == "database_middleware_health")
+        result = await registry.call(ToolCallRequest("database_middleware_health"))
+
+        self.assertTrue(metadata["isReadOnly"])
+        self.assertFalse(metadata["requiresApproval"])
+        self.assertTrue(result.success)
+        self.assertEqual(result.risk_level, "read")
+        self.assertFalse(result.requires_approval)
+        self.assertEqual(result.data["components"][0]["key"], "mysql")
+
     async def test_service_topology_tool_is_readonly_and_callable(self) -> None:
         """服务拓扑分析应作为只读工具暴露给运维 Agent。"""
 
@@ -319,14 +345,16 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(steps[1].tool_name, "alert_correlations")
         self.assertEqual(steps[2].tool_name, "kubernetes_events")
         self.assertEqual(steps[3].tool_name, "trace_analysis")
-        self.assertEqual(steps[4].tool_name, "service_topology")
-        self.assertEqual(steps[5].tool_name, "change_correlations")
+        self.assertEqual(steps[4].tool_name, "database_middleware_health")
+        self.assertEqual(steps[5].tool_name, "service_topology")
+        self.assertEqual(steps[6].tool_name, "change_correlations")
         self.assertTrue(any(step.tool_name == "metric_anomalies" for step in steps))
         self.assertIn("影响面", steps[1].reasoning)
         self.assertIn("Pod", steps[2].reasoning)
         self.assertIn("span", steps[3].reasoning)
-        self.assertIn("拓扑", steps[4].reasoning)
-        self.assertIn("变更", steps[5].reasoning)
+        self.assertIn("Redis", steps[4].reasoning)
+        self.assertIn("拓扑", steps[5].reasoning)
+        self.assertIn("变更", steps[6].reasoning)
 
     def test_final_report_includes_alert_impact_and_rca_hints(self) -> None:
         """最终报告应把告警关联工具的影响面和 RCA 线索结构化呈现。"""
@@ -491,6 +519,40 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("耗时热点：llm", report)
         self.assertIn("模型调用耗时靠前", report)
         self.assertIn("打开 Trace trace-1", report)
+
+    def test_final_report_includes_database_middleware_context(self) -> None:
+        """最终报告应把数据库和中间件健康信号结构化呈现。"""
+
+        orchestrator = OrchestratorAgent(OpsToolkit())
+        step = AgentStep(
+            title="分析数据库与中间件健康",
+            tool_name="database_middleware_health",
+            status="success",
+            observation="发现 1 个异常组件和 1 条数据库/中间件告警信号",
+            result={
+                "success": True,
+                "summary": "发现 1 个异常组件和 1 条数据库/中间件告警信号",
+                "data": {
+                    "components": [
+                        {"key": "mysql", "name": "MySQL", "status": "critical", "message": "MySQL 采集目标不可用或实例 down"},
+                        {"key": "redis", "name": "Redis", "status": "healthy", "message": "Redis up=1"},
+                    ],
+                    "alertSignals": [
+                        {"component": "mysql", "signalType": "latency", "summary": "MySQL slow query latency high"}
+                    ],
+                    "rootCauseHints": ["MySQL 存在慢查询或延迟信号，优先关联 Trace 慢 span、慢 SQL 和连接池等待"],
+                    "recommendedNextSteps": ["围绕 mysql 的 latency 告警，关联同一时间窗口的应用日志、Trace 慢 span 和发布变更"],
+                },
+            },
+        )
+
+        report = orchestrator._build_report("数据库慢查询告警", [step], ReplanDecision("complete", "完成"))
+
+        self.assertIn("### 数据库与中间件", report)
+        self.assertIn("组件状态：MySQL critical", report)
+        self.assertIn("告警信号：mysql latency", report)
+        self.assertIn("异常数据库/中间件：MySQL", report)
+        self.assertIn("Trace 慢 span", report)
 
     def test_final_report_includes_metric_anomaly_context(self) -> None:
         """最终报告应把指标异常信号结构化呈现。"""
