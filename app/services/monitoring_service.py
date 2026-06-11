@@ -335,6 +335,43 @@ class MonitoringService:
             },
         }
 
+    async def change_correlations(self) -> dict[str, Any]:
+        """关联活跃告警中的发布、提交和版本线索，为 RCA 提供变更证据。"""
+
+        alerts = await self.alerts()
+        if alerts.get("status") == "degraded":
+            return self._degraded(
+                "变更关联分析",
+                alerts.get("summary", "Alertmanager 不可用，无法关联变更"),
+                {"affectedServices": [], "correlatedChanges": [], "dataGaps": ["缺少活跃告警数据，无法提取变更线索"]},
+            )
+
+        items = alerts.get("data", {}).get("items", [])
+        alert_items = items if isinstance(items, list) else []
+        inventory = self._service_inventory()
+        affected_services = sorted({self._alert_service((item.get("labels") or {}) if isinstance(item, dict) else {}) for item in alert_items})
+        candidates = self._change_candidates_from_alerts(alert_items, inventory)
+        data_gaps = self._change_data_gaps(alert_items, candidates)
+        high_risk = [item for item in candidates if item.get("riskLevel") == "high"]
+        return {
+            "status": "critical" if high_risk else "healthy",
+            "displayName": "变更关联分析",
+            "summary": (
+                "未发现活跃告警中的变更线索"
+                if not candidates
+                else f"从 {len(alert_items)} 条活跃告警中识别 {len(candidates)} 个疑似相关变更，涉及 {len(affected_services)} 个服务"
+            ),
+            "updatedAt": self._now(),
+            "data": {
+                "alertCount": len(alert_items),
+                "changeCount": len(candidates),
+                "affectedServices": affected_services,
+                "correlatedChanges": candidates,
+                "dataGaps": data_gaps,
+                "recommendedNextSteps": self._change_recommended_steps(candidates, data_gaps),
+            },
+        }
+
     def _group_alerts(self, alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """按服务、实例和严重等级聚合告警，降低重复告警对诊断 Agent 的干扰。"""
 
@@ -443,6 +480,178 @@ class MonitoringService:
         alert_text = "、".join(sorted(bucket["alertNames"]))
         instance_count = len(bucket["instances"])
         return f"{service_text} 出现 {len(bucket['alerts'])} 条 {bucket['severityLabel']}告警，涉及 {instance_count} 个实例，主要告警：{alert_text}"
+
+    def _change_candidates_from_alerts(self, alerts: list[dict[str, Any]], inventory: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        """从告警标签和注解中抽取发布、提交、镜像等变更候选。"""
+
+        buckets: dict[str, dict[str, Any]] = {}
+        for alert in alerts:
+            if not isinstance(alert, dict):
+                continue
+            labels = alert.get("labels") if isinstance(alert.get("labels"), dict) else {}
+            annotations = alert.get("annotations") if isinstance(alert.get("annotations"), dict) else {}
+            merged = {**annotations, **labels}
+            change = self._extract_change_metadata(merged)
+            if not change:
+                continue
+            service = self._alert_service(labels)
+            server = inventory.get(service, {})
+            key_parts = [service, change.get("changeId") or change.get("gitSha") or change.get("version") or change.get("image") or "unknown"]
+            key = "|".join(key_parts)
+            bucket = buckets.setdefault(
+                key,
+                {
+                    "changeKey": key,
+                    "service": service,
+                    "serviceName": server.get("name") or service,
+                    "owner": server.get("owner", ""),
+                    "env": server.get("env", ""),
+                    "changeId": change.get("changeId", ""),
+                    "version": change.get("version", ""),
+                    "gitSha": change.get("gitSha", ""),
+                    "image": change.get("image", ""),
+                    "pipeline": change.get("pipeline", ""),
+                    "changedAt": change.get("changedAt", ""),
+                    "alertNames": set(),
+                    "alertSeverities": set(),
+                    "evidence": [],
+                    "firstAlertAt": alert.get("startsAt"),
+                },
+            )
+            alert_name = str(alert.get("name") or labels.get("alertname") or "unknown")
+            severity = str(alert.get("severity") or labels.get("severity") or "unknown")
+            bucket["alertNames"].add(alert_name)
+            bucket["alertSeverities"].add(severity)
+            bucket["evidence"].append(
+                {
+                    "alertName": alert_name,
+                    "severity": severity,
+                    "startsAt": alert.get("startsAt"),
+                    "summary": alert.get("summary", ""),
+                }
+            )
+            if alert.get("startsAt") and (not bucket["firstAlertAt"] or str(alert.get("startsAt")) < str(bucket["firstAlertAt"])):
+                bucket["firstAlertAt"] = alert.get("startsAt")
+
+        results: list[dict[str, Any]] = []
+        for item in buckets.values():
+            severities = sorted(item.pop("alertSeverities"), key=self._severity_rank)
+            alert_names = sorted(item.pop("alertNames"))
+            risk_level = "high" if "critical" in severities else "medium" if "warning" in severities else "low"
+            confidence = self._change_confidence(item, alert_names)
+            item["alertNames"] = alert_names
+            item["riskLevel"] = risk_level
+            item["confidence"] = confidence
+            item["summary"] = self._change_summary(item)
+            item["rollbackHint"] = self._rollback_hint(item)
+            results.append(item)
+        return sorted(results, key=lambda item: ({"high": 0, "medium": 1, "low": 2}.get(item["riskLevel"], 3), item["service"], item["changeKey"]))
+
+    def _extract_change_metadata(self, payload: dict[str, Any]) -> dict[str, str]:
+        """从常见发布系统、Git 和镜像标签字段中提取变更元数据。"""
+
+        aliases = {
+            "changeId": ["change_id", "change", "deployment", "deployment_id", "release", "release_id", "rollout", "revision"],
+            "version": ["version", "app_version", "release_version", "image_tag", "tag"],
+            "gitSha": ["git_sha", "commit", "commit_sha", "revision_sha", "vcs_ref"],
+            "image": ["image", "container_image"],
+            "pipeline": ["pipeline", "pipeline_id", "ci_pipeline", "build", "build_id", "job_url"],
+            "changedAt": ["changed_at", "deployed_at", "deployment_time", "release_time"],
+        }
+        result: dict[str, str] = {}
+        lowered = {str(key).lower(): str(value).strip() for key, value in payload.items() if value not in (None, "")}
+        for target_key, keys in aliases.items():
+            for key in keys:
+                value = lowered.get(key.lower())
+                if value:
+                    result[target_key] = value
+                    break
+        return result
+
+    def _service_inventory(self) -> dict[str, dict[str, Any]]:
+        """把接入配置中的服务映射为 RCA 可用的 CMDB 轻量视图。"""
+
+        inventory: dict[str, dict[str, Any]] = {}
+        for server in self.config_service.servers():
+            keys = [server.get("id"), server.get("name"), *(server.get("tags") or [])]
+            for key in keys:
+                text = str(key or "").strip()
+                if text:
+                    inventory[text] = server
+        return inventory
+
+    def _change_data_gaps(self, alerts: list[dict[str, Any]], candidates: list[dict[str, Any]]) -> list[str]:
+        """生成变更关联的数据缺口，帮助用户补齐 CI/CD、Git 或 CMDB 标签。"""
+
+        gaps: list[str] = []
+        if alerts and not candidates:
+            gaps.append("活跃告警未携带 change_id、git_sha、version、image 或 pipeline 标签，无法直接关联发布变更")
+        if candidates and any(not item.get("changedAt") for item in candidates):
+            gaps.append("部分变更缺少 changed_at/deployed_at 时间，无法精确判断告警和发布的时间先后")
+        if candidates and any(not item.get("owner") for item in candidates):
+            gaps.append("部分服务未在接入配置中维护 owner，无法自动定位负责团队")
+        if not alerts:
+            gaps.append("当前没有活跃告警，变更关联仅能等待告警或外部变更源接入后分析")
+        return gaps
+
+    def _change_recommended_steps(self, candidates: list[dict[str, Any]], data_gaps: list[str]) -> list[str]:
+        """根据变更候选生成后续排查、回滚和数据接入建议。"""
+
+        steps: list[str] = []
+        for item in candidates[:5]:
+            service = item.get("serviceName") or item.get("service") or "相关服务"
+            version = item.get("version") or item.get("gitSha") or item.get("changeId") or item.get("image") or "当前变更"
+            steps.append(f"核对 {service} 的发布记录 {version}，确认告警是否在发布后出现")
+            steps.append(f"检索 {service} 的回滚 Runbook，并评估回滚对依赖服务的影响")
+        if data_gaps:
+            steps.append("在告警规则或发布流水线中补充 change_id、git_sha、version、deployed_at 等标签")
+        return self._deduplicate(steps)
+
+    def _change_confidence(self, item: dict[str, Any], alert_names: list[str]) -> str:
+        """按元数据完整度给变更候选打置信等级。"""
+
+        score = 0
+        if item.get("service"):
+            score += 1
+        if item.get("gitSha") or item.get("version") or item.get("changeId"):
+            score += 1
+        if item.get("changedAt"):
+            score += 1
+        if alert_names:
+            score += 1
+        if score >= 3:
+            return "high"
+        if score == 2:
+            return "medium"
+        return "low"
+
+    def _change_summary(self, item: dict[str, Any]) -> str:
+        """生成变更候选摘要，便于报告直接引用。"""
+
+        marker = item.get("version") or item.get("gitSha") or item.get("changeId") or item.get("image") or "未知变更"
+        service = item.get("serviceName") or item.get("service") or "未知服务"
+        alerts = "、".join(item.get("alertNames") or [])
+        suffix = f"，关联告警：{alerts}" if alerts else ""
+        return f"{service} 存在疑似相关变更 {marker}{suffix}"
+
+    def _rollback_hint(self, item: dict[str, Any]) -> str:
+        """给出保守回滚提示，实际执行仍必须走审批。"""
+
+        service = item.get("serviceName") or item.get("service") or "相关服务"
+        return f"如确认变更导致故障，先查阅 {service} 回滚 Runbook，回滚或重启必须通过审批流程执行"
+
+    def _deduplicate(self, lines: list[str]) -> list[str]:
+        """按原顺序去重列表内容。"""
+
+        seen: set[str] = set()
+        results: list[str] = []
+        for line in lines:
+            text = str(line or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            results.append(text)
+        return results
 
     def _severity_rank(self, severity: str) -> int:
         """严重等级排序，数值越小优先级越高。"""
@@ -654,6 +863,18 @@ class MonitoringService:
         """为 OpsToolkit 适配告警关联分析结果，供诊断 Agent 直接消费。"""
 
         result = await self.alert_correlations()
+        data = result.get("data", {}) if isinstance(result.get("data"), dict) else {}
+        return {
+            "success": result.get("status") in {"healthy", "critical"},
+            "summary": result.get("summary", ""),
+            "data": data,
+            "error": "" if result.get("status") in {"healthy", "critical"} else result.get("error", "monitoring_not_configured"),
+        }
+
+    async def tool_change_correlations(self) -> dict[str, Any]:
+        """为 OpsToolkit 适配变更关联分析结果，供 RCA 和计划 Agent 消费。"""
+
+        result = await self.change_correlations()
         data = result.get("data", {}) if isinstance(result.get("data"), dict) else {}
         return {
             "success": result.get("status") in {"healthy", "critical"},

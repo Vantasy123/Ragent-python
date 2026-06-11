@@ -166,6 +166,87 @@ class MonitoringServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error"], "")
         self.assertEqual(result["data"]["groupCount"], 1)
 
+    async def test_change_correlations_extract_release_metadata_from_alerts(self) -> None:
+        """变更关联分析应从告警标签中提取发布、提交和流水线线索。"""
+
+        temp_dir = self._make_directory()
+        servers_path = temp_dir / "servers.yml"
+        monitoring_path = temp_dir / "monitoring.yml"
+        servers_path.write_text(
+            """
+servers:
+  - id: order-service
+    name: 订单服务
+    enabled: true
+    env: prod
+    health_url: http://order-service:8080/health
+    owner: 交易团队
+    tags:
+      - order-service
+""",
+            encoding="utf-8",
+        )
+        monitoring_path.write_text("monitoring:\n  enabled: true\n", encoding="utf-8")
+        service = MonitoringService(config_service=ProjectConfigService(str(servers_path), str(monitoring_path)))
+
+        async def fake_alerts():
+            return {
+                "status": "critical",
+                "data": {
+                    "items": [
+                        {
+                            "name": "HighErrorRate",
+                            "severity": "critical",
+                            "summary": "订单服务错误率升高",
+                            "startsAt": "2026-06-11T10:10:00Z",
+                            "labels": {
+                                "service": "order-service",
+                                "severity": "critical",
+                                "version": "2026.06.11.1",
+                                "git_sha": "abc1234",
+                                "pipeline_id": "pipe-42",
+                                "deployed_at": "2026-06-11T10:00:00Z",
+                            },
+                        }
+                    ]
+                },
+            }
+
+        service.alerts = fake_alerts  # type: ignore[method-assign]
+
+        result = await service.change_correlations()
+
+        self.assertEqual(result["status"], "critical")
+        self.assertEqual(result["data"]["changeCount"], 1)
+        item = result["data"]["correlatedChanges"][0]
+        self.assertEqual(item["serviceName"], "订单服务")
+        self.assertEqual(item["owner"], "交易团队")
+        self.assertEqual(item["version"], "2026.06.11.1")
+        self.assertEqual(item["gitSha"], "abc1234")
+        self.assertEqual(item["riskLevel"], "high")
+        self.assertEqual(item["confidence"], "high")
+        self.assertIn("回滚 Runbook", item["rollbackHint"])
+
+    async def test_tool_change_correlations_adapts_result_for_ops_toolkit(self) -> None:
+        """OpsToolkit 使用的变更关联工具应返回标准工具结果结构。"""
+
+        service = MonitoringService()
+
+        async def fake_change_correlations():
+            return {
+                "status": "critical",
+                "summary": "识别 1 个疑似相关变更",
+                "data": {"changeCount": 1, "correlatedChanges": [{"service": "api"}]},
+            }
+
+        service.change_correlations = fake_change_correlations  # type: ignore[method-assign]
+
+        result = await service.tool_change_correlations()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["error"], "")
+        self.assertEqual(result["data"]["changeCount"], 1)
+
     async def test_missing_monitoring_config_returns_degraded(self) -> None:
         """未启用监控时接口应降级，而不是抛出异常。"""
 

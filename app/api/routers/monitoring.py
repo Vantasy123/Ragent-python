@@ -48,6 +48,13 @@ async def alert_correlations(_: User = Depends(require_admin)):
     return success(await MonitoringService().alert_correlations())
 
 
+@router.get("/change-correlations")
+async def change_correlations(_: User = Depends(require_admin)):
+    """返回活跃告警中的发布、提交、镜像和流水线变更关联线索。"""
+
+    return success(await MonitoringService().change_correlations())
+
+
 @router.post("/query")
 async def query(payload: PrometheusQueryPayload, _: User = Depends(require_admin)):
     """执行受控 PromQL 即时查询，仅管理员可用。"""

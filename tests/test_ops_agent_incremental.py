@@ -177,6 +177,32 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.requires_approval)
         self.assertEqual(result.data["groupCount"], 1)
 
+    async def test_change_correlations_tool_is_readonly_and_callable(self) -> None:
+        """变更关联分析应作为只读工具暴露给运维 Agent。"""
+
+        toolkit = OpsToolkit()
+
+        async def fake_tool_change_correlations() -> dict:
+            return {
+                "success": True,
+                "summary": "识别 1 个疑似相关变更",
+                "data": {"changeCount": 1, "correlatedChanges": [{"service": "order-api"}]},
+                "error": "",
+            }
+
+        toolkit.monitoring_service.tool_change_correlations = fake_tool_change_correlations  # type: ignore[method-assign]
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=toolkit)
+
+        metadata = next(tool for tool in registry.list_tools("admin") if tool["name"] == "change_correlations")
+        result = await registry.call(ToolCallRequest("change_correlations"))
+
+        self.assertTrue(metadata["isReadOnly"])
+        self.assertFalse(metadata["requiresApproval"])
+        self.assertTrue(result.success)
+        self.assertEqual(result.risk_level, "read")
+        self.assertFalse(result.requires_approval)
+        self.assertEqual(result.data["changeCount"], 1)
+
     async def test_deterministic_plan_uses_alert_correlations_for_alert_task(self) -> None:
         """告警类任务应优先生成告警关联分析步骤，降低重复告警噪声。"""
 
@@ -186,7 +212,9 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         steps = await planner.create_plan("订单服务出现 critical 告警，需要定位根因")
 
         self.assertEqual(steps[1].tool_name, "alert_correlations")
+        self.assertEqual(steps[2].tool_name, "change_correlations")
         self.assertIn("影响面", steps[1].reasoning)
+        self.assertIn("变更", steps[2].reasoning)
 
     def test_final_report_includes_alert_impact_and_rca_hints(self) -> None:
         """最终报告应把告警关联工具的影响面和 RCA 线索结构化呈现。"""
@@ -220,6 +248,38 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("### RCA 初筛线索", report)
         self.assertIn("资源饱和风险", report)
         self.assertIn("查看 order-api 的最近指标趋势", report)
+
+    def test_final_report_includes_change_correlation_context(self) -> None:
+        """最终报告应把变更关联候选和回滚建议结构化呈现。"""
+
+        orchestrator = OrchestratorAgent(OpsToolkit())
+        step = AgentStep(
+            title="关联近期发布变更线索",
+            tool_name="change_correlations",
+            status="success",
+            observation="识别 1 个疑似相关变更",
+            result={
+                "success": True,
+                "summary": "识别 1 个疑似相关变更",
+                "data": {
+                    "correlatedChanges": [
+                        {
+                            "summary": "订单服务 存在疑似相关变更 2026.06.11.1，关联告警：HighErrorRate",
+                            "confidence": "high",
+                            "rollbackHint": "如确认变更导致故障，先查阅 订单服务 回滚 Runbook",
+                        }
+                    ],
+                    "recommendedNextSteps": ["核对 订单服务 的发布记录 2026.06.11.1，确认告警是否在发布后出现"],
+                },
+            },
+        )
+
+        report = orchestrator._build_report("订单服务发布后告警", [step], ReplanDecision("complete", "完成"))
+
+        self.assertIn("### 变更关联", report)
+        self.assertIn("疑似相关变更 2026.06.11.1", report)
+        self.assertIn("高置信变更候选", report)
+        self.assertIn("回滚 Runbook", report)
 
 
 class FakeRegistry:

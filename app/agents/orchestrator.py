@@ -70,6 +70,12 @@ SIMPLE_OPS_KEYWORDS = {
     "metric",
     "监控",
     "monitor",
+    "变更",
+    "change",
+    "发布",
+    "release",
+    "部署",
+    "deploy",
     "重启",
     "restart",
     "恢复",
@@ -149,7 +155,7 @@ class PlannerAgent:
         prompt = (
             "你是 Ragent 运维 Planner，需要生成安全、可执行的排障计划。\n"
             "只能输出 JSON，不要输出 Markdown。格式：{\"steps\":[{\"title\":\"步骤标题\",\"tool\":\"工具名\",\"args\":{},\"reasoning\":\"原因\"}]}\n"
-            "要求：优先使用只读工具；告警类任务优先查询 alert_correlations，再补充 alert_status、metric_trend、health/log 等证据；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
+            "要求：优先使用只读工具；告警和故障类任务优先查询 alert_correlations 与 change_correlations，再补充 alert_status、metric_trend、health/log 等证据；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
             "如果用户给出 docker 命令原文，只能使用 safe_command，并把命令放到 args.command；不要生成 shell、bash 或 powershell 工具。\n"
             f"可用工具：{json.dumps(tools, ensure_ascii=False)}\n"
             f"服务名白名单：{json.dumps(sorted(set(OPS_SERVICE_ALIASES.values())), ensure_ascii=False)}\n"
@@ -274,6 +280,7 @@ class PlannerAgent:
         steps = [
             PlanStep("检查 Compose 服务状态", "compose_ps", reasoning="先确认核心服务是否存在异常状态"),
             PlanStep("分析活跃告警关联与影响面", "alert_correlations", reasoning="对告警做降噪聚合，提取影响面和 RCA 初筛线索"),
+            PlanStep("关联近期发布变更线索", "change_correlations", reasoning="把告警与发布、提交、镜像和流水线信息关联，判断是否存在变更诱因"),
             PlanStep("查询当前活跃告警", "alert_status", reasoning="先确认监控系统是否已有明确告警"),
             PlanStep("查询 CPU 指标趋势", "metric_trend", {"metric": "cpu_percent", "minutes": 30}, "用指标趋势判断是否存在资源异常"),
             PlanStep("查询内存指标趋势", "metric_trend", {"metric": "memory_percent", "minutes": 30}, "用指标趋势判断是否存在内存压力"),
@@ -485,6 +492,7 @@ class OrchestratorAgent(BaseAgent):
         suggestions = []
         impact = []
         rca_hints = []
+        change_context = []
         recommended_actions = []
         for step in steps:
             status = step.status.value if isinstance(step.status, StepStatus) else str(step.status)
@@ -496,6 +504,11 @@ class OrchestratorAgent(BaseAgent):
                     impact.extend(correlation["impact"])
                     rca_hints.extend(correlation["rcaHints"])
                     recommended_actions.extend(correlation["recommendedActions"])
+                if step.tool_name == "change_correlations":
+                    changes = self._extract_change_correlation_context(step)
+                    change_context.extend(changes["changes"])
+                    rca_hints.extend(changes["rcaHints"])
+                    recommended_actions.extend(changes["recommendedActions"])
             elif "未配置" in observation or "monitoring_not_configured" in observation:
                 gaps.append(f"- {step.title}：{observation}")
             elif status == StepStatus.BLOCKED.value:
@@ -518,6 +531,8 @@ class OrchestratorAgent(BaseAgent):
             lines.extend(["", "### 影响面", *[f"- {item}" for item in self._deduplicate_lines(impact)[:5]]])
         if rca_hints:
             lines.extend(["", "### RCA 初筛线索", *[f"- {item}" for item in self._deduplicate_lines(rca_hints)[:8]]])
+        if change_context:
+            lines.extend(["", "### 变更关联", *[f"- {item}" for item in self._deduplicate_lines(change_context)[:8]]])
         if gaps:
             lines.extend(["", "### 数据缺口", *gaps])
         lines.extend(["", "### 下一步建议", *suggestions, "", "### 执行明细"])
@@ -549,6 +564,35 @@ class OrchestratorAgent(BaseAgent):
                     if action:
                         recommended_actions.append(str(action))
         return {"impact": impact, "rcaHints": rca_hints, "recommendedActions": recommended_actions}
+
+    def _extract_change_correlation_context(self, step: AgentStep) -> dict[str, list[str]]:
+        """从变更关联工具结果中提取变更候选、RCA 线索和建议动作。"""
+
+        payload = step.result if isinstance(getattr(step, "result", None), dict) else {}
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        changes: list[str] = []
+        rca_hints: list[str] = []
+        recommended_actions: list[str] = []
+        candidates = data.get("correlatedChanges", [])
+        if isinstance(candidates, list):
+            for item in candidates:
+                if not isinstance(item, dict):
+                    continue
+                summary = str(item.get("summary") or "").strip()
+                if summary:
+                    changes.append(summary)
+                rollback_hint = str(item.get("rollbackHint") or "").strip()
+                if rollback_hint:
+                    recommended_actions.append(rollback_hint)
+                if item.get("confidence") == "high":
+                    rca_hints.append(f"高置信变更候选：{summary}")
+        for action in data.get("recommendedNextSteps") or []:
+            if action:
+                recommended_actions.append(str(action))
+        for gap in data.get("dataGaps") or []:
+            if gap:
+                changes.append(f"数据缺口：{gap}")
+        return {"changes": changes, "rcaHints": rca_hints, "recommendedActions": recommended_actions}
 
     def _deduplicate_lines(self, lines: list[str]) -> list[str]:
         """按原顺序去重报告条目，避免重复告警组撑大最终报告。"""
