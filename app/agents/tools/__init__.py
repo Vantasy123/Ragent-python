@@ -73,6 +73,7 @@ class OpsToolkit:
             "change_correlations": self.change_correlations,
             "service_topology": self.service_topology,
             "metric_trend": self.metric_trend,
+            "metric_anomalies": self.metric_anomalies,
             "prometheus_query": self.prometheus_query,
             "safe_command": self.safe_command,
             "compose_restart_service": self.compose_restart_service,
@@ -105,6 +106,7 @@ class OpsToolkit:
             ToolSpec("change_correlations", "关联活跃告警中的发布、提交、镜像和流水线变更线索"),
             ToolSpec("service_topology", "分析服务拓扑、上下游依赖和故障影响传播路径"),
             ToolSpec("metric_trend", "查看指标趋势", {"metric": "string", "minutes": "integer"}),
+            ToolSpec("metric_anomalies", "检测指标高水位、突增和波动异常", {"metric": "string", "minutes": "integer"}),
             ToolSpec("prometheus_query", "执行 Prometheus 即时查询", {"query": "string", "time": "number"}),
             ToolSpec(
                 "safe_command",
@@ -565,6 +567,11 @@ class OpsToolkit:
         """从 Prometheus 查询指定指标最近一段时间的趋势。"""
 
         return await self.monitoring_service.tool_metric_trend(metric, minutes)
+
+    async def metric_anomalies(self, metric: str = "cpu_percent", minutes: int = 30) -> dict[str, Any]:
+        """检测指标异常，输出高水位、突增和波动证据。"""
+
+        return await self.monitoring_service.tool_metric_anomalies(metric, minutes)
 
     async def prometheus_query(self, query: str = "", time: float | None = None) -> dict[str, Any]:
         """执行 Prometheus 即时查询，供 Planner 针对具体故障补充指标。"""

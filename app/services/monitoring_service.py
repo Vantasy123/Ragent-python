@@ -917,6 +917,35 @@ class MonitoringService:
             },
         }
 
+    async def metric_anomalies(self, metric: str = "cpu_percent", minutes: int = 30) -> dict[str, Any]:
+        """基于指标趋势做轻量异常检测，输出高水位、突增和波动证据。"""
+
+        series = await self.metric_series(metric, minutes)
+        if series.get("status") != "healthy":
+            return series
+        data = series.get("data", {}) if isinstance(series.get("data"), dict) else {}
+        points = data.get("points", []) if isinstance(data.get("points"), list) else []
+        analysis = self._metric_anomaly_analysis(metric, points)
+        anomalies = analysis["anomalies"]
+        return {
+            "status": "critical" if anomalies else "healthy",
+            "displayName": f"{self.metric_label(metric)} 异常检测",
+            "summary": (
+                f"{self.metric_label(metric)} 未发现明显异常"
+                if not anomalies
+                else f"{self.metric_label(metric)} 检测到 {len(anomalies)} 个异常信号"
+            ),
+            "updatedAt": self._now(),
+            "data": {
+                **analysis,
+                "metric": data.get("metric", metric),
+                "metricLabel": data.get("metricLabel", self.metric_label(metric)),
+                "query": data.get("query", self.metric_query(metric)),
+                "points": points[-60:],
+                "recommendedNextSteps": self._metric_anomaly_recommended_steps(metric, anomalies),
+            },
+        }
+
     async def prometheus_instant_query(self, query: str, query_time: float | None = None, enforce_safe: bool = True) -> dict[str, Any]:
         """执行 Prometheus 即时查询。"""
 
@@ -1037,6 +1066,101 @@ class MonitoringService:
                     continue
         return points[-240:]
 
+    def _metric_anomaly_analysis(self, metric: str, points: list[dict[str, float]]) -> dict[str, Any]:
+        """根据点位统计生成异常信号；规则保持可解释，便于审计复盘。"""
+
+        values = [float(point["value"]) for point in points if isinstance(point, dict) and "value" in point]
+        if len(values) < 3:
+            return {
+                "pointCount": len(values),
+                "anomalies": [],
+                "baselineAvg": None,
+                "recentAvg": None,
+                "min": min(values) if values else None,
+                "max": max(values) if values else None,
+                "dataGaps": ["指标点数量不足，无法稳定判断异常"],
+            }
+
+        split = max(1, len(values) // 2)
+        baseline = values[:split]
+        recent_window_size = max(1, min(5, len(values) - split or len(values)))
+        recent = values[-recent_window_size:]
+        baseline_avg = sum(baseline) / len(baseline)
+        recent_avg = sum(recent) / len(recent)
+        min_value = min(values)
+        max_value = max(values)
+        latest = values[-1]
+        anomalies: list[dict[str, Any]] = []
+        percent_metric = metric in {"cpu", "cpu_percent", "memory", "memory_percent"} or metric.endswith("_percent")
+
+        if percent_metric and max_value >= 90:
+            anomalies.append(
+                {
+                    "type": "high_watermark",
+                    "severity": "critical",
+                    "summary": f"最大值 {max_value:.2f}% 超过 90% 高水位",
+                    "evidence": {"max": round(max_value, 4), "threshold": 90},
+                }
+            )
+        elif percent_metric and recent_avg >= 80:
+            anomalies.append(
+                {
+                    "type": "sustained_high",
+                    "severity": "warning",
+                    "summary": f"最近窗口均值 {recent_avg:.2f}% 超过 80%",
+                    "evidence": {"recentAvg": round(recent_avg, 4), "threshold": 80},
+                }
+            )
+
+        if baseline_avg > 0 and recent_avg >= baseline_avg * 2 and recent_avg - baseline_avg >= 10:
+            anomalies.append(
+                {
+                    "type": "spike",
+                    "severity": "warning",
+                    "summary": f"最近均值 {recent_avg:.2f} 较基线 {baseline_avg:.2f} 上升超过 2 倍",
+                    "evidence": {"baselineAvg": round(baseline_avg, 4), "recentAvg": round(recent_avg, 4), "ratio": round(recent_avg / baseline_avg, 4)},
+                }
+            )
+
+        value_range = max_value - min_value
+        volatility_threshold = max(20.0, abs(baseline_avg) * 1.5)
+        if value_range >= volatility_threshold:
+            anomalies.append(
+                {
+                    "type": "volatility",
+                    "severity": "warning",
+                    "summary": f"波动范围 {value_range:.2f} 超过阈值 {volatility_threshold:.2f}",
+                    "evidence": {"min": round(min_value, 4), "max": round(max_value, 4), "threshold": round(volatility_threshold, 4)},
+                }
+            )
+
+        return {
+            "pointCount": len(values),
+            "anomalies": anomalies,
+            "baselineAvg": round(baseline_avg, 4),
+            "recentAvg": round(recent_avg, 4),
+            "latest": round(latest, 4),
+            "min": round(min_value, 4),
+            "max": round(max_value, 4),
+            "dataGaps": [],
+        }
+
+    def _metric_anomaly_recommended_steps(self, metric: str, anomalies: list[dict[str, Any]]) -> list[str]:
+        """根据异常类型给出下一步排查建议。"""
+
+        if not anomalies:
+            return ["继续观察该指标，并结合告警、日志和拓扑信息判断是否存在隐性风险"]
+        label = self.metric_label(metric)
+        steps = [f"将 {label} 异常窗口与活跃告警、服务拓扑和最近变更做时间线对齐"]
+        anomaly_types = {item.get("type") for item in anomalies}
+        if "high_watermark" in anomaly_types or "sustained_high" in anomaly_types:
+            steps.append(f"检查 {label} 对应服务的资源配额、容器限额和最近流量变化")
+        if "spike" in anomaly_types:
+            steps.append(f"排查 {label} 突增前后的发布、批任务、流量峰值和下游依赖状态")
+        if "volatility" in anomaly_types:
+            steps.append(f"检查 {label} 波动期是否存在重启、扩缩容、抖动请求或采集不稳定")
+        return self._deduplicate(steps)
+
     async def tool_system_metrics(self) -> dict[str, Any]:
         """为 OpsToolkit 适配旧 system_metrics 返回结构。"""
 
@@ -1118,6 +1242,17 @@ class MonitoringService:
             "summary": result.get("summary", ""),
             "data": result.get("data", {}),
             "error": "" if result.get("status") == "healthy" else "monitoring_query_failed",
+        }
+
+    async def tool_metric_anomalies(self, metric: str = "cpu_percent", minutes: int = 30) -> dict[str, Any]:
+        """为 OpsToolkit 适配指标异常检测结果。"""
+
+        result = await self.metric_anomalies(metric, minutes)
+        return {
+            "success": result.get("status") in {"healthy", "critical"},
+            "summary": result.get("summary", ""),
+            "data": result.get("data", {}),
+            "error": "" if result.get("status") in {"healthy", "critical"} else result.get("error", "monitoring_query_failed"),
         }
 
     async def tool_prometheus_query(self, query: str = "", time: float | None = None) -> dict[str, Any]:

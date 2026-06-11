@@ -229,6 +229,32 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.requires_approval)
         self.assertEqual(result.data["affectedNodeIds"], ["payment-service"])
 
+    async def test_metric_anomalies_tool_is_readonly_and_callable(self) -> None:
+        """指标异常检测应作为只读工具暴露给运维 Agent。"""
+
+        toolkit = OpsToolkit()
+
+        async def fake_tool_metric_anomalies(metric: str = "cpu_percent", minutes: int = 30) -> dict:
+            return {
+                "success": True,
+                "summary": f"{metric} 检测到 1 个异常信号",
+                "data": {"metric": metric, "minutes": minutes, "anomalies": [{"type": "spike"}]},
+                "error": "",
+            }
+
+        toolkit.monitoring_service.tool_metric_anomalies = fake_tool_metric_anomalies  # type: ignore[method-assign]
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=toolkit)
+
+        metadata = next(tool for tool in registry.list_tools("admin") if tool["name"] == "metric_anomalies")
+        result = await registry.call(ToolCallRequest("metric_anomalies", {"metric": "cpu_percent", "minutes": 30}))
+
+        self.assertTrue(metadata["isReadOnly"])
+        self.assertFalse(metadata["requiresApproval"])
+        self.assertTrue(result.success)
+        self.assertEqual(result.risk_level, "read")
+        self.assertFalse(result.requires_approval)
+        self.assertEqual(result.data["anomalies"][0]["type"], "spike")
+
     async def test_deterministic_plan_uses_alert_correlations_for_alert_task(self) -> None:
         """告警类任务应优先生成告警关联分析步骤，降低重复告警噪声。"""
 
@@ -240,6 +266,7 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(steps[1].tool_name, "alert_correlations")
         self.assertEqual(steps[2].tool_name, "service_topology")
         self.assertEqual(steps[3].tool_name, "change_correlations")
+        self.assertTrue(any(step.tool_name == "metric_anomalies" for step in steps))
         self.assertIn("影响面", steps[1].reasoning)
         self.assertIn("拓扑", steps[2].reasoning)
         self.assertIn("变更", steps[3].reasoning)
@@ -341,6 +368,35 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("可能受波及节点：订单服务", report)
         self.assertIn("影响传播路径：支付服务 -> 订单服务", report)
         self.assertIn("优先检查直接异常节点 支付服务", report)
+
+    def test_final_report_includes_metric_anomaly_context(self) -> None:
+        """最终报告应把指标异常信号结构化呈现。"""
+
+        orchestrator = OrchestratorAgent(OpsToolkit())
+        step = AgentStep(
+            title="检测 CPU 指标异常",
+            tool_name="metric_anomalies",
+            status="success",
+            observation="CPU 使用率 检测到 1 个异常信号",
+            result={
+                "success": True,
+                "summary": "CPU 使用率 检测到 1 个异常信号",
+                "data": {
+                    "metricLabel": "CPU 使用率",
+                    "anomalies": [
+                        {"type": "high_watermark", "severity": "critical", "summary": "最大值 95.00% 超过 90% 高水位"}
+                    ],
+                    "recommendedNextSteps": ["将 CPU 使用率 异常窗口与活跃告警、服务拓扑和最近变更做时间线对齐"],
+                },
+            },
+        )
+
+        report = orchestrator._build_report("后端 CPU 异常", [step], ReplanDecision("complete", "完成"))
+
+        self.assertIn("### 指标异常", report)
+        self.assertIn("CPU 使用率 critical high_watermark", report)
+        self.assertIn("### RCA 初筛线索", report)
+        self.assertIn("时间线对齐", report)
 
 
 class FakeRegistry:

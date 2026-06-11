@@ -372,6 +372,52 @@ servers:
         self.assertEqual(len(result["data"]["points"]), 2)
         self.assertEqual(result["data"]["avg"], 2.0)
 
+    async def test_metric_anomalies_detects_high_watermark_and_spike(self) -> None:
+        """指标异常检测应输出高水位、突增和可解释证据。"""
+
+        service = MonitoringService()
+
+        async def fake_range_query(_query, _start, _end, _step, enforce_safe=True):
+            return {
+                "status": "healthy",
+                "data": {
+                    "result": [
+                        {"values": [[1000, "20"], [1015, "22"], [1030, "21"], [1045, "92"], [1060, "95"]]},
+                    ]
+                },
+            }
+
+        service.prometheus_range_query = fake_range_query  # type: ignore[method-assign]
+
+        result = await service.metric_anomalies("cpu_percent", 5)
+
+        self.assertEqual(result["status"], "critical")
+        anomaly_types = {item["type"] for item in result["data"]["anomalies"]}
+        self.assertIn("high_watermark", anomaly_types)
+        self.assertIn("spike", anomaly_types)
+        self.assertEqual(result["data"]["max"], 95.0)
+        self.assertTrue(any("时间线对齐" in item for item in result["data"]["recommendedNextSteps"]))
+
+    async def test_tool_metric_anomalies_adapts_result_for_ops_toolkit(self) -> None:
+        """OpsToolkit 使用的指标异常工具应返回标准工具结果结构。"""
+
+        service = MonitoringService()
+
+        async def fake_metric_anomalies(_metric, _minutes):
+            return {
+                "status": "critical",
+                "summary": "CPU 使用率 检测到 1 个异常信号",
+                "data": {"anomalies": [{"type": "high_watermark"}]},
+            }
+
+        service.metric_anomalies = fake_metric_anomalies  # type: ignore[method-assign]
+
+        result = await service.tool_metric_anomalies("cpu_percent", 30)
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["error"], "")
+        self.assertEqual(result["data"]["anomalies"][0]["type"], "high_watermark")
+
     async def test_probe_targets_include_user_configured_servers(self) -> None:
         """业务服务器配置应自动进入服务探测列表。"""
 

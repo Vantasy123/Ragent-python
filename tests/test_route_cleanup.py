@@ -42,6 +42,7 @@ class RouteCleanupTest(unittest.TestCase):
         self.assertIn("GET", route_methods("/api/admin/monitoring/alert-correlations"))
         self.assertIn("GET", route_methods("/api/admin/monitoring/change-correlations"))
         self.assertIn("GET", route_methods("/api/admin/monitoring/service-topology"))
+        self.assertIn("GET", route_methods("/api/admin/monitoring/anomalies/{metric}"))
         self.assertIn("GET", route_methods("/api/admin/project-config/status"))
         self.assertIn("PUT", route_methods("/api/admin/project-config/servers"))
         self.assertIn("GET", route_methods("/api/admin/security-audit/events"))

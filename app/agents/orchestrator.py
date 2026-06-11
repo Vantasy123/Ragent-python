@@ -159,7 +159,7 @@ class PlannerAgent:
         prompt = (
             "你是 Ragent 运维 Planner，需要生成安全、可执行的排障计划。\n"
             "只能输出 JSON，不要输出 Markdown。格式：{\"steps\":[{\"title\":\"步骤标题\",\"tool\":\"工具名\",\"args\":{},\"reasoning\":\"原因\"}]}\n"
-            "要求：优先使用只读工具；告警和故障类任务优先查询 alert_correlations、service_topology 与 change_correlations，再补充 alert_status、metric_trend、health/log 等证据；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
+            "要求：优先使用只读工具；告警和故障类任务优先查询 alert_correlations、service_topology、change_correlations 与 metric_anomalies，再补充 alert_status、metric_trend、health/log 等证据；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
             "如果用户给出 docker 命令原文，只能使用 safe_command，并把命令放到 args.command；不要生成 shell、bash 或 powershell 工具。\n"
             f"可用工具：{json.dumps(tools, ensure_ascii=False)}\n"
             f"服务名白名单：{json.dumps(sorted(set(OPS_SERVICE_ALIASES.values())), ensure_ascii=False)}\n"
@@ -288,7 +288,9 @@ class PlannerAgent:
             PlanStep("关联近期发布变更线索", "change_correlations", reasoning="把告警与发布、提交、镜像和流水线信息关联，判断是否存在变更诱因"),
             PlanStep("查询当前活跃告警", "alert_status", reasoning="先确认监控系统是否已有明确告警"),
             PlanStep("查询 CPU 指标趋势", "metric_trend", {"metric": "cpu_percent", "minutes": 30}, "用指标趋势判断是否存在资源异常"),
+            PlanStep("检测 CPU 指标异常", "metric_anomalies", {"metric": "cpu_percent", "minutes": 30}, "识别 CPU 高水位、突增和波动异常"),
             PlanStep("查询内存指标趋势", "metric_trend", {"metric": "memory_percent", "minutes": 30}, "用指标趋势判断是否存在内存压力"),
+            PlanStep("检测内存指标异常", "metric_anomalies", {"metric": "memory_percent", "minutes": 30}, "识别内存高水位、突增和波动异常"),
         ]
 
         if any(key in text or key in task for key in ["日志", "log", "logs", "报错", "error", "exception", "502"]):
@@ -499,6 +501,7 @@ class OrchestratorAgent(BaseAgent):
         rca_hints = []
         topology_context = []
         change_context = []
+        anomaly_context = []
         recommended_actions = []
         rollback_plan = []
         handoff_actions = []
@@ -522,6 +525,11 @@ class OrchestratorAgent(BaseAgent):
                     change_context.extend(changes["changes"])
                     rca_hints.extend(changes["rcaHints"])
                     recommended_actions.extend(changes["recommendedActions"])
+                if step.tool_name == "metric_anomalies":
+                    anomalies = self._extract_metric_anomaly_context(step)
+                    anomaly_context.extend(anomalies["anomalies"])
+                    rca_hints.extend(anomalies["rcaHints"])
+                    recommended_actions.extend(anomalies["recommendedActions"])
             elif "未配置" in observation or "monitoring_not_configured" in observation:
                 gaps.append(f"- {step.title}：{observation}")
             elif status == StepStatus.BLOCKED.value:
@@ -555,6 +563,8 @@ class OrchestratorAgent(BaseAgent):
             lines.extend(["", "### RCA 初筛线索", *[f"- {item}" for item in self._deduplicate_lines(rca_hints)[:8]]])
         if change_context:
             lines.extend(["", "### 变更关联", *[f"- {item}" for item in self._deduplicate_lines(change_context)[:8]]])
+        if anomaly_context:
+            lines.extend(["", "### 指标异常", *[f"- {item}" for item in self._deduplicate_lines(anomaly_context)[:8]]])
         if gaps:
             lines.extend(["", "### 数据缺口", *gaps])
         if rollback_plan or handoff_actions:
@@ -652,6 +662,32 @@ class OrchestratorAgent(BaseAgent):
             if gap:
                 changes.append(f"数据缺口：{gap}")
         return {"changes": changes, "rcaHints": rca_hints, "recommendedActions": recommended_actions}
+
+    def _extract_metric_anomaly_context(self, step: AgentStep) -> dict[str, list[str]]:
+        """从指标异常检测结果中提取异常信号、RCA 线索和建议动作。"""
+
+        payload = step.result if isinstance(getattr(step, "result", None), dict) else {}
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        metric_label = str(data.get("metricLabel") or data.get("metric") or step.title)
+        anomalies: list[str] = []
+        rca_hints: list[str] = []
+        recommended_actions: list[str] = []
+        for item in data.get("anomalies") or []:
+            if not isinstance(item, dict):
+                continue
+            summary = str(item.get("summary") or "").strip()
+            severity = str(item.get("severity") or "warning")
+            anomaly_type = str(item.get("type") or "unknown")
+            if summary:
+                anomalies.append(f"{metric_label} {severity} {anomaly_type}：{summary}")
+                rca_hints.append(f"{metric_label} 异常信号：{summary}")
+        for action in data.get("recommendedNextSteps") or []:
+            if action:
+                recommended_actions.append(str(action))
+        for gap in data.get("dataGaps") or []:
+            if gap:
+                anomalies.append(f"数据缺口：{gap}")
+        return {"anomalies": anomalies, "rcaHints": rca_hints, "recommendedActions": recommended_actions}
 
     def _deduplicate_lines(self, lines: list[str]) -> list[str]:
         """按原顺序去重报告条目，避免重复告警组撑大最终报告。"""

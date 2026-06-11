@@ -76,6 +76,13 @@ async def series(metric: str, minutes: int = Query(30, ge=1, le=1440), _: User =
     return success(await MonitoringService().metric_series(metric, minutes))
 
 
+@router.get("/anomalies/{metric}")
+async def anomalies(metric: str, minutes: int = Query(30, ge=1, le=1440), _: User = Depends(require_admin)):
+    """返回指定指标的高水位、突增和波动异常检测结果。"""
+
+    return success(await MonitoringService().metric_anomalies(metric, minutes))
+
+
 @router.get("/probes")
 async def probes(_: User = Depends(require_admin)):
     """返回后端、前端代理和运维测试服务的 HTTP 探测结果。"""
