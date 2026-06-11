@@ -70,6 +70,12 @@ SIMPLE_OPS_KEYWORDS = {
     "metric",
     "监控",
     "monitor",
+    "k8s",
+    "kubernetes",
+    "pod",
+    "container",
+    "crashloopbackoff",
+    "oomkilled",
     "变更",
     "change",
     "发布",
@@ -159,7 +165,7 @@ class PlannerAgent:
         prompt = (
             "你是 Ragent 运维 Planner，需要生成安全、可执行的排障计划。\n"
             "只能输出 JSON，不要输出 Markdown。格式：{\"steps\":[{\"title\":\"步骤标题\",\"tool\":\"工具名\",\"args\":{},\"reasoning\":\"原因\"}]}\n"
-            "要求：优先使用只读工具；告警和故障类任务优先查询 alert_correlations、service_topology、change_correlations 与 metric_anomalies，再补充 alert_status、metric_trend、health/log 等证据；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
+            "要求：优先使用只读工具；告警和故障类任务优先查询 alert_correlations、kubernetes_events、service_topology、change_correlations 与 metric_anomalies，再补充 alert_status、metric_trend、health/log 等证据；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
             "如果用户给出 docker 命令原文，只能使用 safe_command，并把命令放到 args.command；不要生成 shell、bash 或 powershell 工具。\n"
             f"可用工具：{json.dumps(tools, ensure_ascii=False)}\n"
             f"服务名白名单：{json.dumps(sorted(set(OPS_SERVICE_ALIASES.values())), ensure_ascii=False)}\n"
@@ -284,6 +290,7 @@ class PlannerAgent:
         steps = [
             PlanStep("检查 Compose 服务状态", "compose_ps", reasoning="先确认核心服务是否存在异常状态"),
             PlanStep("分析活跃告警关联与影响面", "alert_correlations", reasoning="对告警做降噪聚合，提取影响面和 RCA 初筛线索"),
+            PlanStep("分析 Kubernetes 事件线索", "kubernetes_events", reasoning="从告警标签和注解中抽取 Pod 重启、OOM、调度失败和节点事件"),
             PlanStep("分析服务拓扑和影响传播", "service_topology", reasoning="结合 CMDB 轻量配置和告警标签判断服务拓扑、上下游依赖与波及范围"),
             PlanStep("关联近期发布变更线索", "change_correlations", reasoning="把告警与发布、提交、镜像和流水线信息关联，判断是否存在变更诱因"),
             PlanStep("查询当前活跃告警", "alert_status", reasoning="先确认监控系统是否已有明确告警"),
@@ -500,6 +507,7 @@ class OrchestratorAgent(BaseAgent):
         impact = []
         rca_hints = []
         topology_context = []
+        kubernetes_context = []
         change_context = []
         anomaly_context = []
         recommended_actions = []
@@ -520,6 +528,12 @@ class OrchestratorAgent(BaseAgent):
                     impact.extend(topology["impact"])
                     topology_context.extend(topology["topology"])
                     recommended_actions.extend(topology["recommendedActions"])
+                if step.tool_name == "kubernetes_events":
+                    kubernetes = self._extract_kubernetes_event_context(step)
+                    impact.extend(kubernetes["impact"])
+                    kubernetes_context.extend(kubernetes["events"])
+                    rca_hints.extend(kubernetes["rcaHints"])
+                    recommended_actions.extend(kubernetes["recommendedActions"])
                 if step.tool_name == "change_correlations":
                     changes = self._extract_change_correlation_context(step)
                     change_context.extend(changes["changes"])
@@ -559,6 +573,8 @@ class OrchestratorAgent(BaseAgent):
             lines.extend(["", "### 影响面", *[f"- {item}" for item in self._deduplicate_lines(impact)[:5]]])
         if topology_context:
             lines.extend(["", "### 服务拓扑", *[f"- {item}" for item in self._deduplicate_lines(topology_context)[:8]]])
+        if kubernetes_context:
+            lines.extend(["", "### Kubernetes 事件", *[f"- {item}" for item in self._deduplicate_lines(kubernetes_context)[:8]]])
         if rca_hints:
             lines.extend(["", "### RCA 初筛线索", *[f"- {item}" for item in self._deduplicate_lines(rca_hints)[:8]]])
         if change_context:
@@ -662,6 +678,40 @@ class OrchestratorAgent(BaseAgent):
             if gap:
                 changes.append(f"数据缺口：{gap}")
         return {"changes": changes, "rcaHints": rca_hints, "recommendedActions": recommended_actions}
+
+    def _extract_kubernetes_event_context(self, step: AgentStep) -> dict[str, list[str]]:
+        """从 Kubernetes 事件工具结果中提取事件、影响面、RCA 线索和建议动作。"""
+
+        payload = step.result if isinstance(getattr(step, "result", None), dict) else {}
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        impact: list[str] = []
+        events: list[str] = []
+        rca_hints: list[str] = []
+        recommended_actions: list[str] = []
+        for namespace in data.get("affectedNamespaces") or []:
+            if namespace:
+                impact.append(f"受影响命名空间：{namespace}")
+        for workload in data.get("affectedWorkloads") or []:
+            if workload:
+                impact.append(f"受影响工作负载：{workload}")
+        for item in data.get("events") or []:
+            if not isinstance(item, dict):
+                continue
+            summary = str(item.get("summary") or "").strip()
+            reason = str(item.get("reason") or "KubernetesAlert")
+            if summary:
+                events.append(summary)
+                rca_hints.append(f"Kubernetes {reason} 线索：{summary}")
+        for hint in data.get("rootCauseHints") or []:
+            if hint:
+                rca_hints.append(str(hint))
+        for action in data.get("recommendedNextSteps") or []:
+            if action:
+                recommended_actions.append(str(action))
+        for gap in data.get("dataGaps") or []:
+            if gap:
+                events.append(f"数据缺口：{gap}")
+        return {"impact": impact, "events": events, "rcaHints": rca_hints, "recommendedActions": recommended_actions}
 
     def _extract_metric_anomaly_context(self, step: AgentStep) -> dict[str, list[str]]:
         """从指标异常检测结果中提取异常信号、RCA 线索和建议动作。"""

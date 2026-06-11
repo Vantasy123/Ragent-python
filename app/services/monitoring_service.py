@@ -335,6 +335,44 @@ class MonitoringService:
             },
         }
 
+    async def kubernetes_events(self) -> dict[str, Any]:
+        """从活跃告警中抽取 Kubernetes Pod、工作负载和节点事件线索。"""
+
+        alerts = await self.alerts()
+        if alerts.get("status") == "degraded":
+            return self._degraded(
+                "Kubernetes 事件分析",
+                alerts.get("summary", "Alertmanager 不可用，无法分析 Kubernetes 事件"),
+                {"events": [], "affectedNamespaces": [], "affectedWorkloads": [], "dataGaps": ["缺少活跃告警数据，无法提取 Kubernetes 事件线索"]},
+            )
+
+        items = alerts.get("data", {}).get("items", [])
+        alert_items = items if isinstance(items, list) else []
+        events = self._kubernetes_events_from_alerts(alert_items)
+        affected_namespaces = sorted({item["namespace"] for item in events if item.get("namespace")})
+        affected_workloads = sorted({item["workload"] for item in events if item.get("workload")})
+        data_gaps = self._kubernetes_data_gaps(alert_items, events)
+        return {
+            "status": "critical" if events else "healthy",
+            "displayName": "Kubernetes 事件分析",
+            "summary": (
+                "未从活跃告警中识别到 Kubernetes 事件线索"
+                if not events
+                else f"识别 {len(events)} 个 Kubernetes 事件线索，涉及 {len(affected_namespaces)} 个命名空间和 {len(affected_workloads)} 个工作负载"
+            ),
+            "updatedAt": self._now(),
+            "data": {
+                "alertCount": len(alert_items),
+                "eventCount": len(events),
+                "events": events,
+                "affectedNamespaces": affected_namespaces,
+                "affectedWorkloads": affected_workloads,
+                "rootCauseHints": self._kubernetes_root_cause_hints(events),
+                "recommendedNextSteps": self._kubernetes_recommended_steps(events, data_gaps),
+                "dataGaps": data_gaps,
+            },
+        }
+
     async def change_correlations(self) -> dict[str, Any]:
         """关联活跃告警中的发布、提交和版本线索，为 RCA 提供变更证据。"""
 
@@ -686,6 +724,161 @@ class MonitoringService:
             seen.add(text)
             results.append(text)
         return results
+
+    def _kubernetes_events_from_alerts(self, alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """把 Alertmanager 告警中的 Kubernetes 标签和注解转成事件视角。"""
+
+        events: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for alert in alerts:
+            if not isinstance(alert, dict):
+                continue
+            labels = alert.get("labels") if isinstance(alert.get("labels"), dict) else {}
+            annotations = alert.get("annotations") if isinstance(alert.get("annotations"), dict) else {}
+            event = self._extract_kubernetes_event(alert, labels, annotations)
+            if not event:
+                continue
+            event_key = str(event["eventKey"])
+            if event_key in seen:
+                continue
+            seen.add(event_key)
+            events.append(event)
+        return sorted(events, key=lambda item: (self._severity_rank(str(item.get("severity") or "")), item.get("namespace") or "", item.get("workload") or ""))
+
+    def _extract_kubernetes_event(self, alert: dict[str, Any], labels: dict[str, Any], annotations: dict[str, Any]) -> dict[str, Any] | None:
+        """从单条告警中识别 Pod 重启、调度失败、镜像拉取失败等 Kubernetes 事件。"""
+
+        alert_name = str(alert.get("name") or labels.get("alertname") or "")
+        summary = str(alert.get("summary") or annotations.get("summary") or annotations.get("description") or "")
+        text = " ".join([alert_name, summary, " ".join(str(value) for value in labels.values()), " ".join(str(value) for value in annotations.values())]).lower()
+        if not any(token in text for token in ("kube", "kubernetes", "pod", "container", "crashloop", "oom", "imagepull", "failedscheduling", "node")):
+            return None
+
+        namespace = self._first_label(labels, "namespace", "kubernetes_namespace", "k8s_namespace")
+        workload = self._first_label(labels, "deployment", "workload", "statefulset", "daemonset", "replicaset", "job", "service", "app", "application")
+        pod = self._first_label(labels, "pod", "pod_name", "pod_name_full", "kubernetes_pod_name")
+        container = self._first_label(labels, "container", "container_name")
+        node = self._first_label(labels, "node", "node_name", "kubernetes_node")
+        reason = self._kubernetes_reason(text, labels, annotations)
+        severity = str(alert.get("severity") or labels.get("severity") or "unknown")
+        event_key = "|".join([namespace or "-", workload or "-", pod or "-", container or "-", reason or alert_name or "unknown"])
+        target = pod or workload or node or self._alert_service(labels)
+        return {
+            "eventKey": event_key,
+            "namespace": namespace,
+            "workload": workload or self._alert_service(labels),
+            "pod": pod,
+            "container": container,
+            "node": node,
+            "reason": reason,
+            "severity": severity,
+            "severityLabel": self._severity_label(severity),
+            "summary": self._kubernetes_event_summary(namespace, target, reason, summary),
+            "evidence": {
+                "alertName": alert_name,
+                "startsAt": alert.get("startsAt"),
+                "labels": self._pick_keys(labels, ["alertname", "severity", "namespace", "pod", "container", "node", "reason", "event_reason", "deployment", "workload", "restart_count", "restarts"]),
+                "annotations": self._pick_keys(annotations, ["summary", "description", "reason", "message"]),
+            },
+        }
+
+    def _first_label(self, labels: dict[str, Any], *keys: str) -> str:
+        """按候选字段顺序读取 Kubernetes 标签值。"""
+
+        lowered = {str(key).lower(): value for key, value in labels.items()}
+        for key in keys:
+            value = lowered.get(key.lower())
+            if value not in (None, ""):
+                return str(value).strip()
+        return ""
+
+    def _kubernetes_reason(self, text: str, labels: dict[str, Any], annotations: dict[str, Any]) -> str:
+        """标准化 Kubernetes 事件原因，便于报告和后续动作分流。"""
+
+        explicit = self._first_label({**annotations, **labels}, "reason", "event_reason", "kubernetes_reason")
+        if explicit:
+            return explicit
+        known_reasons = [
+            "CrashLoopBackOff",
+            "OOMKilled",
+            "ImagePullBackOff",
+            "ErrImagePull",
+            "FailedScheduling",
+            "BackOff",
+            "NodeNotReady",
+            "KubePodNotReady",
+            "KubeDeploymentReplicasMismatch",
+        ]
+        for reason in known_reasons:
+            if reason.lower() in text:
+                return reason
+        if "restart" in text or "restarts" in text:
+            return "ContainerRestart"
+        if "pending" in text and "pod" in text:
+            return "PodPending"
+        return "KubernetesAlert"
+
+    def _kubernetes_event_summary(self, namespace: str, target: str, reason: str, summary: str) -> str:
+        """生成面向报告的 Kubernetes 事件摘要。"""
+
+        prefix = "/".join(item for item in [namespace, target] if item) or "Kubernetes 工作负载"
+        detail = f"：{summary}" if summary else ""
+        return f"{prefix} 出现 {reason}{detail}"
+
+    def _kubernetes_root_cause_hints(self, events: list[dict[str, Any]]) -> list[str]:
+        """根据事件原因生成 RCA 初筛线索。"""
+
+        hints: list[str] = []
+        reasons = {str(item.get("reason") or "").lower() for item in events}
+        if "crashloopbackoff" in reasons or "containerrestart" in reasons or "backoff" in reasons:
+            hints.append("Pod 反复重启，优先检查 previous logs、启动探针、配置变更和依赖可达性")
+        if "oomkilled" in reasons:
+            hints.append("容器发生 OOMKilled，优先检查内存限额、最近流量、缓存增长和泄漏风险")
+        if "imagepullbackoff" in reasons or "errimagepull" in reasons:
+            hints.append("镜像拉取失败，优先检查镜像 tag、仓库凭证、节点网络和最近发布流水线")
+        if "failedscheduling" in reasons or "podpending" in reasons:
+            hints.append("Pod 调度失败或 Pending，优先检查节点资源、污点容忍、亲和性和 PVC 状态")
+        if "nodenotready" in reasons:
+            hints.append("节点 NotReady，优先检查节点 kubelet、磁盘压力、网络和云主机状态")
+        return hints or ["Kubernetes 事件需要继续关联 Pod 日志、指标、Events 和最近变更确认根因"]
+
+    def _kubernetes_recommended_steps(self, events: list[dict[str, Any]], data_gaps: list[str]) -> list[str]:
+        """生成 Kubernetes 事件的下一步排查建议，保持只读和可审批边界。"""
+
+        steps: list[str] = []
+        for event in events[:5]:
+            namespace = event.get("namespace") or "目标命名空间"
+            pod = event.get("pod") or event.get("workload") or "目标 Pod"
+            reason = event.get("reason") or "事件"
+            steps.append(f"查看 {namespace}/{pod} 的 Kubernetes Events 和 previous logs，确认 {reason} 的首次出现时间")
+            if event.get("node"):
+                steps.append(f"检查节点 {event['node']} 的资源水位、NotReady 事件和近期维护记录")
+        if data_gaps:
+            steps.append("在告警规则中补充 namespace、pod、container、node、reason 和 restart_count 标签，提升 Kubernetes RCA 精度")
+        return self._deduplicate(steps)
+
+    def _kubernetes_data_gaps(self, alerts: list[dict[str, Any]], events: list[dict[str, Any]]) -> list[str]:
+        """输出 Kubernetes 事件分析的数据缺口。"""
+
+        gaps: list[str] = []
+        if alerts and not events:
+            gaps.append("活跃告警缺少 Kubernetes 标签或事件原因，无法抽取 Pod/节点事件")
+        if events and any(not item.get("namespace") for item in events):
+            gaps.append("部分事件缺少 namespace 标签，无法精确定位命名空间")
+        if events and any(not item.get("pod") and not item.get("workload") for item in events):
+            gaps.append("部分事件缺少 pod/workload 标签，无法精确定位工作负载")
+        return gaps
+
+    def _pick_keys(self, payload: dict[str, Any], keys: list[str]) -> dict[str, Any]:
+        """只保留诊断需要的证据字段，避免把完整标签无节制写入报告。"""
+
+        lowered = {str(key).lower(): key for key in payload}
+        result: dict[str, Any] = {}
+        for key in keys:
+            source_key = lowered.get(key.lower())
+            if source_key is not None and payload.get(source_key) not in (None, ""):
+                result[source_key] = payload[source_key]
+        return result
 
     def _topology_nodes(self) -> tuple[list[dict[str, Any]], dict[str, str]]:
         """从业务服务器和探测目标构造拓扑节点及别名索引。"""
@@ -1201,6 +1394,18 @@ class MonitoringService:
         """为 OpsToolkit 适配告警关联分析结果，供诊断 Agent 直接消费。"""
 
         result = await self.alert_correlations()
+        data = result.get("data", {}) if isinstance(result.get("data"), dict) else {}
+        return {
+            "success": result.get("status") in {"healthy", "critical"},
+            "summary": result.get("summary", ""),
+            "data": data,
+            "error": "" if result.get("status") in {"healthy", "critical"} else result.get("error", "monitoring_not_configured"),
+        }
+
+    async def tool_kubernetes_events(self) -> dict[str, Any]:
+        """为 OpsToolkit 适配 Kubernetes 事件分析结果。"""
+
+        result = await self.kubernetes_events()
         data = result.get("data", {}) if isinstance(result.get("data"), dict) else {}
         return {
             "success": result.get("status") in {"healthy", "critical"},

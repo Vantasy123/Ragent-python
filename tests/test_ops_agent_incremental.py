@@ -203,6 +203,32 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.requires_approval)
         self.assertEqual(result.data["changeCount"], 1)
 
+    async def test_kubernetes_events_tool_is_readonly_and_callable(self) -> None:
+        """Kubernetes 事件分析应作为只读工具暴露给运维 Agent。"""
+
+        toolkit = OpsToolkit()
+
+        async def fake_tool_kubernetes_events() -> dict:
+            return {
+                "success": True,
+                "summary": "识别 1 个 Kubernetes 事件线索",
+                "data": {"eventCount": 1, "events": [{"reason": "CrashLoopBackOff"}]},
+                "error": "",
+            }
+
+        toolkit.monitoring_service.tool_kubernetes_events = fake_tool_kubernetes_events  # type: ignore[method-assign]
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=toolkit)
+
+        metadata = next(tool for tool in registry.list_tools("admin") if tool["name"] == "kubernetes_events")
+        result = await registry.call(ToolCallRequest("kubernetes_events"))
+
+        self.assertTrue(metadata["isReadOnly"])
+        self.assertFalse(metadata["requiresApproval"])
+        self.assertTrue(result.success)
+        self.assertEqual(result.risk_level, "read")
+        self.assertFalse(result.requires_approval)
+        self.assertEqual(result.data["eventCount"], 1)
+
     async def test_service_topology_tool_is_readonly_and_callable(self) -> None:
         """服务拓扑分析应作为只读工具暴露给运维 Agent。"""
 
@@ -264,12 +290,14 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         steps = await planner.create_plan("订单服务出现 critical 告警，需要定位根因")
 
         self.assertEqual(steps[1].tool_name, "alert_correlations")
-        self.assertEqual(steps[2].tool_name, "service_topology")
-        self.assertEqual(steps[3].tool_name, "change_correlations")
+        self.assertEqual(steps[2].tool_name, "kubernetes_events")
+        self.assertEqual(steps[3].tool_name, "service_topology")
+        self.assertEqual(steps[4].tool_name, "change_correlations")
         self.assertTrue(any(step.tool_name == "metric_anomalies" for step in steps))
         self.assertIn("影响面", steps[1].reasoning)
-        self.assertIn("拓扑", steps[2].reasoning)
-        self.assertIn("变更", steps[3].reasoning)
+        self.assertIn("Pod", steps[2].reasoning)
+        self.assertIn("拓扑", steps[3].reasoning)
+        self.assertIn("变更", steps[4].reasoning)
 
     def test_final_report_includes_alert_impact_and_rca_hints(self) -> None:
         """最终报告应把告警关联工具的影响面和 RCA 线索结构化呈现。"""
@@ -368,6 +396,41 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("可能受波及节点：订单服务", report)
         self.assertIn("影响传播路径：支付服务 -> 订单服务", report)
         self.assertIn("优先检查直接异常节点 支付服务", report)
+
+    def test_final_report_includes_kubernetes_event_context(self) -> None:
+        """最终报告应把 Kubernetes 事件线索结构化呈现。"""
+
+        orchestrator = OrchestratorAgent(OpsToolkit())
+        step = AgentStep(
+            title="分析 Kubernetes 事件线索",
+            tool_name="kubernetes_events",
+            status="success",
+            observation="识别 1 个 Kubernetes 事件线索",
+            result={
+                "success": True,
+                "summary": "识别 1 个 Kubernetes 事件线索",
+                "data": {
+                    "affectedNamespaces": ["prod"],
+                    "affectedWorkloads": ["order-api"],
+                    "events": [
+                        {
+                            "summary": "prod/order-api-7f9c 出现 CrashLoopBackOff：order-api 反复重启",
+                            "reason": "CrashLoopBackOff",
+                        }
+                    ],
+                    "rootCauseHints": ["Pod 反复重启，优先检查 previous logs、启动探针、配置变更和依赖可达性"],
+                    "recommendedNextSteps": ["查看 prod/order-api-7f9c 的 Kubernetes Events 和 previous logs"],
+                },
+            },
+        )
+
+        report = orchestrator._build_report("订单服务 Pod 重启", [step], ReplanDecision("complete", "完成"))
+
+        self.assertIn("### Kubernetes 事件", report)
+        self.assertIn("受影响命名空间：prod", report)
+        self.assertIn("受影响工作负载：order-api", report)
+        self.assertIn("CrashLoopBackOff", report)
+        self.assertIn("previous logs", report)
 
     def test_final_report_includes_metric_anomaly_context(self) -> None:
         """最终报告应把指标异常信号结构化呈现。"""

@@ -166,6 +166,86 @@ class MonitoringServiceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["error"], "")
         self.assertEqual(result["data"]["groupCount"], 1)
 
+    async def test_kubernetes_events_extracts_crashloop_and_oom_hints(self) -> None:
+        """Kubernetes 事件分析应从告警标签中识别 Pod 重启和 OOM 线索。"""
+
+        service = MonitoringService()
+
+        async def fake_alerts():
+            return {
+                "status": "critical",
+                "data": {
+                    "items": [
+                        {
+                            "name": "KubePodCrashLooping",
+                            "severity": "critical",
+                            "summary": "订单服务 Pod CrashLoopBackOff",
+                            "startsAt": "2026-06-11T10:00:00Z",
+                            "labels": {
+                                "alertname": "KubePodCrashLooping",
+                                "severity": "critical",
+                                "namespace": "prod",
+                                "deployment": "order-api",
+                                "pod": "order-api-7f9c",
+                                "container": "api",
+                                "reason": "CrashLoopBackOff",
+                                "restarts": "12",
+                            },
+                            "annotations": {"summary": "order-api 反复重启"},
+                        },
+                        {
+                            "name": "KubeContainerOOMKilled",
+                            "severity": "warning",
+                            "summary": "支付服务容器 OOMKilled",
+                            "startsAt": "2026-06-11T10:03:00Z",
+                            "labels": {
+                                "alertname": "KubeContainerOOMKilled",
+                                "severity": "warning",
+                                "namespace": "prod",
+                                "workload": "payment-api",
+                                "pod": "payment-api-55d",
+                                "container": "api",
+                            },
+                            "annotations": {"description": "last terminated reason OOMKilled"},
+                        },
+                    ]
+                },
+            }
+
+        service.alerts = fake_alerts  # type: ignore[method-assign]
+
+        result = await service.kubernetes_events()
+
+        self.assertEqual(result["status"], "critical")
+        self.assertEqual(result["data"]["eventCount"], 2)
+        self.assertIn("prod", result["data"]["affectedNamespaces"])
+        self.assertIn("order-api", result["data"]["affectedWorkloads"])
+        reasons = {item["reason"] for item in result["data"]["events"]}
+        self.assertIn("CrashLoopBackOff", reasons)
+        self.assertIn("OOMKilled", reasons)
+        self.assertTrue(any("previous logs" in item for item in result["data"]["rootCauseHints"]))
+        self.assertTrue(any("内存限额" in item for item in result["data"]["rootCauseHints"]))
+
+    async def test_tool_kubernetes_events_adapts_result_for_ops_toolkit(self) -> None:
+        """OpsToolkit 使用的 Kubernetes 事件工具应返回标准工具结果结构。"""
+
+        service = MonitoringService()
+
+        async def fake_kubernetes_events():
+            return {
+                "status": "critical",
+                "summary": "识别 1 个 Kubernetes 事件线索",
+                "data": {"eventCount": 1, "events": [{"reason": "CrashLoopBackOff"}]},
+            }
+
+        service.kubernetes_events = fake_kubernetes_events  # type: ignore[method-assign]
+
+        result = await service.tool_kubernetes_events()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["error"], "")
+        self.assertEqual(result["data"]["eventCount"], 1)
+
     async def test_change_correlations_extract_release_metadata_from_alerts(self) -> None:
         """变更关联分析应从告警标签中提取发布、提交和流水线线索。"""
 

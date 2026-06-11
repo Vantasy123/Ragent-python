@@ -70,6 +70,7 @@ class OpsToolkit:
             "response_time_probe": self.response_time_probe,
             "alert_status": self.alert_status,
             "alert_correlations": self.alert_correlations,
+            "kubernetes_events": self.kubernetes_events,
             "change_correlations": self.change_correlations,
             "service_topology": self.service_topology,
             "metric_trend": self.metric_trend,
@@ -103,6 +104,7 @@ class OpsToolkit:
             ToolSpec("response_time_probe", "探测接口响应时间", {"url": "string", "count": "integer"}),
             ToolSpec("alert_status", "查看当前告警状态"),
             ToolSpec("alert_correlations", "聚合活跃告警，输出降噪分组、影响面和 RCA 初筛线索"),
+            ToolSpec("kubernetes_events", "分析 Kubernetes Pod、工作负载和节点事件线索"),
             ToolSpec("change_correlations", "关联活跃告警中的发布、提交、镜像和流水线变更线索"),
             ToolSpec("service_topology", "分析服务拓扑、上下游依赖和故障影响传播路径"),
             ToolSpec("metric_trend", "查看指标趋势", {"metric": "string", "minutes": "integer"}),
@@ -552,6 +554,11 @@ class OpsToolkit:
         """读取告警降噪分组、影响面和 RCA 初筛线索。"""
 
         return await self.monitoring_service.tool_alert_correlations()
+
+    async def kubernetes_events(self) -> dict[str, Any]:
+        """读取 Kubernetes Pod、工作负载和节点事件线索。"""
+
+        return await self.monitoring_service.tool_kubernetes_events()
 
     async def change_correlations(self) -> dict[str, Any]:
         """读取告警中的变更线索，辅助判断故障是否与发布或提交相关。"""

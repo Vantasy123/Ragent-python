@@ -48,6 +48,13 @@ async def alert_correlations(_: User = Depends(require_admin)):
     return success(await MonitoringService().alert_correlations())
 
 
+@router.get("/kubernetes-events")
+async def kubernetes_events(_: User = Depends(require_admin)):
+    """返回 Kubernetes Pod、工作负载和节点事件分析结果。"""
+
+    return success(await MonitoringService().kubernetes_events())
+
+
 @router.get("/change-correlations")
 async def change_correlations(_: User = Depends(require_admin)):
     """返回活跃告警中的发布、提交、镜像和流水线变更关联线索。"""
