@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.domain.models import User
+from app.services.cloud_evidence_service import CloudEvidenceService
 from app.services.common import success
 from app.services.dependencies import require_admin
 from app.services.monitoring_service import MonitoringService
@@ -76,6 +77,13 @@ async def database_middleware(_: User = Depends(require_admin)):
     """返回 Redis、MySQL、PostgreSQL 等数据库和中间件健康分析结果。"""
 
     return success(await MonitoringService().database_middleware_health())
+
+
+@router.get("/cloud-resources")
+async def cloud_resources(_: User = Depends(require_admin)):
+    """返回云主机、负载均衡、托管数据库等云平台资源证据。"""
+
+    return success(await CloudEvidenceService().analyze())
 
 
 @router.get("/change-correlations")

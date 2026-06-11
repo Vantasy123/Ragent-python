@@ -88,6 +88,16 @@ SIMPLE_OPS_KEYWORDS = {
     "redis",
     "postgres",
     "postgresql",
+    "云",
+    "cloud",
+    "ecs",
+    "rds",
+    "slb",
+    "elb",
+    "clb",
+    "vm",
+    "主机",
+    "负载均衡",
     "变更",
     "change",
     "发布",
@@ -185,7 +195,7 @@ class PlannerAgent:
         prompt = (
             "你是 Ragent 运维 Planner，需要生成安全、可执行的排障计划。\n"
             "只能输出 JSON，不要输出 Markdown。格式：{\"steps\":[{\"title\":\"步骤标题\",\"tool\":\"工具名\",\"args\":{},\"reasoning\":\"原因\"}]}\n"
-            "要求：优先使用只读工具；告警和故障类任务优先查询 alert_correlations、kubernetes_events、trace_analysis、database_middleware_health、service_topology、release_evidence、change_correlations 与 metric_anomalies，再补充 alert_status、metric_trend、health/log 等证据；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
+            "要求：优先使用只读工具；告警和故障类任务优先查询 alert_correlations、kubernetes_events、trace_analysis、database_middleware_health、cloud_resource_evidence、service_topology、release_evidence、change_correlations 与 metric_anomalies，再补充 alert_status、metric_trend、health/log 等证据；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
             "如果用户给出 docker 命令原文，只能使用 safe_command，并把命令放到 args.command；不要生成 shell、bash 或 powershell 工具。\n"
             f"可用工具：{json.dumps(tools, ensure_ascii=False)}\n"
             f"服务名白名单：{json.dumps(sorted(set(OPS_SERVICE_ALIASES.values())), ensure_ascii=False)}\n"
@@ -313,6 +323,7 @@ class PlannerAgent:
             PlanStep("分析 Kubernetes 事件线索", "kubernetes_events", reasoning="从告警标签和注解中抽取 Pod 重启、OOM、调度失败和节点事件"),
             PlanStep("分析 Trace 调用链证据", "trace_analysis", {"limit": 20, "slowThresholdMs": 1000}, "定位慢 span、失败 span 和耗时最高的 operation"),
             PlanStep("分析数据库与中间件健康", "database_middleware_health", reasoning="检查 Redis、MySQL、PostgreSQL 的 up 指标和相关告警信号"),
+            PlanStep("分析云平台资源证据", "cloud_resource_evidence", reasoning="核对云主机、负载均衡、托管数据库、地域和账号维度的资源告警与配置缺口"),
             PlanStep("分析服务拓扑和影响传播", "service_topology", reasoning="结合 CMDB 轻量配置和告警标签判断服务拓扑、上下游依赖与波及范围"),
             PlanStep("分析 Git 与 CI/CD 发布证据", "release_evidence", {"limit": 10}, "核对当前分支、HEAD、CI 元数据和近期提交，判断是否存在发布诱因"),
             PlanStep("关联近期发布变更线索", "change_correlations", reasoning="把告警与发布、提交、镜像和流水线信息关联，判断是否存在变更诱因"),
@@ -533,6 +544,7 @@ class OrchestratorAgent(BaseAgent):
         kubernetes_context = []
         trace_context = []
         database_context = []
+        cloud_context = []
         release_context = []
         change_context = []
         anomaly_context = []
@@ -571,6 +583,12 @@ class OrchestratorAgent(BaseAgent):
                     database_context.extend(database["signals"])
                     rca_hints.extend(database["rcaHints"])
                     recommended_actions.extend(database["recommendedActions"])
+                if step.tool_name == "cloud_resource_evidence":
+                    cloud = self._extract_cloud_resource_context(step)
+                    impact.extend(cloud["impact"])
+                    cloud_context.extend(cloud["signals"])
+                    rca_hints.extend(cloud["rcaHints"])
+                    recommended_actions.extend(cloud["recommendedActions"])
                 if step.tool_name == "release_evidence":
                     release = self._extract_release_evidence_context(step)
                     release_context.extend(release["release"])
@@ -621,6 +639,8 @@ class OrchestratorAgent(BaseAgent):
             lines.extend(["", "### Trace 调用链", *[f"- {item}" for item in self._deduplicate_lines(trace_context)[:8]]])
         if database_context:
             lines.extend(["", "### 数据库与中间件", *[f"- {item}" for item in self._deduplicate_lines(database_context)[:8]]])
+        if cloud_context:
+            lines.extend(["", "### 云平台资源", *[f"- {item}" for item in self._deduplicate_lines(cloud_context)[:8]]])
         if release_context:
             lines.extend(["", "### Git 与 CI/CD", *[f"- {item}" for item in self._deduplicate_lines(release_context)[:8]]])
         if rca_hints:
@@ -867,6 +887,45 @@ class OrchestratorAgent(BaseAgent):
             summary = signal.get("summary") or signal.get("signalType") or ""
             component = signal.get("component") or "database"
             signals.append(f"告警信号：{component} {signal.get('signalType')}，{summary}")
+        for hint in data.get("rootCauseHints") or []:
+            if hint:
+                rca_hints.append(str(hint))
+        for action in data.get("recommendedNextSteps") or []:
+            if action:
+                recommended_actions.append(str(action))
+        for gap in data.get("dataGaps") or []:
+            if gap:
+                signals.append(f"数据缺口：{gap}")
+        return {"impact": impact, "signals": signals, "rcaHints": rca_hints, "recommendedActions": recommended_actions}
+
+    def _extract_cloud_resource_context(self, step: AgentStep) -> dict[str, list[str]]:
+        """从云平台资源证据中提取影响面、资源信号和建议动作。"""
+
+        payload = step.result if isinstance(getattr(step, "result", None), dict) else {}
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        impact: list[str] = []
+        signals: list[str] = []
+        rca_hints: list[str] = []
+        recommended_actions: list[str] = []
+
+        for item in data.get("matchedResources") or []:
+            if not isinstance(item, dict):
+                continue
+            name = item.get("name") or item.get("resourceId")
+            impact.append(f"云资源受影响：{name} {item.get('provider') or ''} {item.get('region') or ''}".strip())
+            signals.append(f"资源命中：{name} 关联 {item.get('alertCount', 0)} 条云告警，服务={item.get('service') or 'unknown'}")
+        for alert in data.get("cloudAlerts") or []:
+            if isinstance(alert, dict):
+                signals.append(f"云告警：{alert.get('alertName')} {alert.get('severity')}，{alert.get('summary') or alert.get('resourceId')}")
+        for signal in data.get("riskSignals") or []:
+            if not isinstance(signal, dict):
+                continue
+            message = str(signal.get("message") or "").strip()
+            severity = str(signal.get("severity") or "low")
+            if message:
+                signals.append(f"云资源风险：{severity} {message}")
+                if severity in {"high", "medium"}:
+                    rca_hints.append(message)
         for hint in data.get("rootCauseHints") or []:
             if hint:
                 rca_hints.append(str(hint))

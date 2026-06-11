@@ -309,6 +309,33 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.requires_approval)
         self.assertEqual(result.data["components"][0]["key"], "mysql")
 
+    async def test_cloud_resource_evidence_tool_is_readonly_and_callable(self) -> None:
+        """云平台资源证据应作为只读工具暴露给运维 Agent。"""
+
+        toolkit = OpsToolkit()
+
+        async def fake_cloud_resource_evidence() -> dict:
+            return {
+                "success": True,
+                "summary": "识别 1 个云资源配置、1 条云资源告警、1 条风险信号",
+                "data": {"resources": [{"resourceId": "ecs-order-01"}], "cloudAlerts": [{"alertName": "CloudInstanceDown"}]},
+                "error": "",
+            }
+
+        toolkit.cloud_resource_evidence = fake_cloud_resource_evidence  # type: ignore[method-assign]
+        toolkit._tools["cloud_resource_evidence"] = toolkit.cloud_resource_evidence
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=toolkit)
+
+        metadata = next(tool for tool in registry.list_tools("admin") if tool["name"] == "cloud_resource_evidence")
+        result = await registry.call(ToolCallRequest("cloud_resource_evidence"))
+
+        self.assertTrue(metadata["isReadOnly"])
+        self.assertFalse(metadata["requiresApproval"])
+        self.assertTrue(result.success)
+        self.assertEqual(result.risk_level, "read")
+        self.assertFalse(result.requires_approval)
+        self.assertEqual(result.data["resources"][0]["resourceId"], "ecs-order-01")
+
     async def test_service_topology_tool_is_readonly_and_callable(self) -> None:
         """服务拓扑分析应作为只读工具暴露给运维 Agent。"""
 
@@ -373,17 +400,19 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(steps[2].tool_name, "kubernetes_events")
         self.assertEqual(steps[3].tool_name, "trace_analysis")
         self.assertEqual(steps[4].tool_name, "database_middleware_health")
-        self.assertEqual(steps[5].tool_name, "service_topology")
-        self.assertEqual(steps[6].tool_name, "release_evidence")
-        self.assertEqual(steps[7].tool_name, "change_correlations")
+        self.assertEqual(steps[5].tool_name, "cloud_resource_evidence")
+        self.assertEqual(steps[6].tool_name, "service_topology")
+        self.assertEqual(steps[7].tool_name, "release_evidence")
+        self.assertEqual(steps[8].tool_name, "change_correlations")
         self.assertTrue(any(step.tool_name == "metric_anomalies" for step in steps))
         self.assertIn("影响面", steps[1].reasoning)
         self.assertIn("Pod", steps[2].reasoning)
         self.assertIn("span", steps[3].reasoning)
         self.assertIn("Redis", steps[4].reasoning)
-        self.assertIn("拓扑", steps[5].reasoning)
-        self.assertIn("HEAD", steps[6].reasoning)
-        self.assertIn("变更", steps[7].reasoning)
+        self.assertIn("云主机", steps[5].reasoning)
+        self.assertIn("拓扑", steps[6].reasoning)
+        self.assertIn("HEAD", steps[7].reasoning)
+        self.assertIn("变更", steps[8].reasoning)
 
     def test_final_report_includes_alert_impact_and_rca_hints(self) -> None:
         """最终报告应把告警关联工具的影响面和 RCA 线索结构化呈现。"""
@@ -615,6 +644,47 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("告警信号：mysql latency", report)
         self.assertIn("异常数据库/中间件：MySQL", report)
         self.assertIn("Trace 慢 span", report)
+
+    def test_final_report_includes_cloud_resource_context(self) -> None:
+        """最终报告应把云平台资源证据结构化呈现。"""
+
+        orchestrator = OrchestratorAgent(OpsToolkit())
+        step = AgentStep(
+            title="分析云平台资源证据",
+            tool_name="cloud_resource_evidence",
+            status="success",
+            observation="识别 1 个云资源配置、1 条云资源告警、1 条风险信号",
+            result={
+                "success": True,
+                "summary": "识别 1 个云资源配置、1 条云资源告警、1 条风险信号",
+                "data": {
+                    "matchedResources": [
+                        {
+                            "resourceId": "ecs-order-01",
+                            "name": "订单服务云主机",
+                            "provider": "aliyun",
+                            "region": "cn-hangzhou",
+                            "service": "order-service",
+                            "alertCount": 1,
+                        }
+                    ],
+                    "cloudAlerts": [{"alertName": "CloudInstanceDown", "severity": "critical", "summary": "订单服务云主机不可用"}],
+                    "riskSignals": [{"severity": "high", "type": "cloud_alert", "message": "云资源告警 CloudInstanceDown：订单服务云主机不可用"}],
+                    "rootCauseHints": ["优先核对 cn-hangzhou ecs-order-01 的云监控、实例事件、网络 ACL/安全组和资源配额"],
+                    "recommendedNextSteps": ["在云控制台核对 ecs-order-01 的实例事件、资源利用率、网络安全组和最近变更"],
+                    "dataGaps": [],
+                },
+            },
+        )
+
+        report = orchestrator._build_report("订单服务云主机告警", [step], ReplanDecision("complete", "完成"))
+
+        self.assertIn("### 云平台资源", report)
+        self.assertIn("云资源受影响：订单服务云主机", report)
+        self.assertIn("云告警：CloudInstanceDown", report)
+        self.assertIn("云资源风险：high", report)
+        self.assertIn("### 影响面", report)
+        self.assertIn("云监控", report)
 
     def test_final_report_includes_metric_anomaly_context(self) -> None:
         """最终报告应把指标异常信号结构化呈现。"""

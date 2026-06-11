@@ -52,6 +52,15 @@ class ProjectConfigService:
             "probes": [self._normalize_probe(item) for item in probes if self._enabled(item)],
         }
 
+    def cloud_resources(self) -> list[dict[str, Any]]:
+        """读取云平台资源清单，作为 CMDB 的轻量补充。"""
+
+        payload = self._read_yaml(self.monitoring_path)
+        raw_resources = payload.get("cloud_resources") or payload.get("cloudResources") or []
+        if not isinstance(raw_resources, list):
+            return []
+        return [self._normalize_cloud_resource(item) for item in raw_resources if self._enabled(item)]
+
     def save_servers(self, servers: list[dict[str, Any]]) -> dict[str, Any]:
         """保存业务服务器配置，供初始化向导或后台页面直接写入 YAML。"""
 
@@ -178,6 +187,28 @@ class ProjectConfigService:
             "name": str(item.get("name") or probe_id or "未命名探测").strip(),
             "enabled": enabled,
             "url": url,
+            "tags": item.get("tags") if isinstance(item.get("tags"), list) else [],
+        }
+
+    def _normalize_cloud_resource(self, item: dict[str, Any]) -> dict[str, Any]:
+        """把云资源配置标准化，便于故障诊断和影响面分析复用。"""
+
+        resource_id = str(item.get("resource_id") or item.get("resourceId") or item.get("id") or "").strip()
+        resource_type = str(item.get("resource_type") or item.get("resourceType") or item.get("type") or "").strip()
+        return {
+            "id": resource_id,
+            "resourceId": resource_id,
+            "name": str(item.get("name") or resource_id or "未命名云资源").strip(),
+            "provider": str(item.get("provider") or item.get("cloud") or "").strip(),
+            "accountId": str(item.get("account_id") or item.get("accountId") or "").strip(),
+            "region": str(item.get("region") or "").strip(),
+            "zone": str(item.get("zone") or item.get("availabilityZone") or "").strip(),
+            "resourceType": resource_type,
+            "service": str(item.get("service") or item.get("service_id") or item.get("serviceId") or "").strip(),
+            "env": str(item.get("env") or "").strip(),
+            "owner": str(item.get("owner") or "").strip(),
+            "status": str(item.get("status") or "").strip(),
+            "enabled": item.get("enabled", True) is not False,
             "tags": item.get("tags") if isinstance(item.get("tags"), list) else [],
         }
 

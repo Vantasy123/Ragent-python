@@ -18,6 +18,7 @@ import httpx
 from app.agents.base import ToolSpec
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.services.cloud_evidence_service import CloudEvidenceService
 from app.services.monitoring_service import MonitoringService
 from app.services.release_evidence_service import ReleaseEvidenceService
 from app.services.trace_analysis_service import TraceAnalysisService
@@ -76,6 +77,7 @@ class OpsToolkit:
             "kubernetes_events": self.kubernetes_events,
             "trace_analysis": self.trace_analysis,
             "database_middleware_health": self.database_middleware_health,
+            "cloud_resource_evidence": self.cloud_resource_evidence,
             "change_correlations": self.change_correlations,
             "release_evidence": self.release_evidence,
             "service_topology": self.service_topology,
@@ -113,6 +115,7 @@ class OpsToolkit:
             ToolSpec("kubernetes_events", "分析 Kubernetes Pod、工作负载和节点事件线索"),
             ToolSpec("trace_analysis", "分析最近 Trace 调用链，输出慢 span、失败 span 和耗时热点", {"limit": "integer", "slowThresholdMs": "integer"}),
             ToolSpec("database_middleware_health", "分析 Redis、MySQL、PostgreSQL 等数据库和中间件健康状态"),
+            ToolSpec("cloud_resource_evidence", "分析云主机、负载均衡、托管数据库等云资源证据"),
             ToolSpec("change_correlations", "关联活跃告警中的发布、提交、镜像和流水线变更线索"),
             ToolSpec("release_evidence", "分析本地 Git、CI/CD 和发布证据", {"limit": "integer"}),
             ToolSpec("service_topology", "分析服务拓扑、上下游依赖和故障影响传播路径"),
@@ -590,6 +593,17 @@ class OpsToolkit:
         """读取数据库和中间件健康状态、告警信号和 RCA 初筛线索。"""
 
         return await self.monitoring_service.tool_database_middleware_health()
+
+    async def cloud_resource_evidence(self) -> dict[str, Any]:
+        """读取云平台资源证据，辅助识别云主机、网络和托管资源故障。"""
+
+        result = await CloudEvidenceService(monitoring_service=self.monitoring_service).analyze()
+        return {
+            "success": result.get("status") in {"healthy", "degraded", "critical"},
+            "summary": result.get("summary", ""),
+            "data": result.get("data", {}),
+            "error": "" if result.get("status") in {"healthy", "degraded", "critical"} else result.get("error", "cloud_evidence_failed"),
+        }
 
     async def change_correlations(self) -> dict[str, Any]:
         """读取告警中的变更线索，辅助判断故障是否与发布或提交相关。"""

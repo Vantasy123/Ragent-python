@@ -102,6 +102,40 @@ class ProjectConfigServiceTest(unittest.TestCase):
         self.assertEqual(monitoring["prometheus_url"], "http://prometheus:9090")
         self.assertEqual(monitoring["probes"][0]["name"], "网关")
 
+    def test_reads_cloud_resources_from_monitoring_config(self) -> None:
+        """监控配置中的云资源清单应可作为轻量 CMDB 读取。"""
+
+        temp_dir = self._make_directory()
+        monitoring_path = temp_dir / "monitoring.yml"
+        monitoring_path.write_text(
+            """
+monitoring:
+  enabled: true
+cloud_resources:
+  - id: ecs-order-01
+    name: 订单服务云主机
+    provider: aliyun
+    account_id: "123"
+    region: cn-hangzhou
+    resource_type: ecs
+    service: order-service
+    owner: 交易团队
+    tags:
+      - order
+  - id: disabled
+    enabled: false
+""",
+            encoding="utf-8",
+        )
+        service = ProjectConfigService(str(temp_dir / "servers.yml"), str(monitoring_path))
+
+        resources = service.cloud_resources()
+
+        self.assertEqual(len(resources), 1)
+        self.assertEqual(resources[0]["resourceId"], "ecs-order-01")
+        self.assertEqual(resources[0]["accountId"], "123")
+        self.assertEqual(resources[0]["resourceType"], "ecs")
+
     def test_rejects_non_http_monitoring_url(self) -> None:
         """监控地址只允许 HTTP/HTTPS，避免保存 file 等危险协议。"""
 

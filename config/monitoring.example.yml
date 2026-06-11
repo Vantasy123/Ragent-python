@@ -23,3 +23,20 @@ probes:
     url: https://example.com
     tags:
       - public
+
+# 云平台资源清单示例。这里只保存资源元数据，不保存云厂商 AK/SK。
+cloud_resources:
+  - id: ecs-order-01
+    name: 订单服务云主机
+    provider: aliyun
+    account_id: "1234567890"
+    region: cn-hangzhou
+    zone: cn-hangzhou-h
+    resource_type: ecs
+    service: order-service
+    env: prod
+    owner: 交易团队
+    status: running
+    tags:
+      - order
+      - node
