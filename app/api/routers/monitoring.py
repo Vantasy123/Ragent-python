@@ -11,6 +11,7 @@ from app.domain.models import User
 from app.services.common import success
 from app.services.dependencies import require_admin
 from app.services.monitoring_service import MonitoringService
+from app.services.release_evidence_service import ReleaseEvidenceService
 from app.services.trace_analysis_service import TraceAnalysisService
 
 router = APIRouter(prefix="/admin/monitoring", tags=["monitoring"])
@@ -82,6 +83,13 @@ async def change_correlations(_: User = Depends(require_admin)):
     """返回活跃告警中的发布、提交、镜像和流水线变更关联线索。"""
 
     return success(await MonitoringService().change_correlations())
+
+
+@router.get("/release-evidence")
+async def release_evidence(limit: int = Query(10, ge=1, le=50), _: User = Depends(require_admin)):
+    """返回本地 Git、CI/CD 和发布证据，用于变更归因和回滚复核。"""
+
+    return success(ReleaseEvidenceService().analyze(limit=limit))
 
 
 @router.get("/service-topology")

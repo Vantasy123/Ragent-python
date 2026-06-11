@@ -19,6 +19,7 @@ from app.agents.base import ToolSpec
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.services.monitoring_service import MonitoringService
+from app.services.release_evidence_service import ReleaseEvidenceService
 from app.services.trace_analysis_service import TraceAnalysisService
 
 
@@ -76,6 +77,7 @@ class OpsToolkit:
             "trace_analysis": self.trace_analysis,
             "database_middleware_health": self.database_middleware_health,
             "change_correlations": self.change_correlations,
+            "release_evidence": self.release_evidence,
             "service_topology": self.service_topology,
             "metric_trend": self.metric_trend,
             "metric_anomalies": self.metric_anomalies,
@@ -112,6 +114,7 @@ class OpsToolkit:
             ToolSpec("trace_analysis", "分析最近 Trace 调用链，输出慢 span、失败 span 和耗时热点", {"limit": "integer", "slowThresholdMs": "integer"}),
             ToolSpec("database_middleware_health", "分析 Redis、MySQL、PostgreSQL 等数据库和中间件健康状态"),
             ToolSpec("change_correlations", "关联活跃告警中的发布、提交、镜像和流水线变更线索"),
+            ToolSpec("release_evidence", "分析本地 Git、CI/CD 和发布证据", {"limit": "integer"}),
             ToolSpec("service_topology", "分析服务拓扑、上下游依赖和故障影响传播路径"),
             ToolSpec("metric_trend", "查看指标趋势", {"metric": "string", "minutes": "integer"}),
             ToolSpec("metric_anomalies", "检测指标高水位、突增和波动异常", {"metric": "string", "minutes": "integer"}),
@@ -592,6 +595,17 @@ class OpsToolkit:
         """读取告警中的变更线索，辅助判断故障是否与发布或提交相关。"""
 
         return await self.monitoring_service.tool_change_correlations()
+
+    async def release_evidence(self, limit: int = 10) -> dict[str, Any]:
+        """读取 Git 和 CI/CD 发布证据，辅助判断当前故障是否由变更引入。"""
+
+        result = ReleaseEvidenceService().analyze(limit=limit)
+        return {
+            "success": result.get("status") in {"healthy", "degraded", "critical"},
+            "summary": result.get("summary", ""),
+            "data": result.get("data", {}),
+            "error": "" if result.get("status") in {"healthy", "degraded", "critical"} else result.get("error", "release_evidence_failed"),
+        }
 
     async def service_topology(self) -> dict[str, Any]:
         """读取服务拓扑和故障影响传播路径，辅助判断上下游波及范围。"""

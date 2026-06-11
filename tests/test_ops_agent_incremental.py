@@ -203,6 +203,33 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.requires_approval)
         self.assertEqual(result.data["changeCount"], 1)
 
+    async def test_release_evidence_tool_is_readonly_and_callable(self) -> None:
+        """Git 与 CI/CD 发布证据应作为只读工具暴露给运维 Agent。"""
+
+        toolkit = OpsToolkit()
+
+        async def fake_release_evidence(limit: int = 10) -> dict:
+            return {
+                "success": True,
+                "summary": f"分析最近 {limit} 个提交，识别 1 条发布风险",
+                "data": {"repo": {"branch": "main", "headSha": "abc1234"}, "riskSignals": [{"type": "dirty_worktree"}]},
+                "error": "",
+            }
+
+        toolkit.release_evidence = fake_release_evidence  # type: ignore[method-assign]
+        toolkit._tools["release_evidence"] = toolkit.release_evidence
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=toolkit)
+
+        metadata = next(tool for tool in registry.list_tools("admin") if tool["name"] == "release_evidence")
+        result = await registry.call(ToolCallRequest("release_evidence", {"limit": 5}))
+
+        self.assertTrue(metadata["isReadOnly"])
+        self.assertFalse(metadata["requiresApproval"])
+        self.assertTrue(result.success)
+        self.assertEqual(result.risk_level, "read")
+        self.assertFalse(result.requires_approval)
+        self.assertEqual(result.data["repo"]["branch"], "main")
+
     async def test_kubernetes_events_tool_is_readonly_and_callable(self) -> None:
         """Kubernetes 事件分析应作为只读工具暴露给运维 Agent。"""
 
@@ -347,14 +374,16 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(steps[3].tool_name, "trace_analysis")
         self.assertEqual(steps[4].tool_name, "database_middleware_health")
         self.assertEqual(steps[5].tool_name, "service_topology")
-        self.assertEqual(steps[6].tool_name, "change_correlations")
+        self.assertEqual(steps[6].tool_name, "release_evidence")
+        self.assertEqual(steps[7].tool_name, "change_correlations")
         self.assertTrue(any(step.tool_name == "metric_anomalies" for step in steps))
         self.assertIn("影响面", steps[1].reasoning)
         self.assertIn("Pod", steps[2].reasoning)
         self.assertIn("span", steps[3].reasoning)
         self.assertIn("Redis", steps[4].reasoning)
         self.assertIn("拓扑", steps[5].reasoning)
-        self.assertIn("变更", steps[6].reasoning)
+        self.assertIn("HEAD", steps[6].reasoning)
+        self.assertIn("变更", steps[7].reasoning)
 
     def test_final_report_includes_alert_impact_and_rca_hints(self) -> None:
         """最终报告应把告警关联工具的影响面和 RCA 线索结构化呈现。"""
@@ -421,6 +450,39 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("疑似相关变更 2026.06.11.1", report)
         self.assertIn("高置信变更候选", report)
         self.assertIn("回滚 Runbook", report)
+
+    def test_final_report_includes_release_evidence_context(self) -> None:
+        """最终报告应把 Git 与 CI/CD 发布证据结构化呈现。"""
+
+        orchestrator = OrchestratorAgent(OpsToolkit())
+        step = AgentStep(
+            title="分析 Git 与 CI/CD 发布证据",
+            tool_name="release_evidence",
+            status="success",
+            observation="当前分支 main@abc1234，github_actions，识别 1 条发布风险信号",
+            result={
+                "success": True,
+                "summary": "当前分支 main@abc1234，github_actions，识别 1 条发布风险信号",
+                "data": {
+                    "repo": {"branch": "main", "headSha": "abc1234", "upstream": "origin/main", "ahead": 1, "behind": 0, "dirty": True},
+                    "ci": {"provider": "github_actions", "runId": "99", "sha": "abc1234", "ref": "main"},
+                    "recentCommits": [{"sha": "abc1234", "date": "2026-06-11T10:00:00+08:00", "subject": "fix: repair deploy config"}],
+                    "riskSignals": [{"severity": "medium", "type": "dirty_worktree", "message": "工作区存在未提交改动，发布前需要确认是否混入未审计变更"}],
+                    "rootCauseHints": ["当前 HEAD abc1234 最近提交：fix: repair deploy config"],
+                    "recommendedNextSteps": ["把告警首次触发时间与最近提交时间、CI/CD 部署时间做时间线对齐"],
+                    "dataGaps": [],
+                },
+            },
+        )
+
+        report = orchestrator._build_report("发布后接口异常", [step], ReplanDecision("complete", "完成"))
+
+        self.assertIn("### Git 与 CI/CD", report)
+        self.assertIn("仓库状态：main@abc1234", report)
+        self.assertIn("流水线：github_actions", report)
+        self.assertIn("发布风险：medium 工作区存在未提交改动", report)
+        self.assertIn("### RCA 初筛线索", report)
+        self.assertIn("时间线对齐", report)
 
     def test_final_report_includes_service_topology_context(self) -> None:
         """最终报告应把拓扑影响路径和依赖边结构化呈现。"""
