@@ -55,6 +55,13 @@ async def change_correlations(_: User = Depends(require_admin)):
     return success(await MonitoringService().change_correlations())
 
 
+@router.get("/service-topology")
+async def service_topology(_: User = Depends(require_admin)):
+    """返回服务拓扑、依赖边和故障影响传播路径。"""
+
+    return success(await MonitoringService().service_topology())
+
+
 @router.post("/query")
 async def query(payload: PrometheusQueryPayload, _: User = Depends(require_admin)):
     """执行受控 PromQL 即时查询，仅管理员可用。"""

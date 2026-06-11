@@ -203,6 +203,32 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.requires_approval)
         self.assertEqual(result.data["changeCount"], 1)
 
+    async def test_service_topology_tool_is_readonly_and_callable(self) -> None:
+        """服务拓扑分析应作为只读工具暴露给运维 Agent。"""
+
+        toolkit = OpsToolkit()
+
+        async def fake_tool_service_topology() -> dict:
+            return {
+                "success": True,
+                "summary": "识别 1 个直接异常节点",
+                "data": {"affectedNodeIds": ["payment-service"], "impactedNodeIds": ["order-service", "payment-service"]},
+                "error": "",
+            }
+
+        toolkit.monitoring_service.tool_service_topology = fake_tool_service_topology  # type: ignore[method-assign]
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=toolkit)
+
+        metadata = next(tool for tool in registry.list_tools("admin") if tool["name"] == "service_topology")
+        result = await registry.call(ToolCallRequest("service_topology"))
+
+        self.assertTrue(metadata["isReadOnly"])
+        self.assertFalse(metadata["requiresApproval"])
+        self.assertTrue(result.success)
+        self.assertEqual(result.risk_level, "read")
+        self.assertFalse(result.requires_approval)
+        self.assertEqual(result.data["affectedNodeIds"], ["payment-service"])
+
     async def test_deterministic_plan_uses_alert_correlations_for_alert_task(self) -> None:
         """告警类任务应优先生成告警关联分析步骤，降低重复告警噪声。"""
 
@@ -212,9 +238,11 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         steps = await planner.create_plan("订单服务出现 critical 告警，需要定位根因")
 
         self.assertEqual(steps[1].tool_name, "alert_correlations")
-        self.assertEqual(steps[2].tool_name, "change_correlations")
+        self.assertEqual(steps[2].tool_name, "service_topology")
+        self.assertEqual(steps[3].tool_name, "change_correlations")
         self.assertIn("影响面", steps[1].reasoning)
-        self.assertIn("变更", steps[2].reasoning)
+        self.assertIn("拓扑", steps[2].reasoning)
+        self.assertIn("变更", steps[3].reasoning)
 
     def test_final_report_includes_alert_impact_and_rca_hints(self) -> None:
         """最终报告应把告警关联工具的影响面和 RCA 线索结构化呈现。"""
@@ -280,6 +308,38 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("疑似相关变更 2026.06.11.1", report)
         self.assertIn("高置信变更候选", report)
         self.assertIn("回滚 Runbook", report)
+
+    def test_final_report_includes_service_topology_context(self) -> None:
+        """最终报告应把拓扑影响路径和依赖边结构化呈现。"""
+
+        orchestrator = OrchestratorAgent(OpsToolkit())
+        step = AgentStep(
+            title="分析服务拓扑和影响传播",
+            tool_name="service_topology",
+            status="success",
+            observation="识别 1 个直接异常节点，可能影响 2 个拓扑节点",
+            result={
+                "success": True,
+                "summary": "识别 1 个直接异常节点，可能影响 2 个拓扑节点",
+                "data": {
+                    "nodes": [
+                        {"id": "payment-service", "name": "支付服务", "impactStatus": "affected"},
+                        {"id": "order-service", "name": "订单服务", "impactStatus": "impacted"},
+                    ],
+                    "edges": [{"source": "order-service", "target": "payment-service"}],
+                    "impactPaths": [{"summary": "支付服务 -> 订单服务"}],
+                    "recommendedNextSteps": ["优先检查直接异常节点 支付服务 的日志、指标和最近变更"],
+                },
+            },
+        )
+
+        report = orchestrator._build_report("支付服务故障影响订单", [step], ReplanDecision("complete", "完成"))
+
+        self.assertIn("### 服务拓扑", report)
+        self.assertIn("直接异常节点：支付服务", report)
+        self.assertIn("可能受波及节点：订单服务", report)
+        self.assertIn("影响传播路径：支付服务 -> 订单服务", report)
+        self.assertIn("优先检查直接异常节点 支付服务", report)
 
 
 class FakeRegistry:

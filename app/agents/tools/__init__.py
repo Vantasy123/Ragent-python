@@ -71,6 +71,7 @@ class OpsToolkit:
             "alert_status": self.alert_status,
             "alert_correlations": self.alert_correlations,
             "change_correlations": self.change_correlations,
+            "service_topology": self.service_topology,
             "metric_trend": self.metric_trend,
             "prometheus_query": self.prometheus_query,
             "safe_command": self.safe_command,
@@ -102,6 +103,7 @@ class OpsToolkit:
             ToolSpec("alert_status", "查看当前告警状态"),
             ToolSpec("alert_correlations", "聚合活跃告警，输出降噪分组、影响面和 RCA 初筛线索"),
             ToolSpec("change_correlations", "关联活跃告警中的发布、提交、镜像和流水线变更线索"),
+            ToolSpec("service_topology", "分析服务拓扑、上下游依赖和故障影响传播路径"),
             ToolSpec("metric_trend", "查看指标趋势", {"metric": "string", "minutes": "integer"}),
             ToolSpec("prometheus_query", "执行 Prometheus 即时查询", {"query": "string", "time": "number"}),
             ToolSpec(
@@ -553,6 +555,11 @@ class OpsToolkit:
         """读取告警中的变更线索，辅助判断故障是否与发布或提交相关。"""
 
         return await self.monitoring_service.tool_change_correlations()
+
+    async def service_topology(self) -> dict[str, Any]:
+        """读取服务拓扑和故障影响传播路径，辅助判断上下游波及范围。"""
+
+        return await self.monitoring_service.tool_service_topology()
 
     async def metric_trend(self, metric: str = "cpu_percent", minutes: int = 30) -> dict[str, Any]:
         """从 Prometheus 查询指定指标最近一段时间的趋势。"""

@@ -10,6 +10,9 @@ servers:
     health_url: http://order-service:8080/health
     metrics_url: http://order-service:8080/metrics
     owner: 交易团队
+    dependencies:
+      - payment-service
+      - redis
     tags:
       - java
       - order

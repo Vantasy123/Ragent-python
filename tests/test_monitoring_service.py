@@ -227,6 +227,67 @@ servers:
         self.assertEqual(item["confidence"], "high")
         self.assertIn("回滚 Runbook", item["rollbackHint"])
 
+    async def test_service_topology_marks_direct_and_propagated_impacts(self) -> None:
+        """服务拓扑应根据 dependencies 计算直接异常节点和上游受波及节点。"""
+
+        temp_dir = self._make_directory()
+        servers_path = temp_dir / "servers.yml"
+        monitoring_path = temp_dir / "monitoring.yml"
+        servers_path.write_text(
+            """
+servers:
+  - id: order-service
+    name: 订单服务
+    enabled: true
+    health_url: http://order-service:8080/health
+    owner: 交易团队
+    dependencies:
+      - payment-service
+    tags:
+      - order
+  - id: payment-service
+    name: 支付服务
+    enabled: true
+    health_url: http://payment-service:8080/health
+    owner: 支付团队
+    tags:
+      - payment
+""",
+            encoding="utf-8",
+        )
+        monitoring_path.write_text("monitoring:\n  enabled: true\n", encoding="utf-8")
+        service = MonitoringService(config_service=ProjectConfigService(str(servers_path), str(monitoring_path)))
+
+        async def fake_alerts():
+            return {
+                "status": "critical",
+                "data": {
+                    "items": [
+                        {
+                            "name": "PaymentDown",
+                            "severity": "critical",
+                            "summary": "支付服务不可用",
+                            "startsAt": "2026-06-11T10:10:00Z",
+                            "labels": {"service": "payment-service", "severity": "critical"},
+                        }
+                    ]
+                },
+            }
+
+        service.alerts = fake_alerts  # type: ignore[method-assign]
+
+        result = await service.service_topology()
+
+        self.assertEqual(result["status"], "critical")
+        self.assertEqual(result["data"]["affectedNodeIds"], ["payment-service"])
+        self.assertIn("order-service", result["data"]["impactedNodeIds"])
+        node_status = {item["id"]: item["impactStatus"] for item in result["data"]["nodes"]}
+        self.assertEqual(node_status["payment-service"], "affected")
+        self.assertEqual(node_status["order-service"], "impacted")
+        self.assertEqual(result["data"]["edges"][0]["source"], "order-service")
+        self.assertEqual(result["data"]["edges"][0]["target"], "payment-service")
+        self.assertIn("支付服务 -> 订单服务", result["data"]["impactPaths"][0]["summary"])
+
     async def test_tool_change_correlations_adapts_result_for_ops_toolkit(self) -> None:
         """OpsToolkit 使用的变更关联工具应返回标准工具结果结构。"""
 
@@ -246,6 +307,26 @@ servers:
         self.assertTrue(result["success"])
         self.assertEqual(result["error"], "")
         self.assertEqual(result["data"]["changeCount"], 1)
+
+    async def test_tool_service_topology_adapts_result_for_ops_toolkit(self) -> None:
+        """OpsToolkit 使用的服务拓扑工具应返回标准工具结果结构。"""
+
+        service = MonitoringService()
+
+        async def fake_service_topology():
+            return {
+                "status": "critical",
+                "summary": "识别 1 个直接异常节点",
+                "data": {"affectedNodeIds": ["api"], "nodes": [{"id": "api"}], "edges": []},
+            }
+
+        service.service_topology = fake_service_topology  # type: ignore[method-assign]
+
+        result = await service.tool_service_topology()
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["error"], "")
+        self.assertEqual(result["data"]["affectedNodeIds"], ["api"])
 
     async def test_missing_monitoring_config_returns_degraded(self) -> None:
         """未启用监控时接口应降级，而不是抛出异常。"""

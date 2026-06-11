@@ -76,6 +76,10 @@ SIMPLE_OPS_KEYWORDS = {
     "release",
     "部署",
     "deploy",
+    "拓扑",
+    "topology",
+    "依赖",
+    "dependency",
     "重启",
     "restart",
     "恢复",
@@ -155,7 +159,7 @@ class PlannerAgent:
         prompt = (
             "你是 Ragent 运维 Planner，需要生成安全、可执行的排障计划。\n"
             "只能输出 JSON，不要输出 Markdown。格式：{\"steps\":[{\"title\":\"步骤标题\",\"tool\":\"工具名\",\"args\":{},\"reasoning\":\"原因\"}]}\n"
-            "要求：优先使用只读工具；告警和故障类任务优先查询 alert_correlations 与 change_correlations，再补充 alert_status、metric_trend、health/log 等证据；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
+            "要求：优先使用只读工具；告警和故障类任务优先查询 alert_correlations、service_topology 与 change_correlations，再补充 alert_status、metric_trend、health/log 等证据；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
             "如果用户给出 docker 命令原文，只能使用 safe_command，并把命令放到 args.command；不要生成 shell、bash 或 powershell 工具。\n"
             f"可用工具：{json.dumps(tools, ensure_ascii=False)}\n"
             f"服务名白名单：{json.dumps(sorted(set(OPS_SERVICE_ALIASES.values())), ensure_ascii=False)}\n"
@@ -280,6 +284,7 @@ class PlannerAgent:
         steps = [
             PlanStep("检查 Compose 服务状态", "compose_ps", reasoning="先确认核心服务是否存在异常状态"),
             PlanStep("分析活跃告警关联与影响面", "alert_correlations", reasoning="对告警做降噪聚合，提取影响面和 RCA 初筛线索"),
+            PlanStep("分析服务拓扑和影响传播", "service_topology", reasoning="结合 CMDB 轻量配置和告警标签判断服务拓扑、上下游依赖与波及范围"),
             PlanStep("关联近期发布变更线索", "change_correlations", reasoning="把告警与发布、提交、镜像和流水线信息关联，判断是否存在变更诱因"),
             PlanStep("查询当前活跃告警", "alert_status", reasoning="先确认监控系统是否已有明确告警"),
             PlanStep("查询 CPU 指标趋势", "metric_trend", {"metric": "cpu_percent", "minutes": 30}, "用指标趋势判断是否存在资源异常"),
@@ -492,6 +497,7 @@ class OrchestratorAgent(BaseAgent):
         suggestions = []
         impact = []
         rca_hints = []
+        topology_context = []
         change_context = []
         recommended_actions = []
         for step in steps:
@@ -504,6 +510,11 @@ class OrchestratorAgent(BaseAgent):
                     impact.extend(correlation["impact"])
                     rca_hints.extend(correlation["rcaHints"])
                     recommended_actions.extend(correlation["recommendedActions"])
+                if step.tool_name == "service_topology":
+                    topology = self._extract_topology_context(step)
+                    impact.extend(topology["impact"])
+                    topology_context.extend(topology["topology"])
+                    recommended_actions.extend(topology["recommendedActions"])
                 if step.tool_name == "change_correlations":
                     changes = self._extract_change_correlation_context(step)
                     change_context.extend(changes["changes"])
@@ -529,6 +540,8 @@ class OrchestratorAgent(BaseAgent):
         lines = ["## 运维 Agent 诊断报告", f"问题：{task}", "", "### 已确认事实", *facts, "", "### 疑似原因", *suspected]
         if impact:
             lines.extend(["", "### 影响面", *[f"- {item}" for item in self._deduplicate_lines(impact)[:5]]])
+        if topology_context:
+            lines.extend(["", "### 服务拓扑", *[f"- {item}" for item in self._deduplicate_lines(topology_context)[:8]]])
         if rca_hints:
             lines.extend(["", "### RCA 初筛线索", *[f"- {item}" for item in self._deduplicate_lines(rca_hints)[:8]]])
         if change_context:
@@ -564,6 +577,37 @@ class OrchestratorAgent(BaseAgent):
                     if action:
                         recommended_actions.append(str(action))
         return {"impact": impact, "rcaHints": rca_hints, "recommendedActions": recommended_actions}
+
+    def _extract_topology_context(self, step: AgentStep) -> dict[str, list[str]]:
+        """从拓扑工具结果中提取影响节点、传播路径和建议动作。"""
+
+        payload = step.result if isinstance(getattr(step, "result", None), dict) else {}
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        impact: list[str] = []
+        topology: list[str] = []
+        recommended_actions: list[str] = []
+        nodes = data.get("nodes", [])
+        if isinstance(nodes, list):
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                if node.get("impactStatus") == "affected":
+                    impact.append(f"直接异常节点：{node.get('name') or node.get('id')}")
+                elif node.get("impactStatus") == "impacted":
+                    impact.append(f"可能受波及节点：{node.get('name') or node.get('id')}")
+        for path in data.get("impactPaths") or []:
+            if isinstance(path, dict) and path.get("summary"):
+                topology.append(f"影响传播路径：{path['summary']}")
+        for edge in data.get("edges") or []:
+            if isinstance(edge, dict):
+                topology.append(f"依赖边：{edge.get('source')} -> {edge.get('target')}")
+        for gap in data.get("dataGaps") or []:
+            if gap:
+                topology.append(f"数据缺口：{gap}")
+        for action in data.get("recommendedNextSteps") or []:
+            if action:
+                recommended_actions.append(str(action))
+        return {"impact": impact, "topology": topology, "recommendedActions": recommended_actions}
 
     def _extract_change_correlation_context(self, step: AgentStep) -> dict[str, list[str]]:
         """从变更关联工具结果中提取变更候选、RCA 线索和建议动作。"""

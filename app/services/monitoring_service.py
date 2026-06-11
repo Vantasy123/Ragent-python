@@ -372,6 +372,40 @@ class MonitoringService:
             },
         }
 
+    async def service_topology(self) -> dict[str, Any]:
+        """基于接入配置和活跃告警生成服务拓扑与影响传播分析。"""
+
+        alerts = await self.alerts()
+        alert_items = alerts.get("data", {}).get("items", []) if alerts.get("status") in {"healthy", "critical"} else []
+        alert_items = alert_items if isinstance(alert_items, list) else []
+        nodes, key_to_node = self._topology_nodes()
+        edges = self._topology_edges(nodes, key_to_node)
+        affected_node_ids = self._affected_topology_nodes(alert_items, key_to_node)
+        impacted_node_ids = self._propagated_impacts(affected_node_ids, edges)
+        paths = self._impact_paths(affected_node_ids, impacted_node_ids, nodes, edges)
+        data_gaps = self._topology_data_gaps(nodes, edges, alert_items, affected_node_ids)
+        status = "critical" if affected_node_ids else "healthy"
+        return {
+            "status": status,
+            "displayName": "服务拓扑分析",
+            "summary": (
+                "未发现活跃告警影响服务拓扑"
+                if not affected_node_ids
+                else f"识别 {len(affected_node_ids)} 个直接异常节点，可能影响 {len(impacted_node_ids)} 个拓扑节点"
+            ),
+            "updatedAt": self._now(),
+            "data": {
+                "nodes": [self._mark_topology_node(node, affected_node_ids, impacted_node_ids) for node in nodes],
+                "edges": edges,
+                "affectedNodeIds": sorted(affected_node_ids),
+                "impactedNodeIds": sorted(impacted_node_ids),
+                "impactPaths": paths,
+                "dataGaps": data_gaps,
+                "recommendedNextSteps": self._topology_recommended_steps(affected_node_ids, impacted_node_ids, nodes, data_gaps),
+            },
+            "error": "" if alerts.get("status") in {"healthy", "critical"} else alerts.get("error", "monitoring_not_configured"),
+        }
+
     def _group_alerts(self, alerts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """按服务、实例和严重等级聚合告警，降低重复告警对诊断 Agent 的干扰。"""
 
@@ -653,6 +687,186 @@ class MonitoringService:
             results.append(text)
         return results
 
+    def _topology_nodes(self) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        """从业务服务器和探测目标构造拓扑节点及别名索引。"""
+
+        nodes: list[dict[str, Any]] = []
+        key_to_node: dict[str, str] = {}
+        for server in self.config_service.servers():
+            node_id = str(server.get("id") or server.get("name") or "").strip()
+            if not node_id:
+                continue
+            node = {
+                "id": node_id,
+                "name": server.get("name") or node_id,
+                "type": "service",
+                "env": server.get("env", ""),
+                "owner": server.get("owner", ""),
+                "tags": server.get("tags", []),
+                "dependencies": server.get("dependencies", []),
+                "healthUrl": server.get("health_url", ""),
+                "metricsUrl": server.get("metrics_url", ""),
+            }
+            nodes.append(node)
+            for key in self._topology_node_keys(node):
+                key_to_node[key] = node_id
+
+        for probe in self.monitoring_config.get("probes", []):
+            node_id = f"probe:{probe.get('id') or probe.get('name')}"
+            node = {
+                "id": node_id,
+                "name": probe.get("name") or node_id,
+                "type": "probe",
+                "env": "",
+                "owner": "",
+                "tags": probe.get("tags", []),
+                "dependencies": [],
+                "healthUrl": probe.get("url", ""),
+                "metricsUrl": "",
+            }
+            nodes.append(node)
+            for key in self._topology_node_keys(node):
+                key_to_node.setdefault(key, node_id)
+        return nodes, key_to_node
+
+    def _topology_edges(self, nodes: list[dict[str, Any]], key_to_node: dict[str, str]) -> list[dict[str, Any]]:
+        """根据 dependencies 构造服务依赖边，source 依赖 target。"""
+
+        edges: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for node in nodes:
+            source = node["id"]
+            for dependency in node.get("dependencies") or []:
+                target = key_to_node.get(str(dependency).strip().lower())
+                if not target or target == source:
+                    continue
+                key = (source, target)
+                if key in seen:
+                    continue
+                seen.add(key)
+                edges.append({"source": source, "target": target, "type": "depends_on", "label": "依赖"})
+        return edges
+
+    def _affected_topology_nodes(self, alerts: list[dict[str, Any]], key_to_node: dict[str, str]) -> set[str]:
+        """把告警服务标签映射到拓扑节点 ID。"""
+
+        affected: set[str] = set()
+        for alert in alerts:
+            if not isinstance(alert, dict):
+                continue
+            labels = alert.get("labels") if isinstance(alert.get("labels"), dict) else {}
+            service = self._alert_service(labels).lower()
+            node_id = key_to_node.get(service)
+            if node_id:
+                affected.add(node_id)
+        return affected
+
+    def _propagated_impacts(self, affected_node_ids: set[str], edges: list[dict[str, Any]]) -> set[str]:
+        """沿反向依赖传播影响：依赖故障服务的上游业务会被波及。"""
+
+        reverse: dict[str, list[str]] = {}
+        for edge in edges:
+            reverse.setdefault(edge["target"], []).append(edge["source"])
+        impacted = set(affected_node_ids)
+        queue = list(affected_node_ids)
+        while queue:
+            current = queue.pop(0)
+            for upstream in reverse.get(current, []):
+                if upstream in impacted:
+                    continue
+                impacted.add(upstream)
+                queue.append(upstream)
+        return impacted
+
+    def _impact_paths(
+        self,
+        affected_node_ids: set[str],
+        impacted_node_ids: set[str],
+        nodes: list[dict[str, Any]],
+        edges: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """生成直接异常节点到受波及节点的可解释传播路径。"""
+
+        node_names = {node["id"]: node.get("name") or node["id"] for node in nodes}
+        reverse: dict[str, list[str]] = {}
+        for edge in edges:
+            reverse.setdefault(edge["target"], []).append(edge["source"])
+        paths: list[dict[str, Any]] = []
+        for root in sorted(affected_node_ids):
+            queue: list[tuple[str, list[str]]] = [(root, [root])]
+            while queue:
+                current, path = queue.pop(0)
+                for upstream in reverse.get(current, []):
+                    if upstream in path:
+                        continue
+                    new_path = [*path, upstream]
+                    if upstream in impacted_node_ids:
+                        paths.append(
+                            {
+                                "source": root,
+                                "target": upstream,
+                                "path": new_path,
+                                "summary": " -> ".join(node_names.get(item, item) for item in new_path),
+                            }
+                        )
+                    queue.append((upstream, new_path))
+        return paths[:20]
+
+    def _topology_data_gaps(
+        self,
+        nodes: list[dict[str, Any]],
+        edges: list[dict[str, Any]],
+        alerts: list[dict[str, Any]],
+        affected_node_ids: set[str],
+    ) -> list[str]:
+        """输出拓扑分析的数据缺口，便于后续补齐 CMDB/Kubernetes/服务网格。"""
+
+        gaps: list[str] = []
+        if nodes and not edges:
+            gaps.append("业务服务未配置 dependencies，无法判断故障的上下游传播路径")
+        if alerts and not affected_node_ids:
+            gaps.append("活跃告警的 service/app/job 标签未命中接入配置，无法映射到拓扑节点")
+        if not nodes:
+            gaps.append("尚未在接入配置中维护业务服务，无法生成 CMDB 服务拓扑")
+        return gaps
+
+    def _topology_recommended_steps(
+        self,
+        affected_node_ids: set[str],
+        impacted_node_ids: set[str],
+        nodes: list[dict[str, Any]],
+        data_gaps: list[str],
+    ) -> list[str]:
+        """根据拓扑影响面生成下一步排查建议。"""
+
+        node_names = {node["id"]: node.get("name") or node["id"] for node in nodes}
+        steps: list[str] = []
+        for node_id in sorted(affected_node_ids):
+            steps.append(f"优先检查直接异常节点 {node_names.get(node_id, node_id)} 的日志、指标和最近变更")
+        propagated = sorted(impacted_node_ids - affected_node_ids)
+        for node_id in propagated[:5]:
+            steps.append(f"验证受波及节点 {node_names.get(node_id, node_id)} 的健康检查和关键业务请求")
+        if data_gaps:
+            steps.append("在接入配置或 CMDB 中维护服务依赖、owner 和环境信息，提升影响面判断准确性")
+        return self._deduplicate(steps)
+
+    def _mark_topology_node(self, node: dict[str, Any], affected_node_ids: set[str], impacted_node_ids: set[str]) -> dict[str, Any]:
+        """给拓扑节点补充影响状态，方便前端直接渲染。"""
+
+        status = "healthy"
+        if node["id"] in affected_node_ids:
+            status = "affected"
+        elif node["id"] in impacted_node_ids:
+            status = "impacted"
+        return {**node, "impactStatus": status}
+
+    def _topology_node_keys(self, node: dict[str, Any]) -> set[str]:
+        """生成节点匹配告警标签和依赖配置时使用的别名集合。"""
+
+        keys = {node.get("id", ""), node.get("name", "")}
+        keys.update(str(item) for item in node.get("tags") or [])
+        return {str(key).strip().lower() for key in keys if str(key).strip()}
+
     def _severity_rank(self, severity: str) -> int:
         """严重等级排序，数值越小优先级越高。"""
 
@@ -875,6 +1089,18 @@ class MonitoringService:
         """为 OpsToolkit 适配变更关联分析结果，供 RCA 和计划 Agent 消费。"""
 
         result = await self.change_correlations()
+        data = result.get("data", {}) if isinstance(result.get("data"), dict) else {}
+        return {
+            "success": result.get("status") in {"healthy", "critical"},
+            "summary": result.get("summary", ""),
+            "data": data,
+            "error": "" if result.get("status") in {"healthy", "critical"} else result.get("error", "monitoring_not_configured"),
+        }
+
+    async def tool_service_topology(self) -> dict[str, Any]:
+        """为 OpsToolkit 适配服务拓扑和影响传播分析结果。"""
+
+        result = await self.service_topology()
         data = result.get("data", {}) if isinstance(result.get("data"), dict) else {}
         return {
             "success": result.get("status") in {"healthy", "critical"},

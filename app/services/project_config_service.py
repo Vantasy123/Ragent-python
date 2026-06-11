@@ -162,6 +162,9 @@ class ProjectConfigService:
             "metrics_url": metrics_url,
             "owner": str(item.get("owner") or "").strip(),
             "tags": item.get("tags") if isinstance(item.get("tags"), list) else [],
+            "dependencies": [str(value).strip() for value in item.get("dependencies", []) if str(value).strip()]
+            if isinstance(item.get("dependencies"), list)
+            else [],
         }
 
     def _normalize_probe(self, item: dict[str, Any], strict: bool = False) -> dict[str, Any]:
