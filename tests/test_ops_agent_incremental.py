@@ -479,6 +479,37 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("疑似相关变更 2026.06.11.1", report)
         self.assertIn("高置信变更候选", report)
         self.assertIn("回滚 Runbook", report)
+        self.assertIn("### 修复方案与风险评估", report)
+        self.assertIn("审批门禁", report)
+        self.assertIn("验证计划", report)
+
+    def test_final_report_builds_remediation_plan_with_risk_assessment(self) -> None:
+        """最终报告应把建议动作整理成可审批的修复方案和风险评估。"""
+
+        orchestrator = OrchestratorAgent(OpsToolkit())
+        step = AgentStep(
+            title="分析数据库与中间件健康",
+            tool_name="database_middleware_health",
+            status="success",
+            observation="发现 1 个异常组件",
+            result={
+                "success": True,
+                "summary": "发现 1 个异常组件",
+                "data": {
+                    "components": [{"key": "redis", "name": "Redis", "status": "critical", "message": "Redis down"}],
+                    "rootCauseHints": ["Redis 健康异常，优先检查实例存活、Exporter、网络和连接池"],
+                    "recommendedNextSteps": ["查看 Redis 日志和连接池指标", "重启 Redis 连接异常的应用服务"],
+                },
+            },
+        )
+
+        report = orchestrator._build_report("Redis 异常导致接口失败", [step], ReplanDecision("complete", "完成"))
+
+        self.assertIn("### 修复方案与风险评估", report)
+        self.assertIn("修复步骤", report)
+        self.assertIn("重启 Redis 连接异常的应用服务 [风险=high, 审批=是]", report)
+        self.assertIn("风险评估：high", report)
+        self.assertIn("审批后才允许执行", report)
 
     def test_final_report_includes_release_evidence_context(self) -> None:
         """最终报告应把 Git 与 CI/CD 发布证据结构化呈现。"""

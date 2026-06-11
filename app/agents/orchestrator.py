@@ -14,6 +14,7 @@ from app.agents.memory import SharedMemory
 from app.agents.tool_registry import ToolCallRequest, ToolCallResult, UnifiedToolRegistry
 from app.agents.tools import OpsToolkit
 from app.rag.workflow import build_primary_llm
+from app.services.remediation_plan_service import RemediationPlanService
 
 
 OPS_SERVICE_ALIASES = {
@@ -627,6 +628,16 @@ class OrchestratorAgent(BaseAgent):
         suggestions.append(f"- 重规划结论：{decision.final_report or decision.reason}")
         if getattr(decision, "action", "") == "blocked":
             handoff_actions.append(f"重规划结论为 blocked：{decision.reason}")
+        remediation_plan = RemediationPlanService().build_plan(
+            task=task,
+            facts=facts,
+            impact=impact,
+            rca_hints=rca_hints,
+            recommended_actions=self._deduplicate_lines(recommended_actions),
+            rollback_candidates=rollback_plan,
+            handoff_actions=handoff_actions,
+            data_gaps=gaps,
+        )
 
         lines = ["## 运维 Agent 诊断报告", f"问题：{task}", "", "### 已确认事实", *facts, "", "### 疑似原因", *suspected]
         if impact:
@@ -651,6 +662,19 @@ class OrchestratorAgent(BaseAgent):
             lines.extend(["", "### 指标异常", *[f"- {item}" for item in self._deduplicate_lines(anomaly_context)[:8]]])
         if gaps:
             lines.extend(["", "### 数据缺口", *gaps])
+        if remediation_plan:
+            lines.extend(["", "### 修复方案与风险评估", f"- 摘要：{remediation_plan['summary']}"])
+            for item in remediation_plan.get("repairActions", [])[:5]:
+                lines.append(
+                    f"- 修复步骤 {item.get('step')}：{item.get('action')} "
+                    f"[风险={item.get('riskLevel')}, 审批={'是' if item.get('requiresApproval') else '否'}]"
+                )
+            for item in remediation_plan.get("riskAssessment", [])[:5]:
+                lines.append(f"- 风险评估：{item.get('level')} {item.get('item')}")
+            for item in remediation_plan.get("approvalGates", [])[:5]:
+                lines.append(f"- 审批门禁：{item}")
+            for item in remediation_plan.get("verificationPlan", [])[:5]:
+                lines.append(f"- 验证计划：{item}")
         if rollback_plan or handoff_actions:
             lines.extend(["", "### 回滚与人工接管"])
             for item in self._deduplicate_lines(rollback_plan)[:5]:
