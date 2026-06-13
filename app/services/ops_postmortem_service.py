@@ -179,6 +179,16 @@ class OpsPostmortemService:
             if item.operation == "verification" and item.status == "success"
         }
         verification_exists = not approved or all(item.tool_name in verified_source_tools for item in approved)
+        self_approved = self._self_approved(approved)
+        checks.append(
+            self._check(
+                "approval_separation",
+                not self_approved,
+                "审批申请人与审批人职责已分离" if not self_approved else f"{len(self_approved)} 个审批由申请人本人通过，建议启用四眼审批或二次复核",
+                "warning",
+            )
+        )
+
         checks.append(
             self._check(
                 "post_verification",
@@ -278,7 +288,9 @@ class OpsPostmortemService:
         audit_spans = [item for item in spans if item.operation == "audit"]
         latest_audit_payload = self._audit_payload(audit_spans[-1]) if audit_spans else {}
         audit_metrics = latest_audit_payload.get("metrics") if isinstance(latest_audit_payload.get("metrics"), dict) else {}
-        approved_count = len([item for item in approvals if item.status == "approved"])
+        approved = [item for item in approvals if item.status == "approved"]
+        approved_count = len(approved)
+        self_approved_count = len(self._self_approved(approved))
         noise = self._alert_noise_metrics(tool_calls)
         return {
             "durationMs": duration_ms,
@@ -288,6 +300,8 @@ class OpsPostmortemService:
             "successfulToolCallCount": len(successful_tools),
             "approvalCount": len(approvals),
             "approvedCount": approved_count,
+            "selfApprovedCount": self_approved_count,
+            "approvalSeparationRate": round((approved_count - self_approved_count) / approved_count, 4) if approved_count else 1,
             "rejectedCount": len([item for item in approvals if item.status == "rejected"]),
             "handoffCount": len([item for item in collaborations if item.event_type == "handoff"]),
             "readOnlyAutomationRate": round(len(read_calls) / len(tool_calls), 4) if tool_calls else 0,
@@ -336,6 +350,8 @@ class OpsPostmortemService:
         failed_codes = {item["code"] for item in compliance if item["status"] != "passed"}
         if "approval_gate" in failed_codes:
             actions.append("修正工具风险等级或审批策略，确保写操作不能绕过审批")
+        if "approval_separation" in failed_codes:
+            actions.append("为高风险生产操作启用四眼审批，或至少要求非申请人二次复核")
         if "post_verification" in failed_codes:
             actions.append("为所有写操作补充执行后只读验证工具，形成执行-验证闭环")
         if "post_verification_quality" in failed_codes:
@@ -367,7 +383,8 @@ class OpsPostmortemService:
             f"{status}：执行 {metrics['stepCount']} 个步骤、{metrics['toolCallCount']} 次工具调用、"
             f"{metrics['approvalCount']} 次审批、{metrics['verificationCount']} 次验证、"
             f"{metrics['rollbackRecommendationCount']} 个回滚建议、{metrics['auditCheckpointCount']} 个审计检查点、"
-            f"告警降噪 {metrics['alertNoiseReductionCount']} 条、{metrics['handoffCount']} 次人工接管"
+            f"告警降噪 {metrics['alertNoiseReductionCount']} 条、{metrics['handoffCount']} 次人工接管、"
+            f"{metrics['selfApprovedCount']} 次同人审批"
         )
 
     def _users_by_id(self, user_ids: set[str]) -> dict[str, User]:
@@ -402,6 +419,15 @@ class OpsPostmortemService:
         if not waits:
             return 0
         return int(sum(waits) / len(waits))
+
+    def _self_approved(self, approvals: list[AgentApproval]) -> list[AgentApproval]:
+        """筛出申请人与审批人相同的审批记录，用于暴露职责分离风险。"""
+
+        return [
+            item
+            for item in approvals
+            if item.requested_by and item.approved_by and item.requested_by == item.approved_by
+        ]
 
     def _alert_noise_metrics(self, tool_calls: list[AgentToolCall]) -> dict[str, Any]:
         """从告警关联工具结果中提取降噪指标。"""

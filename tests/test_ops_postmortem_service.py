@@ -24,6 +24,7 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.Session = sessionmaker(bind=self.engine)
         self.db = self.Session()
         self.user = User(id="user-1", username="admin", nickname="管理员", password_hash="x", role="admin")
+        self.approver = User(id="user-2", username="sre", nickname="值班 SRE", password_hash="x", role="admin")
         self.trace = TraceRun(id="trace-1", status="success", total_duration_ms=1200)
         self.run = AgentRun(id="run-1", trace_id=self.trace.id, user_id=self.user.id, message="重启后端服务", status="completed")
         self.step = AgentStep(
@@ -79,7 +80,7 @@ class OpsPostmortemServiceTest(unittest.TestCase):
             args={"service": "ragent-api"},
             status="approved",
             requested_by=self.user.id,
-            approved_by=self.user.id,
+            approved_by=self.approver.id,
             comment="同意",
         )
         self.handoff = AgentCollaboration(
@@ -125,6 +126,7 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.db.add_all(
             [
                 self.user,
+                self.approver,
                 self.trace,
                 self.run,
                 self.step,
@@ -149,6 +151,8 @@ class OpsPostmortemServiceTest(unittest.TestCase):
 
         self.assertEqual(payload["runId"], self.run.id)
         self.assertEqual(payload["metrics"]["approvalCount"], 1)
+        self.assertEqual(payload["metrics"]["selfApprovedCount"], 0)
+        self.assertEqual(payload["metrics"]["approvalSeparationRate"], 1)
         self.assertEqual(payload["metrics"]["writeToolCount"], 1)
         self.assertEqual(payload["metrics"]["mttrProxyMs"], 1200)
         self.assertEqual(payload["metrics"]["verificationCount"], 1)
@@ -166,6 +170,7 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertTrue(any(item["eventType"] == "trace_audit" for item in payload["timeline"]))
         checks = {item["code"]: item for item in payload["complianceChecks"]}
         self.assertEqual(checks["approval_gate"]["status"], "passed")
+        self.assertEqual(checks["approval_separation"]["status"], "passed")
         self.assertEqual(checks["post_verification"]["status"], "passed")
         self.assertEqual(checks["post_verification_quality"]["status"], "passed")
         self.assertEqual(checks["rollback_path"]["status"], "passed")
@@ -174,7 +179,24 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertIn("0 个回滚建议", payload["summary"])
         self.assertIn("1 个审计检查点", payload["summary"])
         self.assertIn("告警降噪 1 条", payload["summary"])
+        self.assertIn("0 次同人审批", payload["summary"])
         self.assertTrue(payload["improvementActions"])
+
+    def test_build_postmortem_flags_self_approved_write_operation(self) -> None:
+        """申请人本人通过审批时，复盘应标记职责分离风险。"""
+
+        self.approval.approved_by = self.user.id
+        self.db.commit()
+
+        payload = OpsPostmortemService(self.db).build(self.run.id)
+        checks = {item["code"]: item for item in payload["complianceChecks"]}
+
+        self.assertEqual(checks["approval_separation"]["status"], "failed")
+        self.assertEqual(checks["approval_separation"]["severity"], "warning")
+        self.assertEqual(payload["metrics"]["selfApprovedCount"], 1)
+        self.assertEqual(payload["metrics"]["approvalSeparationRate"], 0)
+        self.assertIn("1 次同人审批", payload["summary"])
+        self.assertTrue(any("四眼审批" in item or "二次复核" in item for item in payload["improvementActions"]))
 
     def test_build_postmortem_flags_unapproved_write_tool(self) -> None:
         """写操作如果绕过审批，应在复盘中标记为 critical 风险。"""
