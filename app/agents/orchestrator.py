@@ -129,7 +129,7 @@ AGENT_REGISTRY = {
     "replanner": {"name": "重规划 Agent", "description": "根据观察结果判断完成、继续或修订计划"},
     "diagnostics": {"name": "诊断 Agent", "description": "兼容旧前端展示的诊断能力"},
     "monitor": {"name": "监控 Agent", "description": "兼容旧前端展示的监控能力"},
-    "knowledge": {"name": "知识 Agent", "description": "兼容旧前端展示的知识库能力"},
+    "knowledge": {"name": "知识 Agent", "description": "检索 Runbook、历史事故和架构文档，辅助生成修复与回滚方案"},
 }
 
 
@@ -196,7 +196,7 @@ class PlannerAgent:
         prompt = (
             "你是 Ragent 运维 Planner，需要生成安全、可执行的排障计划。\n"
             "只能输出 JSON，不要输出 Markdown。格式：{\"steps\":[{\"title\":\"步骤标题\",\"tool\":\"工具名\",\"args\":{},\"reasoning\":\"原因\"}]}\n"
-            "要求：优先使用只读工具；告警和故障类任务优先查询 alert_correlations、kubernetes_events、trace_analysis、database_middleware_health、cloud_resource_evidence、service_topology、release_evidence、change_correlations 与 metric_anomalies，再补充 alert_status、metric_trend、health/log 等证据；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
+            "要求：优先使用只读工具；告警和故障类任务优先查询 alert_correlations、knowledge_search、kubernetes_events、trace_analysis、database_middleware_health、cloud_resource_evidence、service_topology、release_evidence、change_correlations 与 metric_anomalies，再补充 alert_status、metric_trend、health/log 等证据；写操作可以出现在计划中，但必须由审批流程执行；最多 6 步。\n\n"
             "如果用户给出 docker 命令原文，只能使用 safe_command，并把命令放到 args.command；不要生成 shell、bash 或 powershell 工具。\n"
             f"可用工具：{json.dumps(tools, ensure_ascii=False)}\n"
             f"服务名白名单：{json.dumps(sorted(set(OPS_SERVICE_ALIASES.values())), ensure_ascii=False)}\n"
@@ -321,6 +321,7 @@ class PlannerAgent:
         steps = [
             PlanStep("检查 Compose 服务状态", "compose_ps", reasoning="先确认核心服务是否存在异常状态"),
             PlanStep("分析活跃告警关联与影响面", "alert_correlations", reasoning="对告警做降噪聚合，提取影响面和 RCA 初筛线索"),
+            PlanStep("检索 Runbook 与历史事故知识", "knowledge_search", {"query": task, "topK": 5}, "检索 Runbook、历史事故和架构文档，给修复与回滚方案提供知识依据", "knowledge"),
             PlanStep("分析 Kubernetes 事件线索", "kubernetes_events", reasoning="从告警标签和注解中抽取 Pod 重启、OOM、调度失败和节点事件"),
             PlanStep("分析 Trace 调用链证据", "trace_analysis", {"limit": 20, "slowThresholdMs": 1000}, "定位慢 span、失败 span 和耗时最高的 operation"),
             PlanStep("分析数据库与中间件健康", "database_middleware_health", reasoning="检查 Redis、MySQL、PostgreSQL 的 up 指标和相关告警信号"),
@@ -542,6 +543,7 @@ class OrchestratorAgent(BaseAgent):
         impact = []
         rca_hints = []
         topology_context = []
+        knowledge_context = []
         kubernetes_context = []
         trace_context = []
         database_context = []
@@ -562,6 +564,11 @@ class OrchestratorAgent(BaseAgent):
                     impact.extend(correlation["impact"])
                     rca_hints.extend(correlation["rcaHints"])
                     recommended_actions.extend(correlation["recommendedActions"])
+                if step.tool_name == "knowledge_search":
+                    knowledge = self._extract_knowledge_context(step)
+                    knowledge_context.extend(knowledge["knowledge"])
+                    rca_hints.extend(knowledge["rcaHints"])
+                    recommended_actions.extend(knowledge["recommendedActions"])
                 if step.tool_name == "service_topology":
                     topology = self._extract_topology_context(step)
                     impact.extend(topology["impact"])
@@ -644,6 +651,8 @@ class OrchestratorAgent(BaseAgent):
             lines.extend(["", "### 影响面", *[f"- {item}" for item in self._deduplicate_lines(impact)[:5]]])
         if topology_context:
             lines.extend(["", "### 服务拓扑", *[f"- {item}" for item in self._deduplicate_lines(topology_context)[:8]]])
+        if knowledge_context:
+            lines.extend(["", "### 知识库线索", *[f"- {item}" for item in self._deduplicate_lines(knowledge_context)[:8]]])
         if kubernetes_context:
             lines.extend(["", "### Kubernetes 事件", *[f"- {item}" for item in self._deduplicate_lines(kubernetes_context)[:8]]])
         if trace_context:
@@ -710,6 +719,55 @@ class OrchestratorAgent(BaseAgent):
                     if action:
                         recommended_actions.append(str(action))
         return {"impact": impact, "rcaHints": rca_hints, "recommendedActions": recommended_actions}
+
+    def _extract_knowledge_context(self, step: AgentStep) -> dict[str, list[str]]:
+        """从知识库检索结果中提取 Runbook、历史事故和架构文档线索。"""
+
+        payload = step.result if isinstance(getattr(step, "result", None), dict) else {}
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        rows = data.get("value") or data.get("chunks") or data.get("items") or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        knowledge: list[str] = []
+        rca_hints: list[str] = []
+        recommended_actions: list[str] = []
+        if not isinstance(rows, list):
+            return {"knowledge": knowledge, "rcaHints": rca_hints, "recommendedActions": recommended_actions}
+
+        for row in rows[:5]:
+            if not isinstance(row, dict):
+                content = str(row).strip()
+                metadata = {}
+            else:
+                content = str(row.get("content") or row.get("page_content") or row.get("text") or "").strip()
+                metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            if not content:
+                continue
+            doc_type = self._knowledge_doc_type(content, metadata)
+            source = str(metadata.get("source") or metadata.get("filename") or metadata.get("title") or "知识库")
+            preview = content[:180].replace("\n", " ")
+            knowledge.append(f"{doc_type}：{source}，{preview}")
+            lowered = content.lower()
+            if doc_type in {"Runbook", "历史事故"}:
+                rca_hints.append(f"知识库命中 {doc_type}：{source}")
+            if any(keyword in lowered or keyword in content for keyword in ["回滚", "rollback", "重启", "restart", "验证", "检查", "恢复"]):
+                recommended_actions.append(f"参考 {doc_type} {source} 执行前先核对适用范围、审批要求和验证指标")
+        if not knowledge:
+            knowledge.append("知识库未返回可用 Runbook、历史事故或架构文档，建议补齐故障处置知识")
+            recommended_actions.append("沉淀本次故障的 Runbook、回滚步骤、验证指标和事故复盘")
+        return {"knowledge": knowledge, "rcaHints": rca_hints, "recommendedActions": recommended_actions}
+
+    def _knowledge_doc_type(self, content: str, metadata: dict[str, Any]) -> str:
+        """根据内容和元数据粗分知识类型，便于报告展示。"""
+
+        text = " ".join(str(value) for value in [content, *metadata.values()]).lower()
+        if any(keyword in text for keyword in ["runbook", "预案", "处置", "恢复", "回滚", "rollback"]):
+            return "Runbook"
+        if any(keyword in text for keyword in ["事故", "postmortem", "复盘", "故障", "incident"]):
+            return "历史事故"
+        if any(keyword in text for keyword in ["架构", "拓扑", "依赖", "architecture", "design"]):
+            return "架构文档"
+        return "知识片段"
 
     def _extract_topology_context(self, step: AgentStep) -> dict[str, list[str]]:
         """从拓扑工具结果中提取影响节点、传播路径和建议动作。"""

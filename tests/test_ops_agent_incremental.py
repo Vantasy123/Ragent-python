@@ -388,6 +388,18 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.requires_approval)
         self.assertEqual(result.data["anomalies"][0]["type"], "spike")
 
+    async def test_knowledge_search_alias_is_readonly_and_available(self) -> None:
+        """知识 Agent 检索 Runbook、历史事故和架构文档时只能走只读 MCP 别名。"""
+
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=OpsToolkit())
+
+        metadata = next(tool for tool in registry.list_tools("admin") if tool["name"] == "knowledge_search")
+
+        self.assertTrue(metadata["isReadOnly"])
+        self.assertFalse(metadata["requiresApproval"])
+        self.assertEqual(metadata["riskLevel"], "read")
+        self.assertEqual(metadata["category"], "knowledge")
+
     async def test_deterministic_plan_uses_alert_correlations_for_alert_task(self) -> None:
         """告警类任务应优先生成告警关联分析步骤，降低重复告警噪声。"""
 
@@ -397,22 +409,25 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         steps = await planner.create_plan("订单服务出现 critical 告警，需要定位根因")
 
         self.assertEqual(steps[1].tool_name, "alert_correlations")
-        self.assertEqual(steps[2].tool_name, "kubernetes_events")
-        self.assertEqual(steps[3].tool_name, "trace_analysis")
-        self.assertEqual(steps[4].tool_name, "database_middleware_health")
-        self.assertEqual(steps[5].tool_name, "cloud_resource_evidence")
-        self.assertEqual(steps[6].tool_name, "service_topology")
-        self.assertEqual(steps[7].tool_name, "release_evidence")
-        self.assertEqual(steps[8].tool_name, "change_correlations")
+        self.assertEqual(steps[2].tool_name, "knowledge_search")
+        self.assertEqual(steps[2].assigned_agent, "knowledge")
+        self.assertEqual(steps[3].tool_name, "kubernetes_events")
+        self.assertEqual(steps[4].tool_name, "trace_analysis")
+        self.assertEqual(steps[5].tool_name, "database_middleware_health")
+        self.assertEqual(steps[6].tool_name, "cloud_resource_evidence")
+        self.assertEqual(steps[7].tool_name, "service_topology")
+        self.assertEqual(steps[8].tool_name, "release_evidence")
+        self.assertEqual(steps[9].tool_name, "change_correlations")
         self.assertTrue(any(step.tool_name == "metric_anomalies" for step in steps))
         self.assertIn("影响面", steps[1].reasoning)
-        self.assertIn("Pod", steps[2].reasoning)
-        self.assertIn("span", steps[3].reasoning)
-        self.assertIn("Redis", steps[4].reasoning)
-        self.assertIn("云主机", steps[5].reasoning)
-        self.assertIn("拓扑", steps[6].reasoning)
-        self.assertIn("HEAD", steps[7].reasoning)
-        self.assertIn("变更", steps[8].reasoning)
+        self.assertIn("Runbook", steps[2].reasoning)
+        self.assertIn("Pod", steps[3].reasoning)
+        self.assertIn("span", steps[4].reasoning)
+        self.assertIn("Redis", steps[5].reasoning)
+        self.assertIn("云主机", steps[6].reasoning)
+        self.assertIn("拓扑", steps[7].reasoning)
+        self.assertIn("HEAD", steps[8].reasoning)
+        self.assertIn("变更", steps[9].reasoning)
 
     def test_final_report_includes_alert_impact_and_rca_hints(self) -> None:
         """最终报告应把告警关联工具的影响面和 RCA 线索结构化呈现。"""
@@ -446,6 +461,42 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("### RCA 初筛线索", report)
         self.assertIn("资源饱和风险", report)
         self.assertIn("查看 order-api 的最近指标趋势", report)
+
+    def test_final_report_includes_knowledge_context(self) -> None:
+        """最终报告应把 Runbook、历史事故和架构文档检索线索纳入 RCA 与修复建议。"""
+
+        orchestrator = OrchestratorAgent(OpsToolkit())
+        step = AgentStep(
+            title="检索 Runbook 与历史事故知识",
+            tool_name="knowledge_search",
+            status="success",
+            observation="检索到 2 条知识库线索",
+            result={
+                "success": True,
+                "summary": "检索到 2 条知识库线索",
+                "data": {
+                    "value": [
+                        {
+                            "content": "订单服务故障 Runbook：先检查错误率，必要时回滚到上一稳定版本，回滚后验证健康检查",
+                            "metadata": {"source": "runbooks/order.md"},
+                        },
+                        {
+                            "content": "历史事故复盘：2026-06-01 支付依赖超时导致订单失败，需核对调用链和依赖状态",
+                            "metadata": {"source": "incidents/2026-06-01.md"},
+                        },
+                    ]
+                },
+            },
+        )
+
+        report = orchestrator._build_report("订单服务故障根因定位", [step], ReplanDecision("complete", "完成"))
+
+        self.assertIn("### 知识库线索", report)
+        self.assertIn("Runbook：runbooks/order.md", report)
+        self.assertIn("历史事故：incidents/2026-06-01.md", report)
+        self.assertIn("知识库命中 Runbook", report)
+        self.assertIn("参考 Runbook runbooks/order.md", report)
+        self.assertIn("### 修复方案与风险评估", report)
 
     def test_final_report_includes_change_correlation_context(self) -> None:
         """最终报告应把变更关联候选和回滚建议结构化呈现。"""
