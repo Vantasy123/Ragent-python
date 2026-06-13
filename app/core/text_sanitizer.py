@@ -29,6 +29,7 @@ SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|authorization)\s*=\s*([^&\s]+)"
 )
 AUTH_HEADER_RE = re.compile(r"(?i)\b(authorization\s*:\s*(?:bearer|basic)\s+)[^\s,;]+")
+URL_RE = re.compile(r"https?://[^\s,;'\"\)]+")
 
 
 def sanitize_text(value: str | None) -> str:
@@ -83,6 +84,7 @@ def redact_sensitive_text(value: str | None) -> str:
         return ""
     redacted = AUTH_HEADER_RE.sub(lambda match: f"{match.group(1)}{REDACTED_VALUE}", cleaned)
     redacted = SENSITIVE_ASSIGNMENT_RE.sub(lambda match: f"{match.group(1)}={REDACTED_VALUE}", redacted)
+    redacted = URL_RE.sub(lambda match: _redact_url(match.group(0)), redacted)
     return _redact_url(redacted)
 
 

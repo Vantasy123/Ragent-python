@@ -18,6 +18,7 @@ import httpx
 from app.agents.base import ToolSpec
 from app.core.config import settings
 from app.core.database import SessionLocal
+from app.core.text_sanitizer import redact_sensitive_text
 from app.services.cloud_evidence_service import CloudEvidenceService
 from app.services.monitoring_service import MonitoringService
 from app.services.release_evidence_service import ReleaseEvidenceService
@@ -439,14 +440,16 @@ class OpsToolkit:
                 encoding="utf-8",
                 errors="replace",
             )
+            stdout = redact_sensitive_text(proc.stdout)
+            stderr = redact_sensitive_text(proc.stderr)
             return {
                 "success": proc.returncode == 0,
-                "summary": (proc.stdout or proc.stderr or "").strip()[:1000],
-                "data": {"stdout": proc.stdout, "stderr": proc.stderr, "returncode": proc.returncode},
+                "summary": (stdout or stderr or "").strip()[:1000],
+                "data": {"stdout": stdout, "stderr": stderr, "returncode": proc.returncode},
                 "error": "" if proc.returncode == 0 else "docker_command_failed",
             }
         except Exception as exc:
-            return {"success": False, "summary": str(exc), "data": {}, "error": type(exc).__name__}
+            return {"success": False, "summary": redact_sensitive_text(str(exc)), "data": {}, "error": type(exc).__name__}
 
     def _resolve_container_id(self, service: str) -> str | None:
         """根据 compose 项目标签解析服务对应容器 ID。"""

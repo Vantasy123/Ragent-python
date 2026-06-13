@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
@@ -192,6 +193,29 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.error, "command_not_allowed")
         self.assertEqual(result.risk_level, "danger")
         self.assertFalse(result.requires_approval)
+
+    def test_docker_output_is_redacted_before_tool_result(self) -> None:
+        """Docker stdout/stderr 返回给 Agent 前就应脱敏，避免日志凭证进入 SSE。"""
+
+        class CompletedProcessStub:
+            returncode = 0
+            stdout = "Authorization: Bearer secret-token\npassword=secret-password\nurl=https://user:pass@example.com/api?token=url-token"
+            stderr = "api_key=secret-api-key"
+
+        toolkit = OpsToolkit()
+        toolkit.executor_enabled = True
+
+        with patch("app.agents.tools.subprocess.run", return_value=CompletedProcessStub()):
+            result = toolkit._run_docker(["container", "logs", "container-1"])
+
+        text = str(result)
+        self.assertTrue(result["success"])
+        self.assertIn("<redacted>", text)
+        self.assertNotIn("secret-token", text)
+        self.assertNotIn("secret-password", text)
+        self.assertNotIn("secret-api-key", text)
+        self.assertNotIn("url-token", text)
+        self.assertNotIn("user:pass", text)
 
     async def test_alert_correlations_tool_is_readonly_and_callable(self) -> None:
         """告警关联分析应作为只读工具暴露给运维 Agent。"""
