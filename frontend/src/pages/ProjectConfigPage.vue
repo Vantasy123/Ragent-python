@@ -54,6 +54,46 @@
         </div>
       </SurfaceCard>
 
+      <SurfaceCard title="AIOps 生产就绪检查" subtitle="汇总生产自动化前的数据源、工具、审批和验证门禁。" class="mb-5">
+        <div class="readiness-head">
+          <div>
+            <div class="meta-label">总体状态</div>
+            <div class="readiness-status-row">
+              <span :class="['status-badge', readinessStatusClass(aiopsReadiness.status)]">
+                {{ readinessStatusLabel(aiopsReadiness.status) }}
+              </span>
+              <span class="readiness-score">通过率 {{ readinessScore }}</span>
+            </div>
+            <div class="page-description mt-2 text-xs">{{ aiopsReadiness.summary || '等待后端返回生产就绪检查结果' }}</div>
+          </div>
+          <button class="btn btn-secondary" :disabled="loadingReadiness" @click="loadReadiness">
+            {{ loadingReadiness ? '刷新中' : '刷新就绪检查' }}
+          </button>
+        </div>
+
+        <div class="readiness-source-grid mt-4">
+          <article v-for="source in readinessDataSources" :key="source.key" class="readiness-source">
+            <span :class="['status-dot', source.enabled ? 'status-dot-ok' : 'status-dot-warn']"></span>
+            <span>{{ source.label }}</span>
+          </article>
+        </div>
+
+        <div class="list-stack mt-4">
+          <article v-for="check in readinessChecks" :key="check.code" class="resource-item">
+            <div class="resource-item-row">
+              <div>
+                <div class="resource-title">{{ check.name }}</div>
+                <div class="resource-item-note mt-1">{{ check.message }}</div>
+              </div>
+              <span :class="['status-badge', readinessStatusClass(check.status)]">
+                {{ readinessStatusLabel(check.status) }}
+              </span>
+            </div>
+            <div v-if="check.status !== 'passed'" class="resource-item-note mt-2">处理建议：{{ check.remediation }}</div>
+          </article>
+        </div>
+      </SurfaceCard>
+
       <div class="grid-two mb-5">
         <SurfaceCard title="监控地址" subtitle="配置 Prometheus 和 Alertmanager，运维监控页会直接读取这些地址。">
           <div class="form-grid">
@@ -176,7 +216,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { adminService } from '@/services/adminService'
 import PageHeader from '@/components/admin/PageHeader.vue'
 import SurfaceCard from '@/components/admin/SurfaceCard.vue'
@@ -198,6 +238,7 @@ type EditableServer = {
 const loading = ref(false)
 const error = ref('')
 const status = ref<Record<string, any>>({})
+const aiopsReadiness = ref<Record<string, any>>({})
 const monitoring = ref({
   enabled: true,
   prometheus_url: '',
@@ -209,8 +250,38 @@ const servers = ref<EditableServer[]>([])
 const savingMonitoring = ref(false)
 const savingServers = ref(false)
 const testingProbe = ref(false)
+const loadingReadiness = ref(false)
 const probeResult = ref<Record<string, any> | null>(null)
 const testProbe = ref({ name: '临时探测', url: '' })
+
+const readinessChecks = computed(() => {
+  return Array.isArray(aiopsReadiness.value.checks) ? aiopsReadiness.value.checks : []
+})
+
+const readinessScore = computed(() => {
+  const rawScore = Number(aiopsReadiness.value.score || 0)
+  return `${Math.round(rawScore * 100)}%`
+})
+
+const readinessDataSources = computed(() => {
+  const sources = aiopsReadiness.value.dataSources || {}
+  const labels: Record<string, string> = {
+    metrics: 'Metrics',
+    alerts: 'Alerts',
+    logs: 'Logs',
+    traces: 'Traces',
+    events: 'Events',
+    cmdb: 'CMDB',
+    cloud: '云平台',
+    release: 'CI/CD',
+    databaseMiddleware: '数据库/中间件',
+  }
+  return Object.entries(labels).map(([key, label]) => ({
+    key,
+    label,
+    enabled: Boolean(sources[key]),
+  }))
+})
 
 function makeKey() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -252,12 +323,14 @@ async function loadConfig() {
   loading.value = true
   error.value = ''
   try {
-    const [statusData, serverData, monitoringData] = await Promise.all([
+    const [statusData, serverData, monitoringData, readinessData] = await Promise.all([
       adminService.projectConfigStatus(),
       adminService.projectConfigServers(),
       adminService.projectConfigMonitoring(),
+      adminService.aiopsReadiness(),
     ])
     status.value = statusData || {}
+    aiopsReadiness.value = readinessData || {}
     servers.value = Array.isArray(serverData.items) ? serverData.items.map(toEditableServer) : []
     const rawMonitoring = monitoringData.monitoring?.monitoring || monitoringData.monitoring || {}
     monitoring.value = {
@@ -271,6 +344,15 @@ async function loadConfig() {
     error.value = err?.detail || err?.message || '读取接入配置失败'
   } finally {
     loading.value = false
+  }
+}
+
+async function loadReadiness() {
+  loadingReadiness.value = true
+  try {
+    aiopsReadiness.value = await adminService.aiopsReadiness()
+  } finally {
+    loadingReadiness.value = false
   }
 }
 
@@ -320,6 +402,25 @@ async function runProbeTest() {
   }
 }
 
+function readinessStatusLabel(status?: string) {
+  const map: Record<string, string> = {
+    ready: '生产就绪',
+    degraded: '可诊断',
+    blocked: '阻塞',
+    passed: '通过',
+    warning: '待完善',
+    failed: '失败',
+  }
+  return map[String(status || '')] || '未知'
+}
+
+function readinessStatusClass(status?: string) {
+  if (status === 'ready' || status === 'passed') return 'status-badge-success'
+  if (status === 'degraded' || status === 'warning') return 'status-badge-warning'
+  if (status === 'blocked' || status === 'failed') return 'status-badge-danger'
+  return 'status-badge-neutral'
+}
+
 onMounted(loadConfig)
 </script>
 
@@ -348,8 +449,68 @@ onMounted(loadConfig)
   grid-column: 1 / -1;
 }
 
+.readiness-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.readiness-status-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.readiness-score {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.readiness-source-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.readiness-source {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-strong);
+  padding: 8px 10px;
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #f59e0b;
+}
+
+.status-dot-ok {
+  background: #10b981;
+}
+
+.status-dot-warn {
+  background: #f59e0b;
+}
+
 @media (max-width: 720px) {
   .server-card-head {
+    flex-direction: column;
+  }
+
+  .readiness-head {
     flex-direction: column;
   }
 

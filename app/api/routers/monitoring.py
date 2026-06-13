@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.domain.models import User
+from app.services.aiops_readiness_service import AIOpsReadinessService
 from app.services.cloud_evidence_service import CloudEvidenceService
 from app.services.common import success
 from app.services.dependencies import require_admin
@@ -30,6 +31,13 @@ async def overview(_: User = Depends(require_admin)):
     """返回运维监控总览，包括核心指标、服务探测、告警和采集目标。"""
 
     return success(await MonitoringService().overview())
+
+
+@router.get("/aiops-readiness")
+async def aiops_readiness(_: User = Depends(require_admin)):
+    """返回 AIOps 运维 Agent 生产就绪检查。"""
+
+    return success(AIOpsReadinessService().build())
 
 
 @router.get("/targets")

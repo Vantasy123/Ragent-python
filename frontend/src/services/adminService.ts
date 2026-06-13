@@ -266,6 +266,9 @@ export const adminService = {
   async monitoringQuery(payload: { query: string, time: string | null }) {
     return unwrapData(await apiClient.post('/admin/monitoring/query', payload), {})
   },
+  async aiopsReadiness() {
+    return unwrapData(await apiClient.get('/admin/monitoring/aiops-readiness'), {})
+  },
   async projectConfigStatus() {
     return unwrapData(await apiClient.get('/admin/project-config/status'), {})
   },
