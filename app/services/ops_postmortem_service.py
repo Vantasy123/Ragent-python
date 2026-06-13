@@ -40,7 +40,7 @@ class OpsPostmortemService:
 
         timeline = self._timeline(run, steps, tool_calls, approvals, collaborations, spans, users)
         compliance = self._compliance_checks(tool_calls, approvals, collaborations, spans)
-        metrics = self._metrics(run, steps, tool_calls, approvals, collaborations, trace)
+        metrics = self._metrics(run, steps, tool_calls, approvals, collaborations, trace, spans)
         findings = self._findings(compliance, tool_calls, approvals, collaborations)
         improvements = self._improvements(compliance, metrics, findings)
 
@@ -173,14 +173,31 @@ class OpsPostmortemService:
         )
 
         approved = [item for item in approvals if item.status == "approved"]
-        verification_exists = any(item.operation == "verification" and item.status == "success" for item in spans) or any(
-            item.approval_status == "not_required" and item.status == "success" and item.tool_name.endswith("_check") for item in tool_calls
-        )
+        verified_source_tools = {
+            str(((item.metadata_json or {}).get("context") or {}).get("sourceTool") or "")
+            for item in spans
+            if item.operation == "verification" and item.status == "success"
+        }
+        verification_exists = not approved or all(item.tool_name in verified_source_tools for item in approved)
         checks.append(
             self._check(
                 "post_verification",
-                not approved or verification_exists,
-                "审批后的写操作已记录只读验证" if not approved or verification_exists else "审批后的写操作缺少只读验证记录",
+                verification_exists,
+                "审批后的写操作已记录只读验证" if verification_exists else "存在审批通过的写操作缺少对应只读验证记录",
+                "warning",
+            )
+        )
+
+        failed_verification = [
+            item
+            for item in spans
+            if item.operation == "verification" and item.status not in {"success", "ok"}
+        ]
+        checks.append(
+            self._check(
+                "post_verification_quality",
+                not failed_verification,
+                "审批后验证均执行成功" if not failed_verification else f"{len(failed_verification)} 个审批后验证失败，需要人工确认修复效果",
                 "warning",
             )
         )
@@ -215,6 +232,7 @@ class OpsPostmortemService:
         approvals: list[AgentApproval],
         collaborations: list[AgentCollaboration],
         trace: TraceRun | None,
+        spans: list[TraceSpan],
     ) -> dict[str, Any]:
         """生成复盘指标，作为 MTTR 和自动化率的代理数据。"""
 
@@ -222,17 +240,31 @@ class OpsPostmortemService:
         read_calls = [item for item in tool_calls if item.risk_level == "read"]
         write_calls = [item for item in tool_calls if item.risk_level in self.WRITE_RISK_LEVELS]
         successful_tools = [item for item in tool_calls if item.status == "success"]
+        verification_spans = [item for item in spans if item.operation == "verification"]
+        successful_verifications = [item for item in verification_spans if item.status in {"success", "ok"}]
+        approved_count = len([item for item in approvals if item.status == "approved"])
+        noise = self._alert_noise_metrics(tool_calls)
         return {
             "durationMs": duration_ms,
+            "mttrProxyMs": duration_ms,
             "stepCount": len(steps),
             "toolCallCount": len(tool_calls),
             "successfulToolCallCount": len(successful_tools),
             "approvalCount": len(approvals),
-            "approvedCount": len([item for item in approvals if item.status == "approved"]),
+            "approvedCount": approved_count,
             "rejectedCount": len([item for item in approvals if item.status == "rejected"]),
             "handoffCount": len([item for item in collaborations if item.event_type == "handoff"]),
             "readOnlyAutomationRate": round(len(read_calls) / len(tool_calls), 4) if tool_calls else 0,
             "writeToolCount": len(write_calls),
+            "approvalAverageWaitMs": self._approval_average_wait_ms(approvals),
+            "verificationCount": len(verification_spans),
+            "successfulVerificationCount": len(successful_verifications),
+            "verificationSuccessRate": round(len(successful_verifications) / len(verification_spans), 4) if verification_spans else 0,
+            "closedLoopCoverageRate": round(len(successful_verifications) / approved_count, 4) if approved_count else 1,
+            "alertCount": noise["alertCount"],
+            "alertGroupCount": noise["alertGroupCount"],
+            "alertNoiseReductionCount": noise["alertNoiseReductionCount"],
+            "alertNoiseReductionRate": noise["alertNoiseReductionRate"],
         }
 
     def _findings(
@@ -265,12 +297,18 @@ class OpsPostmortemService:
             actions.append("修正工具风险等级或审批策略，确保写操作不能绕过审批")
         if "post_verification" in failed_codes:
             actions.append("为所有写操作补充执行后只读验证工具，形成执行-验证闭环")
+        if "post_verification_quality" in failed_codes:
+            actions.append("验证失败时自动进入人工复核，并把失败验证项纳入 Runbook 验收标准")
         if "human_handoff" in failed_codes:
             actions.append("工具失败或阻塞时自动写入人工接管事件，便于 SRE 追溯")
         if "sensitive_redaction" in failed_codes:
             actions.append("扩大敏感字段脱敏规则，重新检查工具入参和结果审计副本")
         if metrics.get("handoffCount", 0) > 0:
             actions.append("把人工接管原因沉淀为 Runbook 或自动化只读诊断步骤")
+        if metrics.get("alertCount", 0) and metrics.get("alertNoiseReductionRate", 0) == 0:
+            actions.append("优化告警标签和分组规则，提升重复告警降噪率")
+        if metrics.get("approvalAverageWaitMs", 0) > 300000:
+            actions.append("为高频低风险修复建立预审批模板，降低审批等待时间")
         if not actions:
             actions.append("持续沉淀高频故障的 Runbook、验证指标和审批模板，降低后续 MTTR")
         return actions
@@ -282,7 +320,8 @@ class OpsPostmortemService:
         status = "存在审计风险" if failed else "审计闭环完整"
         return (
             f"{status}：执行 {metrics['stepCount']} 个步骤、{metrics['toolCallCount']} 次工具调用、"
-            f"{metrics['approvalCount']} 次审批、{metrics['handoffCount']} 次人工接管"
+            f"{metrics['approvalCount']} 次审批、{metrics['verificationCount']} 次验证、"
+            f"告警降噪 {metrics['alertNoiseReductionCount']} 条、{metrics['handoffCount']} 次人工接管"
         )
 
     def _users_by_id(self, user_ids: set[str]) -> dict[str, User]:
@@ -309,6 +348,38 @@ class OpsPostmortemService:
         if not started or not ended:
             return 0
         return max(0, int((ended - started).total_seconds() * 1000))
+
+    def _approval_average_wait_ms(self, approvals: list[AgentApproval]) -> int:
+        """计算审批平均等待时长，用于复盘人工门禁对 MTTR 的影响。"""
+
+        waits = [self._duration_ms(item.created_at, item.decided_at) for item in approvals if item.decided_at]
+        if not waits:
+            return 0
+        return int(sum(waits) / len(waits))
+
+    def _alert_noise_metrics(self, tool_calls: list[AgentToolCall]) -> dict[str, Any]:
+        """从告警关联工具结果中提取降噪指标。"""
+
+        alert_count = 0
+        group_count = 0
+        reduction_count = 0
+        for call in tool_calls:
+            if call.tool_name != "alert_correlations" or not isinstance(call.result, dict):
+                continue
+            data = call.result.get("data") if isinstance(call.result.get("data"), dict) else {}
+            alerts = int(data.get("alertCount") or 0)
+            groups = int(data.get("groupCount") or 0)
+            reduction = int(data.get("noiseReduction") or max(0, alerts - groups))
+            alert_count += alerts
+            group_count += groups
+            reduction_count += reduction
+        rate = round(reduction_count / alert_count, 4) if alert_count else 0
+        return {
+            "alertCount": alert_count,
+            "alertGroupCount": group_count,
+            "alertNoiseReductionCount": reduction_count,
+            "alertNoiseReductionRate": rate,
+        }
 
     def _user_name(self, user: User | None, fallback: str | None) -> str:
         """获取用户展示名。"""
