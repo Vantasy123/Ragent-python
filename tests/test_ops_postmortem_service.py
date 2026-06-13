@@ -153,6 +153,7 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertEqual(payload["metrics"]["approvalCount"], 1)
         self.assertEqual(payload["metrics"]["selfApprovedCount"], 0)
         self.assertEqual(payload["metrics"]["approvalSeparationRate"], 1)
+        self.assertEqual(payload["metrics"]["manualTakeoverCount"], 0)
         self.assertEqual(payload["metrics"]["writeToolCount"], 1)
         self.assertEqual(payload["metrics"]["mttrProxyMs"], 1200)
         self.assertEqual(payload["metrics"]["verificationCount"], 1)
@@ -174,11 +175,13 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertEqual(checks["post_verification"]["status"], "passed")
         self.assertEqual(checks["post_verification_quality"]["status"], "passed")
         self.assertEqual(checks["rollback_path"]["status"], "passed")
+        self.assertEqual(checks["manual_handoff"]["status"], "passed")
         self.assertEqual(checks["audit_checkpoint"]["status"], "passed")
         self.assertIn("审计闭环完整", payload["summary"])
         self.assertIn("0 个回滚建议", payload["summary"])
         self.assertIn("1 个审计检查点", payload["summary"])
         self.assertIn("告警降噪 1 条", payload["summary"])
+        self.assertIn("0 次手动接管", payload["summary"])
         self.assertIn("0 次同人审批", payload["summary"])
         self.assertTrue(payload["improvementActions"])
 
@@ -268,6 +271,49 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertEqual(checks["audit_checkpoint"]["severity"], "warning")
         self.assertEqual(payload["metrics"]["auditCheckpointCount"], 0)
         self.assertTrue(any("audit_checkpoint" in item for item in payload["improvementActions"]))
+
+    def test_build_postmortem_tracks_manual_stop_handoff(self) -> None:
+        """停止态运行应能在复盘中追踪 manual_stop 人工接管事件。"""
+
+        self.run.status = "stopped"
+        manual_handoff = AgentCollaboration(
+            run=self.run,
+            from_agent="human_sre",
+            to_agent="human_sre",
+            event_type="handoff",
+            content="管理员手动停止运维运行，后续由人工接管",
+            data={
+                "eventType": "manual_stop",
+                "operatorId": self.user.id,
+                "operatorName": self.user.username,
+                "previousStatus": "running",
+                "requiredAction": "human_takeover",
+            },
+        )
+        self.db.add(manual_handoff)
+        self.db.commit()
+
+        payload = OpsPostmortemService(self.db).build(self.run.id)
+        checks = {item["code"]: item for item in payload["complianceChecks"]}
+
+        self.assertEqual(checks["manual_handoff"]["status"], "passed")
+        self.assertEqual(payload["metrics"]["manualTakeoverCount"], 1)
+        self.assertTrue(any(item["eventType"] == "handoff" and item["status"] == "manual_stop" for item in payload["timeline"]))
+        self.assertIn("1 次手动接管", payload["summary"])
+
+    def test_build_postmortem_flags_stopped_run_without_manual_handoff(self) -> None:
+        """停止态运行如果缺少 manual_stop，应在复盘中暴露人工接管审计缺口。"""
+
+        self.run.status = "stopped"
+        self.db.commit()
+
+        payload = OpsPostmortemService(self.db).build(self.run.id)
+        checks = {item["code"]: item for item in payload["complianceChecks"]}
+
+        self.assertEqual(checks["manual_handoff"]["status"], "failed")
+        self.assertEqual(checks["manual_handoff"]["severity"], "warning")
+        self.assertEqual(payload["metrics"]["manualTakeoverCount"], 0)
+        self.assertTrue(any("manual_stop" in item for item in payload["improvementActions"]))
 
     def test_postmortem_router_returns_admin_payload(self) -> None:
         """复盘接口应向管理员返回同一结构化报告。"""

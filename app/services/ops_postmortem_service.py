@@ -39,7 +39,7 @@ class OpsPostmortemService:
         users = self._users_by_id({run.user_id or "", *[item.requested_by or "" for item in approvals], *[item.approved_by or "" for item in approvals]})
 
         timeline = self._timeline(run, steps, tool_calls, approvals, collaborations, spans, users)
-        compliance = self._compliance_checks(tool_calls, approvals, collaborations, spans)
+        compliance = self._compliance_checks(run, tool_calls, approvals, collaborations, spans)
         metrics = self._metrics(run, steps, tool_calls, approvals, collaborations, trace, spans)
         findings = self._findings(compliance, tool_calls, approvals, collaborations)
         improvements = self._improvements(compliance, metrics, findings)
@@ -153,6 +153,7 @@ class OpsPostmortemService:
 
     def _compliance_checks(
         self,
+        run: AgentRun,
         tool_calls: list[AgentToolCall],
         approvals: list[AgentApproval],
         collaborations: list[AgentCollaboration],
@@ -238,6 +239,15 @@ class OpsPostmortemService:
                 "warning",
             )
         )
+        manual_handoffs = self._manual_handoffs(collaborations)
+        checks.append(
+            self._check(
+                "manual_handoff",
+                run.status != "stopped" or bool(manual_handoffs),
+                "手动停止运行已记录人工接管事件" if run.status != "stopped" or manual_handoffs else "运行已停止但缺少 manual_stop 人工接管记录",
+                "warning",
+            )
+        )
 
         unsafe_payloads = [item.tool_name for item in tool_calls if self._contains_unredacted_sensitive(item.args) or self._contains_unredacted_sensitive(item.result)]
         checks.append(
@@ -291,6 +301,7 @@ class OpsPostmortemService:
         approved = [item for item in approvals if item.status == "approved"]
         approved_count = len(approved)
         self_approved_count = len(self._self_approved(approved))
+        manual_handoffs = self._manual_handoffs(collaborations)
         noise = self._alert_noise_metrics(tool_calls)
         return {
             "durationMs": duration_ms,
@@ -304,6 +315,7 @@ class OpsPostmortemService:
             "approvalSeparationRate": round((approved_count - self_approved_count) / approved_count, 4) if approved_count else 1,
             "rejectedCount": len([item for item in approvals if item.status == "rejected"]),
             "handoffCount": len([item for item in collaborations if item.event_type == "handoff"]),
+            "manualTakeoverCount": len(manual_handoffs),
             "readOnlyAutomationRate": round(len(read_calls) / len(tool_calls), 4) if tool_calls else 0,
             "writeToolCount": len(write_calls),
             "approvalAverageWaitMs": self._approval_average_wait_ms(approvals),
@@ -360,6 +372,8 @@ class OpsPostmortemService:
             actions.append("为验证失败场景补充回滚候选、审批要求和回滚后验证指标")
         if "human_handoff" in failed_codes:
             actions.append("工具失败或阻塞时自动写入人工接管事件，便于 SRE 追溯")
+        if "manual_handoff" in failed_codes:
+            actions.append("手动停止运行时必须写入 manual_stop 接管事件，记录操作人和停止前状态")
         if "sensitive_redaction" in failed_codes:
             actions.append("扩大敏感字段脱敏规则，重新检查工具入参和结果审计副本")
         if "audit_checkpoint" in failed_codes:
@@ -384,7 +398,7 @@ class OpsPostmortemService:
             f"{metrics['approvalCount']} 次审批、{metrics['verificationCount']} 次验证、"
             f"{metrics['rollbackRecommendationCount']} 个回滚建议、{metrics['auditCheckpointCount']} 个审计检查点、"
             f"告警降噪 {metrics['alertNoiseReductionCount']} 条、{metrics['handoffCount']} 次人工接管、"
-            f"{metrics['selfApprovedCount']} 次同人审批"
+            f"{metrics['manualTakeoverCount']} 次手动接管、{metrics['selfApprovedCount']} 次同人审批"
         )
 
     def _users_by_id(self, user_ids: set[str]) -> dict[str, User]:
@@ -427,6 +441,15 @@ class OpsPostmortemService:
             item
             for item in approvals
             if item.requested_by and item.approved_by and item.requested_by == item.approved_by
+        ]
+
+    def _manual_handoffs(self, collaborations: list[AgentCollaboration]) -> list[AgentCollaboration]:
+        """筛出手动停止触发的人工接管事件，用于复盘停止链路是否可追溯。"""
+
+        return [
+            item
+            for item in collaborations
+            if item.event_type == "handoff" and isinstance(item.data, dict) and item.data.get("eventType") == "manual_stop"
         ]
 
     def _alert_noise_metrics(self, tool_calls: list[AgentToolCall]) -> dict[str, Any]:
