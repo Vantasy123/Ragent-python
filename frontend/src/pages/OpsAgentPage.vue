@@ -169,6 +169,49 @@
       </SurfaceCard>
 
       <div class="detail-column">
+        <SurfaceCard title="审计复盘指标" subtitle="从本次运行复盘中汇总 MTTR、告警降噪、验证闭环和审批效率。">
+          <template #actions>
+            <button
+              v-if="currentRunId"
+              class="btn btn-secondary !px-3 !py-1 text-xs"
+              :disabled="loadingPostmortem"
+              @click="loadPostmortem"
+            >
+              {{ loadingPostmortem ? '刷新中' : '刷新复盘' }}
+            </button>
+          </template>
+          <AsyncState
+            :loading="loadingPostmortem"
+            :empty="!postmortem"
+            empty-title="暂无复盘指标"
+            empty-description="运行完成或刷新详情后会加载审计复盘指标。"
+          >
+            <div v-if="postmortem" class="list-stack">
+              <div class="ops-health-grid">
+                <article v-for="card in postmortemMetricCards" :key="card.label" class="ops-health-card">
+                  <div class="ops-health-label">{{ card.label }}</div>
+                  <div class="ops-health-value">{{ card.value }}</div>
+                  <div class="ops-health-hint">{{ card.hint }}</div>
+                </article>
+              </div>
+              <div class="postmortem-summary">{{ postmortem.summary || '暂无复盘摘要' }}</div>
+              <div v-if="postmortemCompliance.length" class="list-stack">
+                <article v-for="item in postmortemCompliance" :key="item.code" class="resource-item">
+                  <div class="resource-item-row">
+                    <div>
+                      <div class="resource-title">{{ complianceLabel(item.code) }}</div>
+                      <div class="resource-item-note mt-1">{{ item.message }}</div>
+                    </div>
+                    <span class="status-badge" :class="item.status === 'passed' ? 'status-ok' : 'status-warn'">
+                      {{ item.status === 'passed' ? '通过' : '需关注' }}
+                    </span>
+                  </div>
+                </article>
+              </div>
+            </div>
+          </AsyncState>
+        </SurfaceCard>
+
         <SurfaceCard title="运行详情" subtitle="持久化后的运行信息和最终报告。">
           <AsyncState :empty="!runDetail" empty-title="暂无运行详情" empty-description="开始诊断后可在这里查看运行结果。">
             <div v-if="runDetail" class="list-stack">
@@ -241,7 +284,14 @@ import DataPreview from '@/components/admin/DataPreview.vue'
 import KeyValueGrid from '@/components/admin/KeyValueGrid.vue'
 import PageHeader from '@/components/admin/PageHeader.vue'
 import SurfaceCard from '@/components/admin/SurfaceCard.vue'
-import { AGENT_THEME, opsAgentService, streamOpsAgent, type OpsAgentEvent, type OpsApprovalAuditLog } from '@/services/opsAgentService'
+import {
+  AGENT_THEME,
+  opsAgentService,
+  streamOpsAgent,
+  type OpsAgentEvent,
+  type OpsApprovalAuditLog,
+  type OpsPostmortemReport,
+} from '@/services/opsAgentService'
 
 const message = ref('检查后端服务情况，并确认前端代理与数据库连接是否正常。')
 const autoExecuteReadOnly = ref(true)
@@ -259,8 +309,10 @@ const approvalAudit = ref<{ items: OpsApprovalAuditLog[]; total: number; pageNo:
 const loadingTools = ref(false)
 const loadingAgents = ref(false)
 const loadingApprovalAudit = ref(false)
+const loadingPostmortem = ref(false)
 const currentRunId = ref('')
 const runDetail = ref<Record<string, any> | null>(null)
+const postmortem = ref<OpsPostmortemReport | null>(null)
 const currentStage = ref('')
 const finalOutput = ref('')
 const showTimelineDetails = ref(false)
@@ -303,6 +355,33 @@ const normalizedToolCalls = computed(() =>
 )
 
 const approvalAuditItems = computed(() => approvalAudit.value.items || [])
+
+const postmortemMetrics = computed(() => postmortem.value?.metrics || {})
+
+const postmortemMetricCards = computed(() => [
+  {
+    label: 'MTTR 代理耗时',
+    value: formatDurationMs(postmortemMetrics.value.mttrProxyMs || postmortemMetrics.value.durationMs || 0),
+    hint: '以 Trace 总耗时或运行更新时间估算本轮故障处置耗时。',
+  },
+  {
+    label: '告警降噪率',
+    value: formatRate(postmortemMetrics.value.alertNoiseReductionRate),
+    hint: `活跃告警 ${postmortemMetrics.value.alertCount || 0} 条，聚合为 ${postmortemMetrics.value.alertGroupCount || 0} 组。`,
+  },
+  {
+    label: '验证成功率',
+    value: formatRate(postmortemMetrics.value.verificationSuccessRate),
+    hint: `验证 ${postmortemMetrics.value.successfulVerificationCount || 0}/${postmortemMetrics.value.verificationCount || 0} 项通过。`,
+  },
+  {
+    label: '闭环覆盖率',
+    value: formatRate(postmortemMetrics.value.closedLoopCoverageRate),
+    hint: '审批通过的写操作是否都有成功的只读验证记录。',
+  },
+])
+
+const postmortemCompliance = computed(() => (postmortem.value?.complianceChecks || []).slice(0, 4))
 
 const healthCards = computed(() => {
   const compose = events.value.find((event) => event.type === 'observation' && event.result?.data?.stdout)
@@ -372,6 +451,7 @@ async function startRun() {
   error.value = ''
   events.value = []
   runDetail.value = null
+  postmortem.value = null
   currentRunId.value = ''
   currentStage.value = '正在创建运维诊断任务'
   finalOutput.value = ''
@@ -408,12 +488,24 @@ async function startRun() {
 async function refreshRun() {
   if (!currentRunId.value) return
   runDetail.value = (await opsAgentService.run(currentRunId.value)) as Record<string, any>
+  await loadPostmortem()
+}
+
+async function loadPostmortem() {
+  if (!currentRunId.value) return
+  loadingPostmortem.value = true
+  try {
+    postmortem.value = (await opsAgentService.postmortem(currentRunId.value)) as OpsPostmortemReport
+  } finally {
+    loadingPostmortem.value = false
+  }
 }
 
 async function stopRun() {
   if (!currentRunId.value) return
   const result = (await opsAgentService.stop(currentRunId.value)) as Record<string, any>
   runDetail.value = { ...(runDetail.value || {}), ...result }
+  await loadPostmortem()
   running.value = false
 }
 
@@ -492,6 +584,28 @@ function approvalStatusClass(status?: string): string {
   if (status === 'rejected') return 'status-danger'
   if (status === 'pending') return 'status-warn'
   return 'status-badge-neutral'
+}
+
+function formatDurationMs(value?: number): string {
+  const ms = Number(value || 0)
+  if (ms >= 60_000) return `${(ms / 60_000).toFixed(1)} 分钟`
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)} 秒`
+  return `${ms} ms`
+}
+
+function formatRate(value?: number): string {
+  return `${Math.round(Number(value || 0) * 100)}%`
+}
+
+function complianceLabel(code: string): string {
+  const map: Record<string, string> = {
+    approval_gate: '审批门禁',
+    post_verification: '执行后验证',
+    post_verification_quality: '验证质量',
+    human_handoff: '人工接管',
+    sensitive_redaction: '敏感信息脱敏',
+  }
+  return map[code] || code
 }
 
 function formatEventType(type: string): string {
@@ -720,6 +834,15 @@ function riskClass(risk?: string): string {
   margin-top: 10px;
   font-size: 12px;
   color: #64748b;
+}
+
+.postmortem-summary {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.04);
+  padding: 12px 14px;
+  color: #334155;
+  line-height: 1.55;
 }
 
 @media (max-width: 1024px) {
