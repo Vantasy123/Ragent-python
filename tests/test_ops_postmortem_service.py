@@ -97,6 +97,31 @@ class OpsPostmortemServiceTest(unittest.TestCase):
             duration_ms=20,
             metadata_json={"context": {"agent": "verification", "toolName": "api_health_check", "sourceTool": "compose_restart_service"}},
         )
+        self.audit_span = TraceSpan(
+            trace_id=self.trace.id,
+            operation="audit",
+            status="success",
+            duration_ms=5,
+            metadata_json={
+                "context": {"agent": "audit"},
+                "output": {
+                    "result": {
+                        "success": True,
+                        "summary": "审计检查完成：计划 1 步，工具结果 3/3，审批阻塞 1 项",
+                        "data": {
+                            "status": "passed",
+                            "metrics": {
+                                "plannedStepCount": 1,
+                                "toolCallCount": 3,
+                                "recordedToolResultCount": 3,
+                                "blockedStepCount": 1,
+                            },
+                            "checks": [{"code": "plan_recorded", "status": "passed"}],
+                        },
+                    }
+                },
+            },
+        )
         self.db.add_all(
             [
                 self.user,
@@ -109,6 +134,7 @@ class OpsPostmortemServiceTest(unittest.TestCase):
                 self.approval,
                 self.handoff,
                 self.verification_span,
+                self.audit_span,
             ]
         )
         self.db.commit()
@@ -132,13 +158,19 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertEqual(payload["metrics"]["alertGroupCount"], 2)
         self.assertEqual(payload["metrics"]["alertNoiseReductionCount"], 1)
         self.assertEqual(payload["metrics"]["alertNoiseReductionRate"], 0.3333)
+        self.assertEqual(payload["metrics"]["auditCheckpointCount"], 1)
+        self.assertEqual(payload["metrics"]["auditPlannedStepCount"], 1)
+        self.assertEqual(payload["metrics"]["auditRecordedToolResultCount"], 3)
         self.assertTrue(any(item["eventType"] == "approval" for item in payload["timeline"]))
         self.assertTrue(any(item["eventType"] == "trace_verification" for item in payload["timeline"]))
+        self.assertTrue(any(item["eventType"] == "trace_audit" for item in payload["timeline"]))
         checks = {item["code"]: item for item in payload["complianceChecks"]}
         self.assertEqual(checks["approval_gate"]["status"], "passed")
         self.assertEqual(checks["post_verification"]["status"], "passed")
         self.assertEqual(checks["post_verification_quality"]["status"], "passed")
+        self.assertEqual(checks["audit_checkpoint"]["status"], "passed")
         self.assertIn("审计闭环完整", payload["summary"])
+        self.assertIn("1 个审计检查点", payload["summary"])
         self.assertIn("告警降噪 1 条", payload["summary"])
         self.assertTrue(payload["improvementActions"])
 
@@ -168,6 +200,20 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertEqual(checks["post_verification_quality"]["severity"], "warning")
         self.assertEqual(payload["metrics"]["verificationSuccessRate"], 0)
         self.assertTrue(any("验证失败" in item for item in payload["improvementActions"]))
+
+    def test_build_postmortem_flags_missing_audit_checkpoint(self) -> None:
+        """缺少审计 Agent 检查点时，复盘应标记审计闭环风险。"""
+
+        self.db.delete(self.audit_span)
+        self.db.commit()
+
+        payload = OpsPostmortemService(self.db).build(self.run.id)
+        checks = {item["code"]: item for item in payload["complianceChecks"]}
+
+        self.assertEqual(checks["audit_checkpoint"]["status"], "failed")
+        self.assertEqual(checks["audit_checkpoint"]["severity"], "warning")
+        self.assertEqual(payload["metrics"]["auditCheckpointCount"], 0)
+        self.assertTrue(any("audit_checkpoint" in item for item in payload["improvementActions"]))
 
     def test_postmortem_router_returns_admin_payload(self) -> None:
         """复盘接口应向管理员返回同一结构化报告。"""

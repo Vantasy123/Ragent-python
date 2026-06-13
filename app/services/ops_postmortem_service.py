@@ -16,7 +16,7 @@ class OpsPostmortemService:
     """基于已落库的运行、工具、审批、协作和 Trace 数据生成审计复盘。"""
 
     SENSITIVE_MARKERS = ("password", "token", "secret", "authorization", "apikey", "api_key", "ak", "sk")
-    WRITE_RISK_LEVELS = {"write", "danger", "high"}
+    WRITE_RISK_LEVELS = {"write", "admin", "danger", "high"}
 
     def __init__(self, db: Session) -> None:
         self.db = db
@@ -135,7 +135,7 @@ class OpsPostmortemService:
                 }
             )
         for span in spans:
-            if span.operation not in {"verification", "approval_required"}:
+            if span.operation not in {"verification", "approval_required", "audit"}:
                 continue
             events.append(
                 {
@@ -222,6 +222,18 @@ class OpsPostmortemService:
                 "critical",
             )
         )
+        audit_spans = [item for item in spans if item.operation == "audit"]
+        latest_audit = audit_spans[-1] if audit_spans else None
+        audit_payload = self._audit_payload(latest_audit) if latest_audit else {}
+        audit_status = str(audit_payload.get("status") or latest_audit.status if latest_audit else "")
+        checks.append(
+            self._check(
+                "audit_checkpoint",
+                bool(audit_spans) and audit_status in {"passed", "success", "ok", "blocked"},
+                "审计 Agent 已记录运行检查点" if audit_spans else "缺少审计 Agent 运行检查点",
+                "warning",
+            )
+        )
         return checks
 
     def _metrics(
@@ -242,6 +254,9 @@ class OpsPostmortemService:
         successful_tools = [item for item in tool_calls if item.status == "success"]
         verification_spans = [item for item in spans if item.operation == "verification"]
         successful_verifications = [item for item in verification_spans if item.status in {"success", "ok"}]
+        audit_spans = [item for item in spans if item.operation == "audit"]
+        latest_audit_payload = self._audit_payload(audit_spans[-1]) if audit_spans else {}
+        audit_metrics = latest_audit_payload.get("metrics") if isinstance(latest_audit_payload.get("metrics"), dict) else {}
         approved_count = len([item for item in approvals if item.status == "approved"])
         noise = self._alert_noise_metrics(tool_calls)
         return {
@@ -265,6 +280,10 @@ class OpsPostmortemService:
             "alertGroupCount": noise["alertGroupCount"],
             "alertNoiseReductionCount": noise["alertNoiseReductionCount"],
             "alertNoiseReductionRate": noise["alertNoiseReductionRate"],
+            "auditCheckpointCount": len(audit_spans),
+            "auditPlannedStepCount": int(audit_metrics.get("plannedStepCount") or 0),
+            "auditRecordedToolResultCount": int(audit_metrics.get("recordedToolResultCount") or 0),
+            "auditBlockedStepCount": int(audit_metrics.get("blockedStepCount") or 0),
         }
 
     def _findings(
@@ -303,6 +322,8 @@ class OpsPostmortemService:
             actions.append("工具失败或阻塞时自动写入人工接管事件，便于 SRE 追溯")
         if "sensitive_redaction" in failed_codes:
             actions.append("扩大敏感字段脱敏规则，重新检查工具入参和结果审计副本")
+        if "audit_checkpoint" in failed_codes:
+            actions.append("确保每轮运维运行结束前写入 audit_checkpoint，便于复盘验证计划、执行和审批记录完整性")
         if metrics.get("handoffCount", 0) > 0:
             actions.append("把人工接管原因沉淀为 Runbook 或自动化只读诊断步骤")
         if metrics.get("alertCount", 0) and metrics.get("alertNoiseReductionRate", 0) == 0:
@@ -321,7 +342,8 @@ class OpsPostmortemService:
         return (
             f"{status}：执行 {metrics['stepCount']} 个步骤、{metrics['toolCallCount']} 次工具调用、"
             f"{metrics['approvalCount']} 次审批、{metrics['verificationCount']} 次验证、"
-            f"告警降噪 {metrics['alertNoiseReductionCount']} 条、{metrics['handoffCount']} 次人工接管"
+            f"{metrics['auditCheckpointCount']} 个审计检查点、告警降噪 {metrics['alertNoiseReductionCount']} 条、"
+            f"{metrics['handoffCount']} 次人工接管"
         )
 
     def _users_by_id(self, user_ids: set[str]) -> dict[str, User]:
@@ -380,6 +402,16 @@ class OpsPostmortemService:
             "alertNoiseReductionCount": reduction_count,
             "alertNoiseReductionRate": rate,
         }
+
+    def _audit_payload(self, span: TraceSpan | None) -> dict[str, Any]:
+        """从审计 TraceSpan 中提取 audit_checkpoint 的结构化数据。"""
+
+        if not span or not isinstance(span.metadata_json, dict):
+            return {}
+        output = span.metadata_json.get("output") if isinstance(span.metadata_json.get("output"), dict) else {}
+        result = output.get("result") if isinstance(output.get("result"), dict) else {}
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        return data
 
     def _user_name(self, user: User | None, fallback: str | None) -> str:
         """获取用户展示名。"""
