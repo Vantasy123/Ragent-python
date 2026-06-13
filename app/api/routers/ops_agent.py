@@ -18,6 +18,7 @@ from app.domain.models import User
 from app.services.common import success
 from app.services.dependencies import require_admin
 from app.services.ops_agent_service import OpsAgentService
+from app.services.ops_postmortem_service import OpsPostmortemService
 from app.services.runtime_state import concurrency_slot
 
 router = APIRouter(prefix="/agent/ops", tags=["ops-agent"])
@@ -100,3 +101,10 @@ def stop(run_id: str, db: Session = Depends(get_db), user: User = Depends(requir
 def get_run(run_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
     """get_run 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
     return success(OpsAgentService(db).get_run(run_id))
+
+
+@router.get("/runs/{run_id}/postmortem")
+def get_run_postmortem(run_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
+    """生成一次运维 Agent 运行的审计复盘报告。"""
+
+    return success(OpsPostmortemService(db).build(run_id))
