@@ -28,6 +28,8 @@ class OpsAgentService:
     - AgentApproval 记录危险动作审批。
     """
 
+    SELF_APPROVAL_BLOCKED_RISK_LEVELS = {"write", "admin", "danger", "high"}
+
     def __init__(self, db: Session):
         """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.db = db
@@ -360,6 +362,7 @@ class OpsAgentService:
 
         registry = UnifiedToolRegistry(include_ops=True, toolkit=self.toolkit)
         risk_level = self._validate_approval_policy(registry, approval)
+        self._assert_approval_separation(run_id, approval, risk_level, user)
         self._assert_production_write_ready(run_id, approval, risk_level)
         tool_call.risk_level = risk_level
         approval.status = "approved"
@@ -593,6 +596,32 @@ class OpsAgentService:
         if not requires_approval:
             raise HTTPException(status_code=400, detail="该工具调用当前不需要审批，拒绝通过审批接口执行")
         return risk_level
+
+    def _assert_approval_separation(self, run_id: str, approval: AgentApproval, risk_level: str, user: User) -> None:
+        """阻止申请人批准自己发起的高风险生产写操作，落实四眼审批要求。"""
+
+        if risk_level not in self.SELF_APPROVAL_BLOCKED_RISK_LEVELS:
+            return
+        if not approval.requested_by or approval.requested_by != user.id:
+            return
+
+        run = self.db.query(AgentRun).filter(AgentRun.id == run_id).first()
+        if run:
+            self._record_handoff(
+                run,
+                from_agent="approval",
+                content=f"高风险工具 {approval.tool_name} 触发同人审批拦截，需要非申请人复核",
+                data={
+                    "eventType": "approval_separation_blocked",
+                    "toolName": approval.tool_name,
+                    "riskLevel": risk_level,
+                    "approvalId": approval.id,
+                    "requestedBy": approval.requested_by,
+                    "attemptedApprover": user.id,
+                    "requiredAction": "four_eyes_approval",
+                },
+            )
+        raise HTTPException(status_code=400, detail="高风险生产操作不能由申请人本人审批，请更换非申请人管理员复核")
 
     def _assert_production_write_ready(self, run_id: str, approval: AgentApproval, risk_level: str) -> None:
         """审批通过前复核生产就绪状态，阻止在关键接入缺失时执行写操作。"""

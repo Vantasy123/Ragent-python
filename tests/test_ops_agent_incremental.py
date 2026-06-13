@@ -999,6 +999,7 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         self.Session = sessionmaker(bind=self.engine)
         self.db = self.Session()
         self.user = User(id="user-1", username="admin", nickname="管理员", password_hash="x", role="admin")
+        self.approver = User(id="user-2", username="sre", nickname="值班 SRE", password_hash="x", role="admin")
         self.trace = TraceRun(id="trace-1", status="running")
         self.run = AgentRun(id="run-1", trace_id=self.trace.id, user_id=self.user.id, message="重启服务", status="running")
         self.tool_call = AgentToolCall(
@@ -1019,7 +1020,7 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
             status="pending",
             requested_by=self.user.id,
         )
-        self.db.add_all([self.user, self.trace, self.run, self.tool_call, self.approval])
+        self.db.add_all([self.user, self.approver, self.trace, self.run, self.tool_call, self.approval])
         self.db.commit()
 
     def tearDown(self) -> None:
@@ -1030,7 +1031,7 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         toolkit = FakeToolkit()
         service.toolkit = toolkit
 
-        result = await service.approve(self.run.id, self.approval.id, True, "同意", self.user)
+        result = await service.approve(self.run.id, self.approval.id, True, "同意", self.approver)
 
         self.assertEqual(result["status"], "approved")
         self.assertTrue(toolkit.called)
@@ -1041,6 +1042,29 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(span.metadata_json["context"]["toolName"], "write_tool")
         self.assertNotEqual(span.metadata_json["input"], span.metadata_json["output"])
 
+    async def test_approval_blocks_self_approved_high_risk_write(self) -> None:
+        """申请人不能批准自己发起的高风险写操作，必须交给非申请人复核。"""
+
+        service = OpsAgentService(self.db)
+        toolkit = FakeToolkit()
+        service.toolkit = toolkit
+
+        with self.assertRaises(HTTPException) as context:
+            await service.approve(self.run.id, self.approval.id, True, "自己同意", self.user)
+
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertIn("不能由申请人本人审批", context.exception.detail)
+        self.assertFalse(toolkit.called)
+        self.db.refresh(self.approval)
+        self.db.refresh(self.tool_call)
+        self.assertEqual(self.approval.status, "pending")
+        self.assertIsNone(self.approval.approved_by)
+        self.assertEqual(self.tool_call.status, "blocked")
+        handoff = self.db.query(AgentCollaboration).filter(AgentCollaboration.run_id == self.run.id).one()
+        self.assertEqual(handoff.data["eventType"], "approval_separation_blocked")
+        self.assertEqual(handoff.data["attemptedApprover"], self.user.id)
+        self.assertEqual(handoff.data["requiredAction"], "four_eyes_approval")
+
     async def test_approval_blocks_write_when_aiops_readiness_blocked(self) -> None:
         """AIOps 生产就绪检查阻塞时，即使人工批准也不能执行写操作。"""
 
@@ -1050,7 +1074,7 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         service.readiness_service = FakeReadinessService("blocked")  # type: ignore[assignment]
 
         with self.assertRaises(HTTPException) as context:
-            await service.approve(self.run.id, self.approval.id, True, "同意", self.user)
+            await service.approve(self.run.id, self.approval.id, True, "同意", self.approver)
 
         self.assertEqual(context.exception.status_code, 400)
         self.assertIn("生产就绪检查未通过", str(context.exception.detail))
@@ -1075,7 +1099,7 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         toolkit = FakeToolkit()
         service.toolkit = toolkit
 
-        result = await service.approve(self.run.id, self.approval.id, True, "同意", self.user)
+        result = await service.approve(self.run.id, self.approval.id, True, "同意", self.approver)
 
         self.assertEqual(result["status"], "approved")
         self.assertEqual(result["verification"]["toolName"], "api_health_check")
@@ -1110,7 +1134,7 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         toolkit.fail_metric = "memory_percent"
         service.toolkit = toolkit
 
-        result = await service.approve(self.run.id, self.approval.id, True, "同意", self.user)
+        result = await service.approve(self.run.id, self.approval.id, True, "同意", self.approver)
 
         self.assertEqual(result["status"], "approved")
         self.assertEqual(result["verification"]["status"], "partial")
@@ -1276,11 +1300,11 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         toolkit = FakeToolkit()
         service.toolkit = toolkit
 
-        await service.approve(self.run.id, self.approval.id, True, "同意", self.user)
+        await service.approve(self.run.id, self.approval.id, True, "同意", self.approver)
         toolkit.called = False
 
         with self.assertRaises(HTTPException) as context:
-            await service.approve(self.run.id, self.approval.id, True, "再次同意", self.user)
+            await service.approve(self.run.id, self.approval.id, True, "再次同意", self.approver)
 
         self.assertEqual(context.exception.status_code, 400)
         self.assertIn("重复", context.exception.detail)
