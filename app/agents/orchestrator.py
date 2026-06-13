@@ -127,6 +127,8 @@ AGENT_REGISTRY = {
     "planner": {"name": "计划 Agent", "description": "查询知识库并生成运维执行计划"},
     "executor": {"name": "执行 Agent", "description": "按计划单步调用白名单工具"},
     "replanner": {"name": "重规划 Agent", "description": "根据观察结果判断完成、继续或修订计划"},
+    "verification": {"name": "验证 Agent", "description": "在审批执行后检查健康接口、代理链路和指标趋势"},
+    "audit": {"name": "审计 Agent", "description": "记录计划、执行、审批、验证和人工接管全过程"},
     "diagnostics": {"name": "诊断 Agent", "description": "兼容旧前端展示的诊断能力"},
     "monitor": {"name": "监控 Agent", "description": "兼容旧前端展示的监控能力"},
     "knowledge": {"name": "知识 Agent", "description": "检索 Runbook、历史事故和架构文档，辅助生成修复与回滚方案"},

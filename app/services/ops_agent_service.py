@@ -250,6 +250,7 @@ class OpsAgentService:
             "tool_call": "tool_call",
             "replan_decision": "replanner",
             "approval_required": "approval_required",
+            "audit_checkpoint": "audit",
             "final_answer": "final_answer",
         }
         operation = operation_map.get(event_type)

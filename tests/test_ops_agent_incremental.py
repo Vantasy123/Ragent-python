@@ -11,7 +11,7 @@ from sqlalchemy.pool import StaticPool
 from app.api.routers.ops_agent import router as ops_agent_router
 from app.agents.base import AgentStep, ToolSpec
 from app.agents.ops_graph import OpsLangGraphRunner
-from app.agents.orchestrator import OrchestratorAgent, PlannerAgent, ReplanDecision, StepExecutorAgent
+from app.agents.orchestrator import AGENT_REGISTRY, OrchestratorAgent, PlannerAgent, ReplanDecision, StepExecutorAgent
 from app.agents.tool_registry import ToolCallRequest, ToolCallResult, UnifiedTool, UnifiedToolRegistry
 from app.agents.tools import OpsToolkit
 from app.core.database import Base, get_db
@@ -89,6 +89,14 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(item["isReadOnly"])
         self.assertFalse(item["requiresApproval"])
+
+    def test_agent_registry_exposes_verification_and_audit_agents(self) -> None:
+        """运维 Agent 团队应显式暴露验证 Agent 和审计 Agent。"""
+
+        self.assertIn("verification", AGENT_REGISTRY)
+        self.assertIn("audit", AGENT_REGISTRY)
+        self.assertIn("验证", AGENT_REGISTRY["verification"]["name"])
+        self.assertIn("审计", AGENT_REGISTRY["audit"]["name"])
 
     async def test_safe_read_command_executes_without_approval(self) -> None:
         """只读命令模板应直接执行，不能进入审批。"""
@@ -887,6 +895,18 @@ class OpsGraphRunnerTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(approvals[0]["tool"], "write_tool")
         self.assertEqual(registry.calls, [])
 
+    async def test_final_node_emits_audit_checkpoint(self) -> None:
+        """每轮运维运行结束前应由审计 Agent 输出结构化审计检查点。"""
+
+        registry = FakeRegistry()
+
+        events = await self._run(registry, [AgentStep("读取状态", "read_tool")], True)
+
+        audit_events = [event for event in events if event["type"] == "audit_checkpoint"]
+        self.assertEqual(audit_events[0]["agent"], "audit")
+        self.assertEqual(audit_events[0]["result"]["data"]["metrics"]["plannedStepCount"], 1)
+        self.assertEqual(audit_events[0]["result"]["data"]["checks"][0]["code"], "plan_recorded")
+
 
 class FakeToolkit:
     """审批测试用的受控工具箱。"""
@@ -1187,6 +1207,28 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row.to_agent, "human_sre")
         self.assertEqual(row.data["eventType"], "tool_failure")
         self.assertIn("人工复核", row.content)
+
+    def test_audit_checkpoint_writes_trace_span(self) -> None:
+        """审计检查点应写入 Trace，便于回放计划、执行和审批完整性。"""
+
+        service = OpsAgentService(self.db)
+        trace_service = TraceService(self.db)
+        event = {
+            "type": "audit_checkpoint",
+            "agent": "audit",
+            "status": "passed",
+            "result": {
+                "success": True,
+                "summary": "审计检查完成",
+                "data": {"metrics": {"plannedStepCount": 1}, "checks": [{"code": "plan_recorded", "status": "passed"}]},
+            },
+        }
+
+        service._persist_trace_event(trace_service, self.trace.id, event)
+
+        span = self.db.query(TraceSpan).filter(TraceSpan.trace_id == self.trace.id, TraceSpan.operation == "audit").one()
+        self.assertEqual(span.metadata_json["context"]["agent"], "audit")
+        self.assertEqual(span.metadata_json["output"]["result"]["data"]["metrics"]["plannedStepCount"], 1)
 
     def test_approval_required_records_handoff_and_run_detail(self) -> None:
         """高风险审批阻塞应进入人工接管审计，并在运行详情中返回。"""

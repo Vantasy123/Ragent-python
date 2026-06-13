@@ -15,6 +15,8 @@ class AgentRole(str, Enum):
     MONITOR = "monitor"
     EXECUTOR = "executor"
     KNOWLEDGE = "knowledge"
+    VERIFICATION = "verification"
+    AUDIT = "audit"
 
 
 class StepStatus(str, Enum):

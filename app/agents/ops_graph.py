@@ -381,14 +381,83 @@ class OpsLangGraphRunner:
         final_report = self.orchestrator._build_report(task, completed, decision)
         duration_ms = self._elapsed_ms(final_started)
         memory = state.get("memory") or self.memory
+        audit = self._audit_checkpoint(completed, decision)
         return {
             "finalReport": final_report,
             "events": [
+                {
+                    "type": "audit_checkpoint",
+                    "agent": "audit",
+                    "status": audit["status"],
+                    "message": audit["summary"],
+                    "result": {"success": audit["status"] != "failed", "summary": audit["summary"], "data": audit},
+                },
                 {"type": "report", "agent": self.orchestrator.name, "content": final_report, "memory": memory.to_dict()},
                 {"type": "final_answer", "agent": self.orchestrator.name, "durationMs": duration_ms, "content": final_report},
                 {"type": "done", "agent": self.orchestrator.name, "status": "completed", "content": final_report},
             ],
         }
+
+    def _audit_checkpoint(self, steps: list[AgentStep], decision: Any) -> dict[str, Any]:
+        """生成本轮运行的审计检查点，证明计划、执行、审批和人工接管都有记录。"""
+
+        total = len(steps)
+        failed = len([step for step in steps if self._status_value(step) == StepStatus.FAILED.value])
+        blocked = len([step for step in steps if self._status_value(step) == StepStatus.BLOCKED.value])
+        tool_calls = len([step for step in steps if step.tool_name])
+        recorded_results = len([step for step in steps if step.tool_name and step.result])
+        approval_required = len(
+            [
+                step
+                for step in steps
+                if isinstance(step.result, dict)
+                and (step.result.get("requiresApproval") or step.result.get("error") == "approval_required")
+            ]
+        )
+        action = str(getattr(decision, "action", "") or "")
+        status = "blocked" if blocked or action == "blocked" else "failed" if failed else "passed"
+        checks = [
+            {
+                "code": "plan_recorded",
+                "status": "passed" if total else "warning",
+                "message": f"已记录 {total} 个计划步骤",
+            },
+            {
+                "code": "tool_results_recorded",
+                "status": "passed" if recorded_results == tool_calls else "warning",
+                "message": f"已记录 {recorded_results}/{tool_calls} 个工具结果",
+            },
+            {
+                "code": "approval_gate",
+                "status": "passed" if approval_required == blocked else "warning",
+                "message": f"{approval_required} 个高风险操作进入审批，{blocked} 个步骤处于阻塞/等待人工处理",
+            },
+            {
+                "code": "human_handoff",
+                "status": "passed" if not blocked else "warning",
+                "message": "无需人工接管" if not blocked else "存在等待人工审批或接管的步骤",
+            },
+        ]
+        return {
+            "status": status,
+            "summary": f"审计检查完成：计划 {total} 步，工具结果 {recorded_results}/{tool_calls}，审批阻塞 {blocked} 项",
+            "metrics": {
+                "plannedStepCount": total,
+                "toolCallCount": tool_calls,
+                "recordedToolResultCount": recorded_results,
+                "failedStepCount": failed,
+                "blockedStepCount": blocked,
+                "approvalRequiredCount": approval_required,
+            },
+            "checks": checks,
+            "decision": {"action": action, "reason": str(getattr(decision, "reason", "") or "")},
+        }
+
+    @staticmethod
+    def _status_value(step: AgentStep) -> str:
+        """统一读取步骤状态，兼容枚举和字符串。"""
+
+        return step.status.value if isinstance(step.status, StepStatus) else str(step.status)
 
     def _route_after_planner(self, state: OpsGraphState) -> str:
         """Planner 后根据是否有计划决定执行或直接收尾。"""

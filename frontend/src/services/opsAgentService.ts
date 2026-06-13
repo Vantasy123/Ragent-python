@@ -10,6 +10,7 @@ export type OpsAgentEvent = {
   agent?: string
   tool?: string
   args?: Record<string, unknown>
+  step?: Record<string, unknown>
   content?: string
   message?: string
   status?: string
@@ -60,9 +61,13 @@ export type OpsPostmortemReport = {
 
 export const AGENT_THEME: Record<string, { color: string; label: string; icon: string }> = {
   orchestrator: { color: '#2563eb', label: '编排智能体', icon: '控' },
+  planner: { color: '#0f766e', label: '计划智能体', icon: '计' },
+  replanner: { color: '#0891b2', label: '重规划智能体', icon: '调' },
   diagnostics: { color: '#16a34a', label: '诊断智能体', icon: '诊' },
   monitor: { color: '#ea580c', label: '监控智能体', icon: '监' },
   executor: { color: '#dc2626', label: '执行智能体', icon: '执' },
+  verification: { color: '#059669', label: '验证智能体', icon: '验' },
+  audit: { color: '#475569', label: '审计智能体', icon: '审' },
   knowledge: { color: '#7c3aed', label: '知识智能体', icon: '知' },
 }
 

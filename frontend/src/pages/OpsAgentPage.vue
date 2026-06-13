@@ -624,6 +624,7 @@ function formatEventType(type: string): string {
     tool_call: '工具调用',
     observation: '观察结果',
     approval_required: '等待审批',
+    audit_checkpoint: '审计检查',
     agent_done: '智能体完成',
     report: '综合报告',
     done: '运行完成',
@@ -650,6 +651,9 @@ function eventText(event: OpsAgentEvent): string {
   }
   if (event.type === 'replan_decision') {
     return String(event.reason || '已完成一次重规划判断。')
+  }
+  if (event.type === 'audit_checkpoint') {
+    return String(event.result?.summary || event.message || '审计智能体已记录本轮运行检查点。')
   }
   if (event.type === 'final_answer') {
     return event.content || '已生成最终输出。'
@@ -691,6 +695,7 @@ function toggleEventExpanded(event: OpsAgentEvent, index: number) {
 function timelineItemClass(event: OpsAgentEvent): string {
   if (event.type === 'error') return 'timeline-error'
   if (event.type === 'approval_required') return 'timeline-approval'
+  if (event.type === 'audit_checkpoint') return 'timeline-report'
   if (event.type === 'report') return 'timeline-report'
   if (event.type === 'done') return 'timeline-done'
   return ''
