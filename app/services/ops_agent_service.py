@@ -413,84 +413,126 @@ class OpsAgentService:
 
         if not execution_result.success:
             return None
-        request = self._verification_request_for_approval(approval)
-        if request is None:
-            return None
-        tool = registry.tools.get(request.name)
-        if tool is None:
-            return None
-        risk_level, requires_approval = tool.policy_for(request.args)
-        if requires_approval:
+        requests = self._verification_requests_for_approval(approval)
+        if not requests:
             return None
 
-        started = time.perf_counter()
-        verification_result = await registry.call(request)
-        duration_ms = max(1, int((time.perf_counter() - started) * 1000))
-        safe_args = self._redact_for_audit(request.args)
-        safe_result = self._redact_for_audit(verification_result.to_dict())
-        tool_call = AgentToolCall(
-            run_id=run.id,
-            tool_name=request.name,
-            args=safe_args,
-            status="success" if verification_result.success else "failed",
-            result=safe_result,
-            duration_ms=duration_ms,
-            risk_level=risk_level,
-            approval_status="not_required",
-            error_message=verification_result.error,
-        )
-        self.db.add(tool_call)
-        span = trace_service.create_span(
-            run.trace_id or "",
-            "verification",
-            input_data={"eventType": "post_approval_verification", "toolName": request.name, "tool": request.name, "args": safe_args},
-            metadata={
-                "runId": run.id,
-                "agent": "verification",
+        checks: list[dict[str, Any]] = []
+        for request in requests:
+            tool = registry.tools.get(request.name)
+            if tool is None:
+                continue
+            risk_level, requires_approval = tool.policy_for(request.args)
+            if requires_approval or risk_level != "read":
+                continue
+
+            started = time.perf_counter()
+            verification_result = await registry.call(request)
+            duration_ms = max(1, int((time.perf_counter() - started) * 1000))
+            safe_args = self._redact_for_audit(request.args)
+            safe_result = self._redact_for_audit(verification_result.to_dict())
+            status = "success" if verification_result.success else "failed"
+            tool_call = AgentToolCall(
+                run_id=run.id,
+                tool_name=request.name,
+                args=safe_args,
+                status=status,
+                result=safe_result,
+                duration_ms=duration_ms,
+                risk_level=risk_level,
+                approval_status="not_required",
+                error_message=verification_result.error,
+            )
+            self.db.add(tool_call)
+            span = trace_service.create_span(
+                run.trace_id or "",
+                "verification",
+                input_data={"eventType": "post_approval_verification", "toolName": request.name, "tool": request.name, "args": safe_args},
+                metadata={
+                    "runId": run.id,
+                    "agent": "verification",
+                    "toolName": request.name,
+                    "riskLevel": risk_level,
+                    "requiresApproval": False,
+                    "approvalId": approval.id,
+                    "sourceTool": approval.tool_name,
+                },
+            )
+            trace_service.complete_span(
+                span,
+                status="success" if verification_result.success else "error",
+                error_message=verification_result.error,
+                output_data={"summary": verification_result.summary, "result": safe_result},
+                duration_ms=duration_ms,
+            )
+            check = {
                 "toolName": request.name,
-                "riskLevel": risk_level,
-                "requiresApproval": False,
-                "approvalId": approval.id,
-                "sourceTool": approval.tool_name,
-            },
-        )
-        trace_service.complete_span(
-            span,
-            status="success" if verification_result.success else "error",
-            error_message=verification_result.error,
-            output_data={"summary": verification_result.summary, "result": safe_result},
-            duration_ms=duration_ms,
-        )
+                "args": safe_args,
+                "status": status,
+                "result": safe_result,
+            }
+            checks.append(check)
+            if not verification_result.success:
+                self._record_handoff(
+                    run,
+                    from_agent="verification",
+                    content=f"审批后验证工具 {request.name} 执行失败，需要人工复核修复效果",
+                    data={
+                        "eventType": "post_approval_verification_failed",
+                        "sourceTool": approval.tool_name,
+                        "toolName": request.name,
+                        "args": safe_args,
+                        "error": verification_result.error,
+                        "summary": verification_result.summary,
+                    },
+                    commit=False,
+                )
+        if not checks:
+            return None
+
+        first_check = checks[0]
+        success_count = len([item for item in checks if item["status"] == "success"])
+        aggregate_status = "success" if success_count == len(checks) else "partial" if success_count else "failed"
         return {
-            "toolName": request.name,
-            "args": safe_args,
-            "status": "success" if verification_result.success else "failed",
-            "result": safe_result,
+            "toolName": first_check["toolName"],
+            "args": first_check["args"],
+            "status": aggregate_status,
+            "result": first_check["result"],
+            "checks": checks,
+            "successCount": success_count,
+            "total": len(checks),
         }
 
-    def _verification_request_for_approval(self, approval: AgentApproval) -> ToolCallRequest | None:
+    def _verification_requests_for_approval(self, approval: AgentApproval) -> list[ToolCallRequest]:
         """根据已审批写操作选择后置验证工具，避免修复动作执行后无人确认效果。"""
 
         args = approval.args or {}
         tool_name = approval.tool_name
         service = str(args.get("service") or "")
         if tool_name == "compose_restart_service":
-            return self._service_health_verification(service)
+            return self._service_health_verifications(service)
         if tool_name == "safe_command":
             command_id = str(args.get("commandId") or args.get("command_id") or "")
             nested_args = args.get("args") if isinstance(args.get("args"), dict) else {}
             service = str(nested_args.get("service") or service)
             if command_id == "docker_restart" or "restart" in str(args.get("command") or "").lower():
-                return self._service_health_verification(service)
-        return None
+                return self._service_health_verifications(service)
+        return []
 
-    def _service_health_verification(self, service: str) -> ToolCallRequest:
-        """把服务名映射到重启后的只读健康验证工具。"""
+    def _service_health_verifications(self, service: str) -> list[ToolCallRequest]:
+        """把服务名映射到重启后的只读健康验证工具组。"""
 
         normalized = str(service or "").lower()
         if normalized in {"ragent-frontend", "frontend", "nginx", "front"}:
-            return ToolCallRequest("nginx_proxy_check", {})
-        return ToolCallRequest("api_health_check", {})
+            return [
+                ToolCallRequest("nginx_proxy_check", {}),
+                ToolCallRequest("frontend_health_check", {}),
+            ]
+        return [
+            ToolCallRequest("api_health_check", {}),
+            ToolCallRequest("metric_trend", {"metric": "cpu_percent", "minutes": 10}),
+            ToolCallRequest("metric_trend", {"metric": "memory_percent", "minutes": 10}),
+        ]
 
     def _redact_for_audit(self, value: Any) -> Any:
         """统一生成可落库、可展示的脱敏审计副本。"""

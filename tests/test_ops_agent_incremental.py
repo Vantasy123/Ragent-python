@@ -894,12 +894,16 @@ class FakeToolkit:
     def __init__(self) -> None:
         self.called = False
         self.read_called = False
+        self.read_calls: list[str] = []
+        self.fail_metric = ""
         self._tools = {
             "write_tool": self.write_tool,
             "read_tool": self.read_tool,
             "compose_restart_service": self.compose_restart_service,
             "api_health_check": self.api_health_check,
+            "frontend_health_check": self.frontend_health_check,
             "nginx_proxy_check": self.nginx_proxy_check,
+            "metric_trend": self.metric_trend,
         }
 
     @property
@@ -912,7 +916,9 @@ class FakeToolkit:
             ToolSpec("read_tool", "只读操作"),
             ToolSpec("compose_restart_service", "重启服务", {"service": "string"}, risk_level="write", requires_approval=True),
             ToolSpec("api_health_check", "检查后端健康接口"),
+            ToolSpec("frontend_health_check", "检查前端入口"),
             ToolSpec("nginx_proxy_check", "检查前端代理"),
+            ToolSpec("metric_trend", "查看指标趋势", {"metric": "string", "minutes": "integer"}),
         ]
 
     def write_tool(self, service: str = "api") -> dict:
@@ -929,11 +935,25 @@ class FakeToolkit:
 
     async def api_health_check(self) -> dict:
         self.read_called = True
+        self.read_calls.append("api_health_check")
         return {"success": True, "summary": "后端健康", "data": {"statusCode": 200}}
+
+    async def frontend_health_check(self) -> dict:
+        self.read_called = True
+        self.read_calls.append("frontend_health_check")
+        return {"success": True, "summary": "前端入口健康", "data": {"statusCode": 200}}
 
     async def nginx_proxy_check(self) -> dict:
         self.read_called = True
+        self.read_calls.append("nginx_proxy_check")
         return {"success": True, "summary": "前端代理健康", "data": {"statusCode": 200}}
+
+    async def metric_trend(self, metric: str = "cpu_percent", minutes: int = 30) -> dict:
+        self.read_called = True
+        self.read_calls.append(f"metric_trend:{metric}")
+        if metric == self.fail_metric:
+            return {"success": False, "summary": f"{metric} 指标查询失败", "error": "monitoring_query_failed"}
+        return {"success": True, "summary": f"{metric} 最近 {minutes} 分钟趋势正常", "data": {"metric": metric, "minutes": minutes}}
 
 
 class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
@@ -1003,18 +1023,53 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "approved")
         self.assertEqual(result["verification"]["toolName"], "api_health_check")
+        self.assertEqual(result["verification"]["status"], "success")
+        self.assertEqual(result["verification"]["successCount"], 3)
+        self.assertEqual(result["verification"]["total"], 3)
         self.assertTrue(toolkit.called)
         self.assertTrue(toolkit.read_called)
-        verification_call = (
+        self.assertEqual(toolkit.read_calls, ["api_health_check", "metric_trend:cpu_percent", "metric_trend:memory_percent"])
+        verification_calls = (
             self.db.query(AgentToolCall)
-            .filter(AgentToolCall.run_id == self.run.id, AgentToolCall.tool_name == "api_health_check")
+            .filter(AgentToolCall.run_id == self.run.id, AgentToolCall.approval_status == "not_required")
+            .all()
+        )
+        self.assertEqual(len(verification_calls), 3)
+        self.assertTrue(all(item.status == "success" for item in verification_calls))
+        spans = self.db.query(TraceSpan).filter(TraceSpan.trace_id == self.trace.id, TraceSpan.operation == "verification").all()
+        self.assertEqual(len(spans), 3)
+        self.assertTrue(all(span.metadata_json["context"]["sourceTool"] == "compose_restart_service" for span in spans))
+        self.assertTrue(all(span.metadata_json["output"]["result"]["success"] for span in spans))
+
+    async def test_post_verification_failure_records_handoff(self) -> None:
+        """审批后只读验证失败时，应记录人工复核事件，避免误判修复完成。"""
+
+        self.approval.tool_name = "compose_restart_service"
+        self.approval.args = {"service": "ragent-api"}
+        self.tool_call.tool_name = "compose_restart_service"
+        self.tool_call.args = {"service": "ragent-api"}
+        self.db.commit()
+        service = OpsAgentService(self.db)
+        toolkit = FakeToolkit()
+        toolkit.fail_metric = "memory_percent"
+        service.toolkit = toolkit
+
+        result = await service.approve(self.run.id, self.approval.id, True, "同意", self.user)
+
+        self.assertEqual(result["status"], "approved")
+        self.assertEqual(result["verification"]["status"], "partial")
+        self.assertEqual(result["verification"]["successCount"], 2)
+        self.assertEqual(result["verification"]["total"], 3)
+        failed_call = (
+            self.db.query(AgentToolCall)
+            .filter(AgentToolCall.run_id == self.run.id, AgentToolCall.tool_name == "metric_trend", AgentToolCall.status == "failed")
             .one()
         )
-        self.assertEqual(verification_call.status, "success")
-        self.assertEqual(verification_call.approval_status, "not_required")
-        span = self.db.query(TraceSpan).filter(TraceSpan.trace_id == self.trace.id, TraceSpan.operation == "verification").one()
-        self.assertEqual(span.metadata_json["context"]["sourceTool"], "compose_restart_service")
-        self.assertTrue(span.metadata_json["output"]["result"]["success"])
+        self.assertEqual(failed_call.error_message, "monitoring_query_failed")
+        handoff = self.db.query(AgentCollaboration).filter(AgentCollaboration.run_id == self.run.id).one()
+        self.assertEqual(handoff.from_agent, "verification")
+        self.assertEqual(handoff.data["eventType"], "post_approval_verification_failed")
+        self.assertEqual(handoff.data["toolName"], "metric_trend")
 
     def test_trace_service_redacts_sensitive_payloads(self) -> None:
         """Trace 入库前应递归脱敏，避免回放页面暴露凭证。"""
