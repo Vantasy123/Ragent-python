@@ -956,6 +956,20 @@ class FakeToolkit:
         return {"success": True, "summary": f"{metric} 最近 {minutes} 分钟趋势正常", "data": {"metric": metric, "minutes": minutes}}
 
 
+class FakeReadinessService:
+    """审批门禁测试用的 AIOps 就绪检查桩。"""
+
+    def __init__(self, status: str = "degraded") -> None:
+        self.status = status
+
+    def build(self) -> dict:
+        return {
+            "status": self.status,
+            "summary": "测试就绪状态",
+            "nextSteps": ["配置 monitoring.enabled、prometheus_url 和 alertmanager_url"],
+        }
+
+
 class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
     """验证审批执行链路和新 trace 结构。"""
 
@@ -1006,6 +1020,28 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         span = self.db.query(TraceSpan).filter(TraceSpan.trace_id == self.trace.id, TraceSpan.operation == "tool_call").first()
         self.assertEqual(span.metadata_json["context"]["toolName"], "write_tool")
         self.assertNotEqual(span.metadata_json["input"], span.metadata_json["output"])
+
+    async def test_approval_blocks_write_when_aiops_readiness_blocked(self) -> None:
+        """AIOps 生产就绪检查阻塞时，即使人工批准也不能执行写操作。"""
+
+        service = OpsAgentService(self.db)
+        toolkit = FakeToolkit()
+        service.toolkit = toolkit
+        service.readiness_service = FakeReadinessService("blocked")  # type: ignore[assignment]
+
+        with self.assertRaises(HTTPException) as context:
+            await service.approve(self.run.id, self.approval.id, True, "同意", self.user)
+
+        self.assertEqual(context.exception.status_code, 400)
+        self.assertIn("生产就绪检查未通过", str(context.exception.detail))
+        self.assertFalse(toolkit.called)
+        self.db.refresh(self.approval)
+        self.db.refresh(self.tool_call)
+        self.assertEqual(self.approval.status, "pending")
+        self.assertEqual(self.tool_call.status, "blocked")
+        handoff = self.db.query(AgentCollaboration).filter(AgentCollaboration.run_id == self.run.id).one()
+        self.assertEqual(handoff.data["eventType"], "aiops_readiness_blocked")
+        self.assertEqual(handoff.data["toolName"], "write_tool")
 
     async def test_approved_restart_runs_post_verification_and_writes_trace(self) -> None:
         """重启类写操作审批通过后，应自动执行只读健康验证并写入 trace。"""

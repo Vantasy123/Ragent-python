@@ -14,6 +14,7 @@ from app.agents.tools import OpsToolkit
 from app.core.text_sanitizer import redact_sensitive_payload
 from app.core.time_utils import to_shanghai_iso, utc_now_naive
 from app.domain.models import AgentApproval, AgentCollaboration, AgentRun, AgentStep as AgentStepModel, AgentToolCall, User
+from app.services.aiops_readiness_service import AIOpsReadinessService
 from app.services.chat_service import ConversationService
 from app.services.trace_service import TraceService
 
@@ -31,6 +32,7 @@ class OpsAgentService:
         """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.db = db
         self.toolkit = OpsToolkit()
+        self.readiness_service = AIOpsReadinessService()
 
     def list_tools(self) -> list[dict[str, Any]]:
         """返回可用工具目录，供后台工具面板展示。"""
@@ -357,6 +359,7 @@ class OpsAgentService:
 
         registry = UnifiedToolRegistry(include_ops=True, toolkit=self.toolkit)
         risk_level = self._validate_approval_policy(registry, approval)
+        self._assert_production_write_ready(run_id, approval, risk_level)
         tool_call.risk_level = risk_level
         approval.status = "approved"
         approval.approved_by = user.id
@@ -567,6 +570,39 @@ class OpsAgentService:
         if not requires_approval:
             raise HTTPException(status_code=400, detail="该工具调用当前不需要审批，拒绝通过审批接口执行")
         return risk_level
+
+    def _assert_production_write_ready(self, run_id: str, approval: AgentApproval, risk_level: str) -> None:
+        """审批通过前复核生产就绪状态，阻止在关键接入缺失时执行写操作。"""
+
+        if risk_level not in {"write", "admin", "danger"}:
+            return
+        readiness = self.readiness_service.build()
+        if readiness.get("status") != "blocked":
+            return
+
+        run = self.db.query(AgentRun).filter(AgentRun.id == run_id).first()
+        if run:
+            self._record_handoff(
+                run,
+                from_agent="approval",
+                content=f"AIOps 生产就绪检查未通过，拒绝执行高风险工具 {approval.tool_name}",
+                data={
+                    "eventType": "aiops_readiness_blocked",
+                    "toolName": approval.tool_name,
+                    "riskLevel": risk_level,
+                    "readinessStatus": readiness.get("status"),
+                    "summary": readiness.get("summary"),
+                    "nextSteps": readiness.get("nextSteps") or [],
+                },
+            )
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "AIOps 生产就绪检查未通过，已拒绝执行生产写操作",
+                "summary": readiness.get("summary"),
+                "nextSteps": readiness.get("nextSteps") or [],
+            },
+        )
 
     def list_approval_audit_logs(
         self,
