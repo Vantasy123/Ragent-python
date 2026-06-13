@@ -725,7 +725,21 @@ class OpsAgentService:
         run = self.db.query(AgentRun).filter(AgentRun.id == run_id).first()
         if not run:
             raise HTTPException(status_code=404, detail="运行记录不存在")
+        previous_status = run.status
         run.status = "stopped"
+        self._record_handoff(
+            run,
+            from_agent="human_sre",
+            content=f"管理员 {user.username} 手动停止运维运行，后续由人工接管",
+            data={
+                "eventType": "manual_stop",
+                "operatorId": user.id,
+                "operatorName": user.username,
+                "previousStatus": previous_status,
+                "requiredAction": "human_takeover",
+            },
+            commit=False,
+        )
         self.db.commit()
         return {"id": run.id, "status": run.status}
 

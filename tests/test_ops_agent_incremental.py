@@ -1338,6 +1338,27 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail["collaborations"][0]["eventType"], "handoff")
         self.assertEqual(detail["collaborations"][0]["toAgent"], "human_sre")
 
+    def test_stop_records_manual_handoff_and_run_detail(self) -> None:
+        """管理员手动停止运维运行时，应记录人工接管审计事件。"""
+
+        service = OpsAgentService(self.db)
+
+        result = service.stop(self.run.id, self.user)
+
+        self.assertEqual(result["status"], "stopped")
+        self.db.refresh(self.run)
+        self.assertEqual(self.run.status, "stopped")
+        row = self.db.query(AgentCollaboration).filter(AgentCollaboration.run_id == self.run.id).one()
+        self.assertEqual(row.event_type, "handoff")
+        self.assertEqual(row.from_agent, "human_sre")
+        self.assertEqual(row.data["eventType"], "manual_stop")
+        self.assertEqual(row.data["operatorId"], self.user.id)
+        self.assertEqual(row.data["previousStatus"], "running")
+        self.assertEqual(row.data["requiredAction"], "human_takeover")
+        detail = service.get_run(self.run.id)
+        self.assertEqual(detail["collaborations"][0]["data"]["eventType"], "manual_stop")
+        self.assertIn("手动停止", detail["collaborations"][0]["content"])
+
     async def test_rejected_approval_does_not_execute_tool(self) -> None:
         service = OpsAgentService(self.db)
         toolkit = FakeToolkit()
