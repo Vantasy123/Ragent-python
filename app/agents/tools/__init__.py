@@ -45,6 +45,42 @@ class OpsToolkit:
     - 写操作工具必须在 ToolSpec 中标记 requires_approval=True，由上层审批后执行。
     """
 
+    SENSITIVE_COMMAND_KEYS = {
+        "authorization",
+        "api_key",
+        "apikey",
+        "access_key",
+        "secret_key",
+        "client_secret",
+        "credential",
+        "credentials",
+        "password",
+        "passwd",
+        "pwd",
+        "private_key",
+        "secret",
+        "token",
+    }
+    SENSITIVE_COMMAND_TEXT_MARKERS = (
+        "--password",
+        "--password-stdin",
+        "--token",
+        "--secret",
+        "--api-key",
+        "--apikey",
+        "--access-key",
+        "--secret-key",
+        "authorization=",
+        "password=",
+        "passwd=",
+        "token=",
+        "secret=",
+        "api_key=",
+        "apikey=",
+        "access_key=",
+        "secret_key=",
+    )
+
     def __init__(self) -> None:
         # Docker 命令的工作目录由 compose override 注入，通常指向项目部署目录。
         """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
@@ -266,6 +302,9 @@ class OpsToolkit:
                 return parsed
             command_id = parsed["commandId"]
             args.update(parsed.get("args") or {})
+        sensitive_reason = self._safe_command_sensitive_reason(args, str(payload.get("command") or ""))
+        if sensitive_reason:
+            return {"success": False, "error": sensitive_reason}
         template = self.safe_command_templates.get(command_id)
         if not template:
             return {"success": False, "error": f"命令不在白名单中：{command_id or payload.get('command') or '空命令'}"}
@@ -328,6 +367,37 @@ class OpsToolkit:
             tail = int(args.get("tail") or 120)
             if tail <= 0 or tail > 1000:
                 raise ValueError("日志 tail 必须在 1 到 1000 之间")
+
+    def _safe_command_sensitive_reason(self, args: dict[str, Any], command: str = "") -> str:
+        """检查命令参数是否携带凭证，防止 LLM 把密钥送入执行器。"""
+
+        sensitive_key = self._find_sensitive_command_key(args)
+        if sensitive_key:
+            return f"命令参数包含敏感凭证字段：{sensitive_key}"
+        lowered_command = command.lower()
+        if lowered_command and any(marker in lowered_command for marker in self.SENSITIVE_COMMAND_TEXT_MARKERS):
+            return "命令文本包含敏感凭证参数"
+        return ""
+
+    def _find_sensitive_command_key(self, value: Any, prefix: str = "") -> str:
+        """递归查找敏感字段名，只返回字段路径，不回显字段值。"""
+
+        if isinstance(value, dict):
+            for key, item in value.items():
+                key_text = str(key)
+                normalized = key_text.replace("-", "_").lower()
+                path = f"{prefix}.{key_text}" if prefix else key_text
+                if normalized in self.SENSITIVE_COMMAND_KEYS or any(marker in normalized for marker in self.SENSITIVE_COMMAND_KEYS if len(marker) > 3):
+                    return path
+                found = self._find_sensitive_command_key(item, path)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                found = self._find_sensitive_command_key(item, f"{prefix}[{index}]" if prefix else f"[{index}]")
+                if found:
+                    return found
+        return ""
 
     def _docker_logs_args(self, payload: dict[str, Any]) -> list[str]:
         """构造 docker logs 参数，容器 ID 由白名单服务名解析而来。"""

@@ -159,6 +159,40 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.risk_level, "danger")
         self.assertFalse(result.requires_approval)
 
+    async def test_safe_command_rejects_sensitive_args_before_approval(self) -> None:
+        """命令模板参数不能携带 token、password 等凭证字段，避免 LLM 把密钥送入执行器。"""
+
+        toolkit = OpsToolkit()
+        toolkit.executor_enabled = True
+        captured: list[list[str]] = []
+        toolkit._run_docker = lambda args, timeout=20: captured.append(args) or {"success": True, "summary": "ok", "data": {}, "error": ""}  # type: ignore[method-assign]
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=toolkit)
+        request = ToolCallRequest("safe_command", {"commandId": "docker_logs", "args": {"service": "ragent-api", "apiToken": "secret-token"}})
+
+        risk_level, requires_approval = registry.tools["safe_command"].policy_for(request.args)
+        result = await registry.call(request, skip_approval=True)
+
+        self.assertEqual(risk_level, "danger")
+        self.assertFalse(requires_approval)
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "command_not_allowed")
+        self.assertIn("敏感凭证字段", result.summary)
+        self.assertEqual(captured, [])
+
+    async def test_safe_command_rejects_sensitive_command_text(self) -> None:
+        """命令文本里出现凭证参数时，即使命中白名单命令也应拒绝。"""
+
+        toolkit = OpsToolkit()
+        toolkit.executor_enabled = True
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=toolkit)
+
+        result = await registry.call(ToolCallRequest("safe_command", {"command": "docker ps --token secret-token"}), skip_approval=True)
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "command_not_allowed")
+        self.assertEqual(result.risk_level, "danger")
+        self.assertFalse(result.requires_approval)
+
     async def test_alert_correlations_tool_is_readonly_and_callable(self) -> None:
         """告警关联分析应作为只读工具暴露给运维 Agent。"""
 
