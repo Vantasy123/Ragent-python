@@ -477,10 +477,11 @@ class OpsAgentService:
             }
             checks.append(check)
             if not verification_result.success:
+                rollback_candidates = self._rollback_candidates_for_approval(approval, request.name)
                 self._record_handoff(
                     run,
                     from_agent="verification",
-                    content=f"审批后验证工具 {request.name} 执行失败，需要人工复核修复效果",
+                    content=f"审批后验证工具 {request.name} 执行失败，需要人工复核修复效果并评估回滚",
                     data={
                         "eventType": "post_approval_verification_failed",
                         "sourceTool": approval.tool_name,
@@ -488,6 +489,9 @@ class OpsAgentService:
                         "args": safe_args,
                         "error": verification_result.error,
                         "summary": verification_result.summary,
+                        "rollbackRequired": True,
+                        "rollbackCandidates": rollback_candidates,
+                        "approvalRequired": True,
                     },
                     commit=False,
                 )
@@ -537,6 +541,24 @@ class OpsAgentService:
             ToolCallRequest("metric_trend", {"metric": "cpu_percent", "minutes": 10}),
             ToolCallRequest("metric_trend", {"metric": "memory_percent", "minutes": 10}),
         ]
+
+    def _rollback_candidates_for_approval(self, approval: AgentApproval, failed_verification_tool: str) -> list[str]:
+        """根据写操作和失败验证项生成保守回滚候选，只记录建议，不自动执行。"""
+
+        args = approval.args or {}
+        tool_name = approval.tool_name
+        service = str(args.get("service") or "")
+        if tool_name == "safe_command":
+            nested_args = args.get("args") if isinstance(args.get("args"), dict) else {}
+            service = str(nested_args.get("service") or service)
+        service_label = service or "目标服务"
+        candidates = [
+            f"暂停继续对 {service_label} 执行自动化写操作，保留现场日志、指标和 Trace 证据",
+            f"由 SRE 复核 {failed_verification_tool} 失败原因，确认是否需要按 Runbook 回滚 {service_label}",
+            f"若确认修复动作导致异常扩大，按 {service_label} 的发布/变更记录回滚到上一稳定版本或切回健康实例",
+            "回滚动作必须重新走审批，并在回滚后重复健康检查、指标趋势和告警验证",
+        ]
+        return candidates
 
     def _redact_for_audit(self, value: Any) -> Any:
         """统一生成可落库、可展示的脱敏审计副本。"""

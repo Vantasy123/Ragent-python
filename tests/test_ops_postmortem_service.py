@@ -168,8 +168,10 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertEqual(checks["approval_gate"]["status"], "passed")
         self.assertEqual(checks["post_verification"]["status"], "passed")
         self.assertEqual(checks["post_verification_quality"]["status"], "passed")
+        self.assertEqual(checks["rollback_path"]["status"], "passed")
         self.assertEqual(checks["audit_checkpoint"]["status"], "passed")
         self.assertIn("审计闭环完整", payload["summary"])
+        self.assertIn("0 个回滚建议", payload["summary"])
         self.assertIn("1 个审计检查点", payload["summary"])
         self.assertIn("告警降噪 1 条", payload["summary"])
         self.assertTrue(payload["improvementActions"])
@@ -191,6 +193,20 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         """审批后验证失败时，复盘应标记验证质量风险并给出改进动作。"""
 
         self.verification_span.status = "error"
+        rollback_handoff = AgentCollaboration(
+            run=self.run,
+            from_agent="verification",
+            to_agent="human_sre",
+            event_type="handoff",
+            content="审批后验证失败，需要评估回滚",
+            data={
+                "eventType": "post_approval_verification_failed",
+                "rollbackRequired": True,
+                "rollbackCandidates": ["按 Runbook 回滚到上一稳定版本"],
+                "approvalRequired": True,
+            },
+        )
+        self.db.add(rollback_handoff)
         self.db.commit()
 
         payload = OpsPostmortemService(self.db).build(self.run.id)
@@ -198,8 +214,24 @@ class OpsPostmortemServiceTest(unittest.TestCase):
 
         self.assertEqual(checks["post_verification_quality"]["status"], "failed")
         self.assertEqual(checks["post_verification_quality"]["severity"], "warning")
+        self.assertEqual(checks["rollback_path"]["status"], "passed")
         self.assertEqual(payload["metrics"]["verificationSuccessRate"], 0)
+        self.assertEqual(payload["metrics"]["rollbackRecommendationCount"], 1)
         self.assertTrue(any("验证失败" in item for item in payload["improvementActions"]))
+
+    def test_build_postmortem_flags_missing_rollback_path_after_failed_verification(self) -> None:
+        """验证失败但没有回滚候选时，复盘应标记回滚路径风险。"""
+
+        self.verification_span.status = "error"
+        self.db.commit()
+
+        payload = OpsPostmortemService(self.db).build(self.run.id)
+        checks = {item["code"]: item for item in payload["complianceChecks"]}
+
+        self.assertEqual(checks["rollback_path"]["status"], "failed")
+        self.assertEqual(checks["rollback_path"]["severity"], "warning")
+        self.assertEqual(payload["metrics"]["rollbackRecommendationCount"], 0)
+        self.assertTrue(any("回滚候选" in item for item in payload["improvementActions"]))
 
     def test_build_postmortem_flags_missing_audit_checkpoint(self) -> None:
         """缺少审计 Agent 检查点时，复盘应标记审计闭环风险。"""

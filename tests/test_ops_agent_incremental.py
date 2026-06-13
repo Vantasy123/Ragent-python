@@ -1126,6 +1126,9 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(handoff.from_agent, "verification")
         self.assertEqual(handoff.data["eventType"], "post_approval_verification_failed")
         self.assertEqual(handoff.data["toolName"], "metric_trend")
+        self.assertTrue(handoff.data["rollbackRequired"])
+        self.assertTrue(handoff.data["approvalRequired"])
+        self.assertTrue(any("回滚" in item for item in handoff.data["rollbackCandidates"]))
 
     def test_trace_service_redacts_sensitive_payloads(self) -> None:
         """Trace 入库前应递归脱敏，避免回放页面暴露凭证。"""

@@ -201,6 +201,22 @@ class OpsPostmortemService:
                 "warning",
             )
         )
+        rollback_handoffs = [
+            item
+            for item in collaborations
+            if isinstance(item.data, dict)
+            and item.data.get("eventType") == "post_approval_verification_failed"
+            and item.data.get("rollbackRequired")
+            and item.data.get("rollbackCandidates")
+        ]
+        checks.append(
+            self._check(
+                "rollback_path",
+                not failed_verification or bool(rollback_handoffs),
+                "验证失败场景已记录回滚候选和审批要求" if not failed_verification or rollback_handoffs else "验证失败场景缺少回滚候选或审批要求",
+                "warning",
+            )
+        )
 
         blocked_or_failed = [item for item in tool_calls if item.status in {"blocked", "failed"}]
         handoff_exists = any(item.event_type == "handoff" for item in collaborations)
@@ -254,6 +270,11 @@ class OpsPostmortemService:
         successful_tools = [item for item in tool_calls if item.status == "success"]
         verification_spans = [item for item in spans if item.operation == "verification"]
         successful_verifications = [item for item in verification_spans if item.status in {"success", "ok"}]
+        rollback_handoffs = [
+            item
+            for item in collaborations
+            if isinstance(item.data, dict) and item.data.get("rollbackRequired") and item.data.get("rollbackCandidates")
+        ]
         audit_spans = [item for item in spans if item.operation == "audit"]
         latest_audit_payload = self._audit_payload(audit_spans[-1]) if audit_spans else {}
         audit_metrics = latest_audit_payload.get("metrics") if isinstance(latest_audit_payload.get("metrics"), dict) else {}
@@ -276,6 +297,7 @@ class OpsPostmortemService:
             "successfulVerificationCount": len(successful_verifications),
             "verificationSuccessRate": round(len(successful_verifications) / len(verification_spans), 4) if verification_spans else 0,
             "closedLoopCoverageRate": round(len(successful_verifications) / approved_count, 4) if approved_count else 1,
+            "rollbackRecommendationCount": len(rollback_handoffs),
             "alertCount": noise["alertCount"],
             "alertGroupCount": noise["alertGroupCount"],
             "alertNoiseReductionCount": noise["alertNoiseReductionCount"],
@@ -318,6 +340,8 @@ class OpsPostmortemService:
             actions.append("为所有写操作补充执行后只读验证工具，形成执行-验证闭环")
         if "post_verification_quality" in failed_codes:
             actions.append("验证失败时自动进入人工复核，并把失败验证项纳入 Runbook 验收标准")
+        if "rollback_path" in failed_codes:
+            actions.append("为验证失败场景补充回滚候选、审批要求和回滚后验证指标")
         if "human_handoff" in failed_codes:
             actions.append("工具失败或阻塞时自动写入人工接管事件，便于 SRE 追溯")
         if "sensitive_redaction" in failed_codes:
@@ -342,8 +366,8 @@ class OpsPostmortemService:
         return (
             f"{status}：执行 {metrics['stepCount']} 个步骤、{metrics['toolCallCount']} 次工具调用、"
             f"{metrics['approvalCount']} 次审批、{metrics['verificationCount']} 次验证、"
-            f"{metrics['auditCheckpointCount']} 个审计检查点、告警降噪 {metrics['alertNoiseReductionCount']} 条、"
-            f"{metrics['handoffCount']} 次人工接管"
+            f"{metrics['rollbackRecommendationCount']} 个回滚建议、{metrics['auditCheckpointCount']} 个审计检查点、"
+            f"告警降噪 {metrics['alertNoiseReductionCount']} 条、{metrics['handoffCount']} 次人工接管"
         )
 
     def _users_by_id(self, user_ids: set[str]) -> dict[str, User]:
