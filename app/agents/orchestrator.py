@@ -320,24 +320,9 @@ class PlannerAgent:
         command_step = self._safe_command_step(task)
         if command_step:
             return [command_step]
-        steps = [
-            PlanStep("检查 Compose 服务状态", "compose_ps", reasoning="先确认核心服务是否存在异常状态"),
-            PlanStep("分析活跃告警关联与影响面", "alert_correlations", reasoning="对告警做降噪聚合，提取影响面和 RCA 初筛线索"),
-            PlanStep("检索 Runbook 与历史事故知识", "knowledge_search", {"query": task, "topK": 5}, "检索 Runbook、历史事故和架构文档，给修复与回滚方案提供知识依据", "knowledge"),
-            PlanStep("分析 Kubernetes 事件线索", "kubernetes_events", reasoning="从告警标签和注解中抽取 Pod 重启、OOM、调度失败和节点事件"),
-            PlanStep("分析 Trace 调用链证据", "trace_analysis", {"limit": 20, "slowThresholdMs": 1000}, "定位慢 span、失败 span 和耗时最高的 operation"),
-            PlanStep("分析数据库与中间件健康", "database_middleware_health", reasoning="检查 Redis、MySQL、PostgreSQL 的 up 指标和相关告警信号"),
-            PlanStep("分析云平台资源证据", "cloud_resource_evidence", reasoning="核对云主机、负载均衡、托管数据库、地域和账号维度的资源告警与配置缺口"),
-            PlanStep("分析服务拓扑和影响传播", "service_topology", reasoning="结合 CMDB 轻量配置和告警标签判断服务拓扑、上下游依赖与波及范围"),
-            PlanStep("分析 Git 与 CI/CD 发布证据", "release_evidence", {"limit": 10}, "核对当前分支、HEAD、CI 元数据和近期提交，判断是否存在发布诱因"),
-            PlanStep("关联近期发布变更线索", "change_correlations", reasoning="把告警与发布、提交、镜像和流水线信息关联，判断是否存在变更诱因"),
-            PlanStep("查询当前活跃告警", "alert_status", reasoning="先确认监控系统是否已有明确告警"),
-            PlanStep("查询 CPU 指标趋势", "metric_trend", {"metric": "cpu_percent", "minutes": 30}, "用指标趋势判断是否存在资源异常"),
-            PlanStep("检测 CPU 指标异常", "metric_anomalies", {"metric": "cpu_percent", "minutes": 30}, "识别 CPU 高水位、突增和波动异常"),
-            PlanStep("查询内存指标趋势", "metric_trend", {"metric": "memory_percent", "minutes": 30}, "用指标趋势判断是否存在内存压力"),
-            PlanStep("检测内存指标异常", "metric_anomalies", {"metric": "memory_percent", "minutes": 30}, "识别内存高水位、突增和波动异常"),
-        ]
+        steps = [PlanStep("检查 Compose 服务状态", "compose_ps", reasoning="先确认核心服务是否存在异常状态")]
 
+        # 先插入与用户症状直接相关的诊断步骤，确保在 LangGraph 默认 10 步上限内采集关键证据。
         if any(key in text or key in task for key in ["日志", "log", "logs", "报错", "error", "exception", "502"]):
             steps.append(PlanStep("读取后端最近日志", "container_logs", {"service": "ragent-api", "tail": 120}, "补充运行上下文"))
             steps.append(PlanStep("分析后端错误日志", "log_analyzer", {"service": "ragent-api", "tail": 200}, "定位异常堆栈或错误模式"))
@@ -353,6 +338,25 @@ class PlannerAgent:
             steps.append(PlanStep("探测后端响应时间", "response_time_probe", {"url": "", "count": 5}, "确认是否存在慢请求"))
             steps.append(PlanStep("采集基础系统指标", "system_metrics", reasoning="补充资源占用信息"))
             steps.append(PlanStep("检查后端容器资源", "container_stats", {"service": "ragent-api"}, "补充容器资源快照"))
+
+        steps.extend(
+            [
+                PlanStep("分析活跃告警关联与影响面", "alert_correlations", reasoning="对告警做降噪聚合，提取影响面和 RCA 初筛线索"),
+                PlanStep("检索 Runbook 与历史事故知识", "knowledge_search", {"query": task, "topK": 5}, "检索 Runbook、历史事故和架构文档，给修复与回滚方案提供知识依据", "knowledge"),
+                PlanStep("分析 Kubernetes 事件线索", "kubernetes_events", reasoning="从告警标签和注解中抽取 Pod 重启、OOM、调度失败和节点事件"),
+                PlanStep("分析 Trace 调用链证据", "trace_analysis", {"limit": 20, "slowThresholdMs": 1000}, "定位慢 span、失败 span 和耗时最高的 operation"),
+                PlanStep("分析数据库与中间件健康", "database_middleware_health", reasoning="检查 Redis、MySQL、PostgreSQL 的 up 指标和相关告警信号"),
+                PlanStep("分析云平台资源证据", "cloud_resource_evidence", reasoning="核对云主机、负载均衡、托管数据库、地域和账号维度的资源告警与配置缺口"),
+                PlanStep("分析服务拓扑和影响传播", "service_topology", reasoning="结合 CMDB 轻量配置和告警标签判断服务拓扑、上下游依赖与波及范围"),
+                PlanStep("分析 Git 与 CI/CD 发布证据", "release_evidence", {"limit": 10}, "核对当前分支、HEAD、CI 元数据和近期提交，判断是否存在发布诱因"),
+                PlanStep("关联近期发布变更线索", "change_correlations", reasoning="把告警与发布、提交、镜像和流水线信息关联，判断是否存在变更诱因"),
+                PlanStep("查询当前活跃告警", "alert_status", reasoning="先确认监控系统是否已有明确告警"),
+                PlanStep("查询 CPU 指标趋势", "metric_trend", {"metric": "cpu_percent", "minutes": 30}, "用指标趋势判断是否存在资源异常"),
+                PlanStep("检测 CPU 指标异常", "metric_anomalies", {"metric": "cpu_percent", "minutes": 30}, "识别 CPU 高水位、突增和波动异常"),
+                PlanStep("查询内存指标趋势", "metric_trend", {"metric": "memory_percent", "minutes": 30}, "用指标趋势判断是否存在内存压力"),
+                PlanStep("检测内存指标异常", "metric_anomalies", {"metric": "memory_percent", "minutes": 30}, "识别内存高水位、突增和波动异常"),
+            ]
+        )
 
         if len(steps) == 1:
             steps.append(PlanStep("检查后端健康接口", "api_health_check", reasoning="确认 API 服务是否可达"))

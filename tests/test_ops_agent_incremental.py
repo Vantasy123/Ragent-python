@@ -495,6 +495,37 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("HEAD", steps[8].reasoning)
         self.assertIn("变更", steps[9].reasoning)
 
+    async def test_deterministic_plan_prioritizes_symptom_tools_before_graph_limit(self) -> None:
+        """日志和 502 类任务的关键诊断步骤应进入默认执行上限内。"""
+
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=OpsToolkit())
+        planner = PlannerAgent(registry)
+
+        steps = await planner.create_plan("后端 502 且日志出现 exception，需要定位根因")
+        first_ten_tools = [step.tool_name for step in steps[:10]]
+
+        self.assertIn("container_logs", first_ten_tools)
+        self.assertIn("log_analyzer", first_ten_tools)
+        self.assertIn("api_health_check", first_ten_tools)
+        self.assertIn("nginx_proxy_check", first_ten_tools)
+        self.assertIn("alert_correlations", first_ten_tools)
+        self.assertLess(first_ten_tools.index("container_logs"), first_ten_tools.index("alert_correlations"))
+
+    async def test_deterministic_plan_prioritizes_performance_tools_before_graph_limit(self) -> None:
+        """性能类任务的响应时间、系统指标和容器资源采集应进入默认执行上限内。"""
+
+        registry = UnifiedToolRegistry(include_ops=True, toolkit=OpsToolkit())
+        planner = PlannerAgent(registry)
+
+        steps = await planner.create_plan("接口超时，CPU 和内存可能异常，需要分析性能问题")
+        first_ten_tools = [step.tool_name for step in steps[:10]]
+
+        self.assertIn("response_time_probe", first_ten_tools)
+        self.assertIn("system_metrics", first_ten_tools)
+        self.assertIn("container_stats", first_ten_tools)
+        self.assertIn("alert_correlations", first_ten_tools)
+        self.assertLess(first_ten_tools.index("response_time_probe"), first_ten_tools.index("alert_correlations"))
+
     def test_final_report_includes_alert_impact_and_rca_hints(self) -> None:
         """最终报告应把告警关联工具的影响面和 RCA 线索结构化呈现。"""
 
