@@ -72,11 +72,18 @@ cloud_resources:
 
         self.assertEqual(payload["status"], "ready")
         self.assertEqual(checks["metrics_alerts"]["status"], "passed")
+        self.assertEqual(checks["multi_agent_topology"]["status"], "passed")
         self.assertEqual(checks["approval_gates"]["status"], "passed")
         self.assertEqual(checks["command_governance"]["status"], "passed")
         self.assertEqual(checks["audit_redaction"]["status"], "passed")
         self.assertTrue(payload["dataSources"]["metrics"])
         self.assertTrue(payload["dataSources"]["cloud"])
+        self.assertTrue(payload["agentTopology"]["planner"])
+        self.assertTrue(payload["agentTopology"]["diagnostics"])
+        self.assertTrue(payload["agentTopology"]["knowledge"])
+        self.assertTrue(payload["agentTopology"]["executor"])
+        self.assertTrue(payload["agentTopology"]["verification"])
+        self.assertTrue(payload["agentTopology"]["audit"])
         self.assertTrue(payload["safetyControls"]["approvalGates"])
         self.assertTrue(payload["safetyControls"]["commandWhitelist"])
         self.assertTrue(payload["safetyControls"]["highRiskInterception"])
@@ -163,6 +170,57 @@ cloud_resources:
         self.assertFalse(payload["safetyControls"]["highRiskInterception"])
         self.assertFalse(payload["safetyControls"]["secretIsolation"])
         self.assertTrue(any("safe_command" in item for item in payload["nextSteps"]))
+
+    def test_blocks_when_core_agent_topology_is_incomplete(self) -> None:
+        """缺少核心 Agent 角色时，应阻断生产闭环 readiness。"""
+
+        temp_dir = self._make_directory()
+        servers_path = temp_dir / "servers.yml"
+        monitoring_path = temp_dir / "monitoring.yml"
+        servers_path.write_text(
+            """
+servers:
+  - id: order-api
+    name: 订单服务
+    enabled: true
+    health_url: http://order-api:8080/health
+""",
+            encoding="utf-8",
+        )
+        monitoring_path.write_text(
+            """
+monitoring:
+  enabled: true
+  prometheus_url: http://prometheus:9090
+  alertmanager_url: http://alertmanager:9093
+cloud_resources:
+  - id: ecs-order-01
+    provider: aliyun
+    region: cn-hangzhou
+    resource_type: ecs
+    service: order-api
+""",
+            encoding="utf-8",
+        )
+        incomplete_agents = {
+            "planner": {"name": "计划 Agent", "description": "生成计划"},
+            "diagnostics": {"name": "诊断 Agent", "description": "分析证据"},
+            "knowledge": {"name": "知识 Agent", "description": "检索知识"},
+            "executor": {"name": "执行 Agent", "description": "执行工具"},
+            "verification": {"name": "验证 Agent", "description": "验证结果"},
+        }
+        service = AIOpsReadinessService(
+            ProjectConfigService(str(servers_path), str(monitoring_path)),
+            agent_registry=incomplete_agents,
+        )
+
+        payload = service.build()
+        checks = {item["code"]: item for item in payload["checks"]}
+
+        self.assertEqual(payload["status"], "blocked")
+        self.assertEqual(checks["multi_agent_topology"]["status"], "failed")
+        self.assertFalse(payload["agentTopology"]["audit"])
+        self.assertTrue(any("AGENT_REGISTRY" in item for item in payload["nextSteps"]))
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.agents.orchestrator import AGENT_REGISTRY
 from app.agents.tool_registry import UnifiedToolRegistry
 from app.agents.tools import OpsToolkit
 from app.core.config import settings
@@ -18,9 +19,11 @@ class AIOpsReadinessService:
         self,
         config_service: ProjectConfigService | None = None,
         registry: UnifiedToolRegistry | None = None,
+        agent_registry: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         self.config_service = config_service or ProjectConfigService()
         self.registry = registry or UnifiedToolRegistry(include_ops=True, toolkit=OpsToolkit())
+        self.agent_registry = agent_registry or AGENT_REGISTRY
 
     def build(self) -> dict[str, Any]:
         """汇总企业生产环境运行 AIOps Agent 所需的关键门禁。"""
@@ -35,6 +38,7 @@ class AIOpsReadinessService:
             self._monitoring_check(monitoring),
             self._service_inventory_check(servers),
             self._cloud_resource_check(cloud_resources),
+            self._multi_agent_topology_check(),
             self._ops_evidence_tools_check(tools),
             self._approval_gate_check(tools),
             self._verification_tool_check(tools),
@@ -61,6 +65,14 @@ class AIOpsReadinessService:
                 "cloud": bool(cloud_resources),
                 "release": self._has_tool(tools, "release_evidence"),
                 "databaseMiddleware": self._has_tool(tools, "database_middleware_health"),
+            },
+            "agentTopology": {
+                "planner": self._has_agent("planner"),
+                "diagnostics": self._has_agent("diagnostics"),
+                "knowledge": self._has_agent("knowledge"),
+                "executor": self._has_agent("executor"),
+                "verification": self._has_agent("verification"),
+                "audit": self._has_agent("audit"),
             },
             "safetyControls": {
                 "approvalGates": self._check_passed(checks, "approval_gates"),
@@ -123,6 +135,26 @@ class AIOpsReadinessService:
             "passed" if passed else "warning",
             f"已配置 {len(resources)} 个云资源" if passed else "未配置云资源清单，云平台影响面分析会降级",
             "在 monitoring.yml 中维护 cloud_resources，至少包含 provider、region、resource_id、service",
+        )
+
+    def _multi_agent_topology_check(self) -> dict[str, Any]:
+        """检查生产闭环所需的核心 Agent 角色是否已注册。"""
+
+        required = {
+            "planner": "计划 Agent",
+            "diagnostics": "诊断 Agent",
+            "knowledge": "知识 Agent",
+            "executor": "执行 Agent",
+            "verification": "验证 Agent",
+            "audit": "审计 Agent",
+        }
+        missing = [label for key, label in required.items() if not self._has_agent(key)]
+        return self._check(
+            "multi_agent_topology",
+            "多 Agent 拓扑",
+            "passed" if not missing else "failed",
+            "计划、诊断、知识、执行、验证和审计 Agent 均已注册" if not missing else f"缺少核心 Agent：{', '.join(missing)}",
+            "补齐 AGENT_REGISTRY 中的计划、诊断、知识、执行、验证和审计角色，确保职责分离可审计",
         )
 
     def _ops_evidence_tools_check(self, tools: list[dict[str, Any]]) -> dict[str, Any]:
@@ -254,6 +286,12 @@ class AIOpsReadinessService:
         """判断工具目录中是否存在指定工具。"""
 
         return any(item.get("name") == name for item in tools)
+
+    def _has_agent(self, name: str) -> bool:
+        """判断核心 Agent 注册表中是否存在指定角色。"""
+
+        item = self.agent_registry.get(name)
+        return isinstance(item, dict) and bool(item.get("name")) and bool(item.get("description"))
 
     def _check_passed(self, checks: list[dict[str, str]], code: str) -> bool:
         """判断指定就绪检查是否通过，供安全控制面汇总使用。"""
