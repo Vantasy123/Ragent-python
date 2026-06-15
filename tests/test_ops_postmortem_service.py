@@ -211,6 +211,42 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertIn("修复计划=已记录", payload["summary"])
         self.assertTrue(payload["improvementActions"])
 
+    def test_build_postmortem_uses_step_agent_for_tool_call_timeline(self) -> None:
+        """工具调用时间线应按计划步骤还原真实 Agent 归属。"""
+
+        diagnostic_step = AgentStep(
+            id="step-diagnostics-1",
+            run=self.run,
+            step_index=1,
+            title="分析 Trace 调用链证据",
+            tool_name="trace_analysis",
+            status="success",
+            assigned_agent="diagnostics",
+        )
+        diagnostic_call = AgentToolCall(
+            id="tool-call-diagnostics-1",
+            run=self.run,
+            step_id=diagnostic_step.id,
+            tool_name="trace_analysis",
+            args={"limit": 20},
+            status="success",
+            risk_level="read",
+            approval_status="not_required",
+            duration_ms=42,
+            result={"success": True, "summary": "Trace 正常"},
+        )
+        self.db.add_all([diagnostic_step, diagnostic_call])
+        self.db.commit()
+
+        payload = OpsPostmortemService(self.db).build(self.run.id)
+        diagnostic_events = [
+            item
+            for item in payload["timeline"]
+            if item["eventType"] == "tool_call" and item.get("toolName") == "trace_analysis"
+        ]
+
+        self.assertEqual(diagnostic_events[0]["actor"], "diagnostics")
+
     def test_build_postmortem_flags_self_approved_write_operation(self) -> None:
         """申请人本人通过审批时，复盘应标记职责分离风险。"""
 

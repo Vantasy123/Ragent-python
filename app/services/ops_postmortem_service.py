@@ -83,7 +83,11 @@ class OpsPostmortemService:
                 "riskLevel": "read",
             }
         ]
+        steps_by_id = {step.id: step for step in steps if step.id}
+        steps_by_tool: dict[str, AgentStep] = {}
         for step in steps:
+            if step.tool_name and step.tool_name not in steps_by_tool:
+                steps_by_tool[step.tool_name] = step
             events.append(
                 {
                     "time": step.created_at,
@@ -100,7 +104,7 @@ class OpsPostmortemService:
                 {
                     "time": call.created_at,
                     "eventType": "tool_call",
-                    "actor": "executor",
+                    "actor": self._tool_call_actor(call, steps_by_id, steps_by_tool),
                     "summary": f"工具 {call.tool_name}：{call.status}",
                     "status": call.status,
                     "toolName": call.tool_name,
@@ -470,6 +474,19 @@ class OpsPostmortemService:
         """序列化时间线事件，隐藏 datetime 对象。"""
 
         return {**event, "time": to_shanghai_iso(event.get("time"))}
+
+    def _tool_call_actor(
+        self,
+        call: AgentToolCall,
+        steps_by_id: dict[str, AgentStep],
+        steps_by_tool: dict[str, AgentStep],
+    ) -> str:
+        """根据关联计划步骤还原工具调用所属 Agent，避免复盘中所有工具都显示为 executor。"""
+
+        step = steps_by_id.get(call.step_id or "")
+        if step is None and call.tool_name:
+            step = steps_by_tool.get(call.tool_name)
+        return step.assigned_agent if step and step.assigned_agent else "executor"
 
     def _duration_ms(self, started: datetime | None, ended: datetime | None) -> int:
         """根据运行开始和更新时间估算耗时。"""
