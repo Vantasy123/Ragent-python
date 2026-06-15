@@ -16,7 +16,7 @@ from app.agents.orchestrator import AGENT_REGISTRY, OrchestratorAgent, PlannerAg
 from app.agents.tool_registry import ToolCallRequest, ToolCallResult, UnifiedTool, UnifiedToolRegistry
 from app.agents.tools import OpsToolkit
 from app.core.database import Base, get_db
-from app.domain.models import AgentApproval, AgentCollaboration, AgentRun, AgentToolCall, EvaluationRun, TraceRun, TraceSpan, User
+from app.domain.models import AgentApproval, AgentCollaboration, AgentRun, AgentStep as AgentStepModel, AgentToolCall, EvaluationRun, TraceRun, TraceSpan, User
 from app.services.dependencies import require_admin
 from app.services.evaluation_service import EvaluationService
 from app.services.ops_agent_service import OpsAgentService
@@ -494,6 +494,8 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("拓扑", steps[7].reasoning)
         self.assertIn("HEAD", steps[8].reasoning)
         self.assertIn("变更", steps[9].reasoning)
+        for index in [1, 3, 4, 5, 6, 7, 8, 9, 10]:
+            self.assertEqual(steps[index].assigned_agent, "diagnostics")
 
     async def test_deterministic_plan_prioritizes_symptom_tools_before_graph_limit(self) -> None:
         """日志和 502 类任务的关键诊断步骤应进入默认执行上限内。"""
@@ -510,6 +512,9 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("nginx_proxy_check", first_ten_tools)
         self.assertIn("alert_correlations", first_ten_tools)
         self.assertLess(first_ten_tools.index("container_logs"), first_ten_tools.index("alert_correlations"))
+        for step in steps[:10]:
+            if step.tool_name in {"container_logs", "log_analyzer", "api_health_check", "nginx_proxy_check", "alert_correlations"}:
+                self.assertEqual(step.assigned_agent, "diagnostics")
 
     async def test_deterministic_plan_prioritizes_performance_tools_before_graph_limit(self) -> None:
         """性能类任务的响应时间、系统指标和容器资源采集应进入默认执行上限内。"""
@@ -525,6 +530,9 @@ class ToolRegistryTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("container_stats", first_ten_tools)
         self.assertIn("alert_correlations", first_ten_tools)
         self.assertLess(first_ten_tools.index("response_time_probe"), first_ten_tools.index("alert_correlations"))
+        for step in steps[:10]:
+            if step.tool_name in {"response_time_probe", "system_metrics", "container_stats", "alert_correlations"}:
+                self.assertEqual(step.assigned_agent, "diagnostics")
 
     def test_final_report_includes_alert_impact_and_rca_hints(self) -> None:
         """最终报告应把告警关联工具的影响面和 RCA 线索结构化呈现。"""
@@ -965,6 +973,24 @@ class OpsGraphRunnerTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(event["type"] == "observation" and event.get("tool") == "read_tool" for event in events))
         self.assertFalse(any(event["type"] == "agent_plan" for event in events))
 
+    async def test_diagnostic_step_events_keep_assigned_agent(self) -> None:
+        """诊断步骤执行时，事件流应保留 diagnostics Agent 归属。"""
+
+        registry = FakeRegistry()
+
+        events = await self._run(registry, [AgentStep("读取指标", "read_tool", assigned_agent="diagnostics")], True)
+
+        step_started = [event for event in events if event["type"] == "step_started" and event.get("stepIndex") == 0][0]
+        tool_call = [event for event in events if event["type"] == "tool_call" and event.get("tool") == "read_tool"][0]
+        observation = [event for event in events if event["type"] == "observation" and event.get("tool") == "read_tool"][0]
+        step_observed = [event for event in events if event["type"] == "step_observed" and event.get("stepIndex") == 0][0]
+
+        self.assertEqual(step_started["agent"], "diagnostics")
+        self.assertEqual(step_started["step"]["assigned_agent"], "diagnostics")
+        self.assertEqual(tool_call["agent"], "diagnostics")
+        self.assertEqual(observation["agent"], "diagnostics")
+        self.assertEqual(step_observed["agent"], "diagnostics")
+
     async def test_auto_execute_readonly_false_only_emits_pending_tool_call(self) -> None:
         registry = FakeRegistry()
 
@@ -1314,6 +1340,30 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row.result["data"]["password"], "<redacted>")
         self.assertNotIn("secret-token", str(row.args))
         self.assertNotIn("secret-password", str(row.result))
+
+    def test_persist_plan_keeps_diagnostic_agent_assignment(self) -> None:
+        """计划落库应保留诊断 Agent 归属，便于审计多 Agent 分工。"""
+
+        service = OpsAgentService(self.db)
+        event = {
+            "type": "plan_created",
+            "steps": [
+                {
+                    "title": "分析 Trace 调用链证据",
+                    "tool_name": "trace_analysis",
+                    "args": {"limit": 20},
+                    "assigned_agent": "diagnostics",
+                    "reasoning": "定位慢 span 和失败 span",
+                }
+            ],
+        }
+
+        service._persist_event(self.run, event, self.user)
+
+        row = self.db.query(AgentStepModel).filter(AgentStepModel.run_id == self.run.id).one()
+        self.assertEqual(row.assigned_agent, "diagnostics")
+        self.assertEqual(row.tool_name, "trace_analysis")
+        self.assertIn("慢 span", row.agent_reasoning)
 
     def test_persist_failed_observation_records_handoff(self) -> None:
         """工具执行失败时应记录人工接管协作事件，供审计复盘查询。"""

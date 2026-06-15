@@ -43,6 +43,32 @@ OPS_SERVICE_TOOLS = {
     "compose_restart_service",
 }
 
+DIAGNOSTIC_TOOLS = {
+    "compose_ps",
+    "container_logs",
+    "container_inspect",
+    "container_stats",
+    "log_analyzer",
+    "api_health_check",
+    "frontend_health_check",
+    "nginx_proxy_check",
+    "port_check",
+    "system_metrics",
+    "response_time_probe",
+    "alert_status",
+    "alert_correlations",
+    "kubernetes_events",
+    "trace_analysis",
+    "database_middleware_health",
+    "cloud_resource_evidence",
+    "service_topology",
+    "release_evidence",
+    "change_correlations",
+    "metric_trend",
+    "metric_anomalies",
+    "prometheus_query",
+}
+
 SIMPLE_OPS_KEYWORDS = {
     "日志",
     "log",
@@ -229,6 +255,7 @@ class PlannerAgent:
                     tool_name=tool_name,
                     args=args,
                     reasoning=str(item.get("reasoning") or ""),
+                    assigned_agent=self._agent_for_tool(tool_name),
                 )
             )
         return steps
@@ -364,6 +391,7 @@ class PlannerAgent:
         if any(key in text or key in task for key in ["重启", "restart", "恢复", "修复"]):
             service = "ragent-frontend" if ("前端" in task or "frontend" in text or "nginx" in text) else "ragent-api"
             steps.append(PlanStep(f"申请重启服务 {service}", "compose_restart_service", {"service": service}, "重启是写操作，必须进入审批"))
+        self._assign_step_agents(steps)
         return steps
 
     def _safe_command_step(self, task: str) -> PlanStep | None:
@@ -374,6 +402,23 @@ class PlannerAgent:
         if not lowered.startswith("docker "):
             return None
         return PlanStep("执行受控命令模板", "safe_command", {"command": text}, "用户给出了命令原文，必须通过命令模板白名单执行")
+
+    def _assign_step_agents(self, steps: list[PlanStep]) -> None:
+        """为规则计划补齐 Agent 归属，保证诊断、知识、执行职责在审计中可区分。"""
+
+        for step in steps:
+            if step.assigned_agent != "executor":
+                continue
+            step.assigned_agent = self._agent_for_tool(step.tool_name)
+
+    def _agent_for_tool(self, tool_name: str) -> str:
+        """根据工具类型选择负责的子 Agent。"""
+
+        if tool_name == "knowledge_search":
+            return "knowledge"
+        if tool_name in DIAGNOSTIC_TOOLS:
+            return "diagnostics"
+        return "executor"
 
     def _parse_json(self, content: str) -> dict[str, Any]:
         """从模型输出中解析 JSON。"""

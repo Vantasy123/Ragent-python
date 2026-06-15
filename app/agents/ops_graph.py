@@ -177,7 +177,8 @@ class OpsLangGraphRunner:
         step = remaining.pop(0)
         index = len(completed)
         step.assigned_agent = step.assigned_agent or "executor"
-        events.append({"type": "step_started", "agent": "executor", "stepIndex": index, "step": self._step_to_dict(step)})
+        step_agent = step.assigned_agent
+        events.append({"type": "step_started", "agent": step_agent, "stepIndex": index, "step": self._step_to_dict(step)})
 
         tool = self.registry.tools.get(step.tool_name)
         spec = tool.spec if tool else None
@@ -214,7 +215,7 @@ class OpsLangGraphRunner:
             events.append(
                 {
                     "type": "tool_call",
-                    "agent": "executor",
+                    "agent": step_agent,
                     "stepIndex": index,
                     "tool": step.tool_name,
                     "args": step.args,
@@ -236,7 +237,7 @@ class OpsLangGraphRunner:
             }
 
         step.status = StepStatus.RUNNING
-        events.append({"type": "tool_call", "agent": "executor", "stepIndex": index, "tool": step.tool_name, "args": step.args})
+        events.append({"type": "tool_call", "agent": step_agent, "stepIndex": index, "tool": step.tool_name, "args": step.args})
         tool_started = time.perf_counter()
         result = await self.executor.execute(step)
         duration_ms = self._elapsed_ms(tool_started)
@@ -248,11 +249,11 @@ class OpsLangGraphRunner:
         observations.append({"stepIndex": index, "tool": step.tool_name, "result": result_payload})
 
         memory = state.get("memory") or self.memory
-        memory.add("executor", "observation", result.summary, result.to_dict())
+        memory.add(step_agent, "observation", result.summary, result.to_dict())
         events.append(
             {
                 "type": "observation",
-                "agent": "executor",
+                "agent": step_agent,
                 "stepIndex": index,
                 "tool": step.tool_name,
                 "args": step.args,
@@ -260,7 +261,7 @@ class OpsLangGraphRunner:
                 "result": result_payload,
             }
         )
-        events.append({"type": "step_observed", "agent": "executor", "stepIndex": index, "durationMs": duration_ms, "result": result_payload})
+        events.append({"type": "step_observed", "agent": step_agent, "stepIndex": index, "durationMs": duration_ms, "result": result_payload})
 
         return {
             "remaining": remaining,
@@ -289,6 +290,7 @@ class OpsLangGraphRunner:
         tool = self.registry.tools.get(step.tool_name)
         spec = tool.spec if tool else None
         risk_level, _ = tool.policy_for(step.args) if tool else ("write", True)
+        step_agent = step.assigned_agent or "executor"
         started = time.perf_counter()
         step.status = StepStatus.BLOCKED
         result = ToolCallResult(
@@ -312,7 +314,7 @@ class OpsLangGraphRunner:
             "events": [
                 {
                     "type": "approval_required",
-                    "agent": "executor",
+                    "agent": step_agent,
                     "stepIndex": index,
                     "tool": step.tool_name,
                     "args": step.args,
