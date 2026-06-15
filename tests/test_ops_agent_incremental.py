@@ -1402,9 +1402,25 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "rejected")
         self.assertFalse(toolkit.called)
+        self.db.refresh(self.approval)
         self.db.refresh(self.tool_call)
+        self.assertEqual(self.approval.status, "rejected")
+        self.assertEqual(self.approval.approved_by, self.user.id)
+        self.assertEqual(self.approval.comment, "拒绝")
         self.assertEqual(self.tool_call.approval_status, "rejected")
         self.assertEqual(self.tool_call.error_message, "approval_rejected")
+        row = self.db.query(AgentCollaboration).filter(AgentCollaboration.run_id == self.run.id).one()
+        self.assertEqual(row.event_type, "handoff")
+        self.assertEqual(row.from_agent, "approval")
+        self.assertEqual(row.to_agent, "human_sre")
+        self.assertEqual(row.data["eventType"], "approval_rejected")
+        self.assertEqual(row.data["toolName"], "write_tool")
+        self.assertEqual(row.data["approvalId"], self.approval.id)
+        self.assertEqual(row.data["approvedBy"], self.user.id)
+        self.assertEqual(row.data["requiredAction"], "revise_plan_or_human_takeover")
+        detail = service.get_run(self.run.id)
+        self.assertEqual(detail["collaborations"][0]["data"]["eventType"], "approval_rejected")
+        self.assertIn("拒绝高风险工具", detail["collaborations"][0]["content"])
 
     async def test_processed_approval_cannot_be_submitted_again(self) -> None:
         """已处理审批不能重复提交，避免写操作被二次执行。"""

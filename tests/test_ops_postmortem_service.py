@@ -154,6 +154,7 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertEqual(payload["metrics"]["selfApprovedCount"], 0)
         self.assertEqual(payload["metrics"]["approvalSeparationRate"], 1)
         self.assertEqual(payload["metrics"]["manualTakeoverCount"], 0)
+        self.assertEqual(payload["metrics"]["approvalRejectedHandoffCount"], 0)
         self.assertEqual(payload["metrics"]["writeToolCount"], 1)
         self.assertEqual(payload["metrics"]["mttrProxyMs"], 1200)
         self.assertEqual(payload["metrics"]["verificationCount"], 1)
@@ -176,12 +177,14 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertEqual(checks["post_verification_quality"]["status"], "passed")
         self.assertEqual(checks["rollback_path"]["status"], "passed")
         self.assertEqual(checks["manual_handoff"]["status"], "passed")
+        self.assertEqual(checks["approval_rejection_handoff"]["status"], "passed")
         self.assertEqual(checks["audit_checkpoint"]["status"], "passed")
         self.assertIn("审计闭环完整", payload["summary"])
         self.assertIn("0 个回滚建议", payload["summary"])
         self.assertIn("1 个审计检查点", payload["summary"])
         self.assertIn("告警降噪 1 条", payload["summary"])
         self.assertIn("0 次手动接管", payload["summary"])
+        self.assertIn("0 次审批拒绝接管", payload["summary"])
         self.assertIn("0 次同人审批", payload["summary"])
         self.assertTrue(payload["improvementActions"])
 
@@ -314,6 +317,60 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertEqual(checks["manual_handoff"]["severity"], "warning")
         self.assertEqual(payload["metrics"]["manualTakeoverCount"], 0)
         self.assertTrue(any("manual_stop" in item for item in payload["improvementActions"]))
+
+    def test_build_postmortem_tracks_rejected_approval_handoff(self) -> None:
+        """被拒绝审批应在复盘中追踪 approval_rejected 人工接管事件。"""
+
+        self.approval.status = "rejected"
+        self.approval.approved_by = self.approver.id
+        self.approval.comment = "风险过高"
+        self.blocked_call.status = "blocked"
+        self.blocked_call.approval_status = "rejected"
+        rejection_handoff = AgentCollaboration(
+            run=self.run,
+            from_agent="approval",
+            to_agent="human_sre",
+            event_type="handoff",
+            content="审批人拒绝高风险工具，后续由人工复核或改写方案",
+            data={
+                "eventType": "approval_rejected",
+                "toolName": "compose_restart_service",
+                "approvalId": self.approval.id,
+                "toolCallId": self.blocked_call.id,
+                "riskLevel": "write",
+                "approvedBy": self.approver.id,
+                "requiredAction": "revise_plan_or_human_takeover",
+            },
+        )
+        self.db.add(rejection_handoff)
+        self.db.commit()
+
+        payload = OpsPostmortemService(self.db).build(self.run.id)
+        checks = {item["code"]: item for item in payload["complianceChecks"]}
+
+        self.assertEqual(checks["approval_rejection_handoff"]["status"], "passed")
+        self.assertEqual(payload["metrics"]["rejectedCount"], 1)
+        self.assertEqual(payload["metrics"]["approvalRejectedHandoffCount"], 1)
+        self.assertTrue(any(item["eventType"] == "handoff" and item["status"] == "approval_rejected" for item in payload["timeline"]))
+        self.assertIn("1 次审批拒绝接管", payload["summary"])
+        self.assertTrue(any("低风险替代步骤" in item for item in payload["improvementActions"]))
+
+    def test_build_postmortem_flags_rejected_approval_without_handoff(self) -> None:
+        """被拒绝审批如果缺少接管事件，应在复盘中暴露方案改写缺口。"""
+
+        self.approval.status = "rejected"
+        self.approval.approved_by = self.approver.id
+        self.blocked_call.status = "blocked"
+        self.blocked_call.approval_status = "rejected"
+        self.db.commit()
+
+        payload = OpsPostmortemService(self.db).build(self.run.id)
+        checks = {item["code"]: item for item in payload["complianceChecks"]}
+
+        self.assertEqual(checks["approval_rejection_handoff"]["status"], "failed")
+        self.assertEqual(checks["approval_rejection_handoff"]["severity"], "warning")
+        self.assertEqual(payload["metrics"]["approvalRejectedHandoffCount"], 0)
+        self.assertTrue(any("approval_rejected" in item for item in payload["improvementActions"]))
 
     def test_postmortem_router_returns_admin_payload(self) -> None:
         """复盘接口应向管理员返回同一结构化报告。"""

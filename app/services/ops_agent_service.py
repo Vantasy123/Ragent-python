@@ -358,6 +358,25 @@ class OpsAgentService:
             tool_call.status = "blocked"
             tool_call.approval_status = "rejected"
             tool_call.error_message = "approval_rejected"
+            run = self.db.query(AgentRun).filter(AgentRun.id == run_id).first()
+            if run:
+                self._record_handoff(
+                    run,
+                    from_agent="approval",
+                    content=f"审批人 {user.username} 拒绝高风险工具 {approval.tool_name}，后续由人工复核或改写方案",
+                    data={
+                        "eventType": "approval_rejected",
+                        "toolName": approval.tool_name,
+                        "approvalId": approval.id,
+                        "toolCallId": approval.tool_call_id,
+                        "riskLevel": tool_call.risk_level,
+                        "requestedBy": approval.requested_by,
+                        "approvedBy": user.id,
+                        "comment": approval.comment,
+                        "requiredAction": "revise_plan_or_human_takeover",
+                    },
+                    commit=False,
+                )
             self.db.commit()
             return {"status": "rejected"}
 

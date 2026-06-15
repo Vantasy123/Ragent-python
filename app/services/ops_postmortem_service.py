@@ -248,6 +248,24 @@ class OpsPostmortemService:
                 "warning",
             )
         )
+        rejected_approvals = [item for item in approvals if item.status == "rejected"]
+        approval_rejection_handoffs = self._approval_rejection_handoffs(collaborations)
+        handoff_approval_ids = {
+            str(item.data.get("approvalId") or "")
+            for item in approval_rejection_handoffs
+            if isinstance(item.data, dict)
+        }
+        missing_rejected_handoffs = [item for item in rejected_approvals if item.id not in handoff_approval_ids]
+        checks.append(
+            self._check(
+                "approval_rejection_handoff",
+                not missing_rejected_handoffs,
+                "被拒绝审批已记录人工接管或方案改写事件"
+                if not missing_rejected_handoffs
+                else f"{len(missing_rejected_handoffs)} 个被拒绝审批缺少 approval_rejected 接管记录",
+                "warning",
+            )
+        )
 
         unsafe_payloads = [item.tool_name for item in tool_calls if self._contains_unredacted_sensitive(item.args) or self._contains_unredacted_sensitive(item.result)]
         checks.append(
@@ -302,6 +320,7 @@ class OpsPostmortemService:
         approved_count = len(approved)
         self_approved_count = len(self._self_approved(approved))
         manual_handoffs = self._manual_handoffs(collaborations)
+        approval_rejection_handoffs = self._approval_rejection_handoffs(collaborations)
         noise = self._alert_noise_metrics(tool_calls)
         return {
             "durationMs": duration_ms,
@@ -316,6 +335,7 @@ class OpsPostmortemService:
             "rejectedCount": len([item for item in approvals if item.status == "rejected"]),
             "handoffCount": len([item for item in collaborations if item.event_type == "handoff"]),
             "manualTakeoverCount": len(manual_handoffs),
+            "approvalRejectedHandoffCount": len(approval_rejection_handoffs),
             "readOnlyAutomationRate": round(len(read_calls) / len(tool_calls), 4) if tool_calls else 0,
             "writeToolCount": len(write_calls),
             "approvalAverageWaitMs": self._approval_average_wait_ms(approvals),
@@ -374,10 +394,14 @@ class OpsPostmortemService:
             actions.append("工具失败或阻塞时自动写入人工接管事件，便于 SRE 追溯")
         if "manual_handoff" in failed_codes:
             actions.append("手动停止运行时必须写入 manual_stop 接管事件，记录操作人和停止前状态")
+        if "approval_rejection_handoff" in failed_codes:
+            actions.append("被拒绝的高风险审批必须写入 approval_rejected 接管事件，说明方案改写或人工接管要求")
         if "sensitive_redaction" in failed_codes:
             actions.append("扩大敏感字段脱敏规则，重新检查工具入参和结果审计副本")
         if "audit_checkpoint" in failed_codes:
             actions.append("确保每轮运维运行结束前写入 audit_checkpoint，便于复盘验证计划、执行和审批记录完整性")
+        if metrics.get("approvalRejectedHandoffCount", 0) > 0:
+            actions.append("将被拒绝的高风险操作回写到修复方案，补充更低风险替代步骤或人工接管说明")
         if metrics.get("handoffCount", 0) > 0:
             actions.append("把人工接管原因沉淀为 Runbook 或自动化只读诊断步骤")
         if metrics.get("alertCount", 0) and metrics.get("alertNoiseReductionRate", 0) == 0:
@@ -398,7 +422,8 @@ class OpsPostmortemService:
             f"{metrics['approvalCount']} 次审批、{metrics['verificationCount']} 次验证、"
             f"{metrics['rollbackRecommendationCount']} 个回滚建议、{metrics['auditCheckpointCount']} 个审计检查点、"
             f"告警降噪 {metrics['alertNoiseReductionCount']} 条、{metrics['handoffCount']} 次人工接管、"
-            f"{metrics['manualTakeoverCount']} 次手动接管、{metrics['selfApprovedCount']} 次同人审批"
+            f"{metrics['manualTakeoverCount']} 次手动接管、{metrics['approvalRejectedHandoffCount']} 次审批拒绝接管、"
+            f"{metrics['selfApprovedCount']} 次同人审批"
         )
 
     def _users_by_id(self, user_ids: set[str]) -> dict[str, User]:
@@ -450,6 +475,15 @@ class OpsPostmortemService:
             item
             for item in collaborations
             if item.event_type == "handoff" and isinstance(item.data, dict) and item.data.get("eventType") == "manual_stop"
+        ]
+
+    def _approval_rejection_handoffs(self, collaborations: list[AgentCollaboration]) -> list[AgentCollaboration]:
+        """筛出审批拒绝触发的接管事件，用于确认高风险方案被驳回后仍可追溯。"""
+
+        return [
+            item
+            for item in collaborations
+            if item.event_type == "handoff" and isinstance(item.data, dict) and item.data.get("eventType") == "approval_rejected"
         ]
 
     def _alert_noise_metrics(self, tool_calls: list[AgentToolCall]) -> dict[str, Any]:
