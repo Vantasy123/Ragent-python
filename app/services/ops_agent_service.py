@@ -341,6 +341,7 @@ class OpsAgentService:
     async def approve(self, run_id: str, approval_id: str, approved: bool, comment: str | None, user: User) -> dict[str, Any]:
         """处理危险动作审批，并在批准后执行对应工具。"""
 
+        self._assert_admin_user(user, "审批生产运维操作")
         approval = self.db.query(AgentApproval).filter(AgentApproval.id == approval_id, AgentApproval.run_id == run_id).first()
         if not approval:
             raise HTTPException(status_code=404, detail="审批记录不存在")
@@ -722,6 +723,7 @@ class OpsAgentService:
     def stop(self, run_id: str, user: User) -> dict[str, Any]:
         """将指定运维运行标记为停止。"""
 
+        self._assert_admin_user(user, "停止运维运行")
         run = self.db.query(AgentRun).filter(AgentRun.id == run_id).first()
         if not run:
             raise HTTPException(status_code=404, detail="运行记录不存在")
@@ -742,6 +744,12 @@ class OpsAgentService:
         )
         self.db.commit()
         return {"id": run.id, "status": run.status}
+
+    def _assert_admin_user(self, user: User, action: str) -> None:
+        """服务层再次校验管理员角色，避免内部调用绕过路由 RBAC。"""
+
+        if user.role != "admin":
+            raise HTTPException(status_code=403, detail=f"需要管理员权限才能{action}")
 
     def get_run(self, run_id: str) -> dict[str, Any]:
         """查询运维运行详情。"""

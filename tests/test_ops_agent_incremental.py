@@ -1058,6 +1058,7 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         self.db = self.Session()
         self.user = User(id="user-1", username="admin", nickname="管理员", password_hash="x", role="admin")
         self.approver = User(id="user-2", username="sre", nickname="值班 SRE", password_hash="x", role="admin")
+        self.viewer = User(id="user-3", username="viewer", nickname="观察员", password_hash="x", role="user")
         self.trace = TraceRun(id="trace-1", status="running")
         self.run = AgentRun(id="run-1", trace_id=self.trace.id, user_id=self.user.id, message="重启服务", status="running")
         self.tool_call = AgentToolCall(
@@ -1078,7 +1079,7 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
             status="pending",
             requested_by=self.user.id,
         )
-        self.db.add_all([self.user, self.approver, self.trace, self.run, self.tool_call, self.approval])
+        self.db.add_all([self.user, self.approver, self.viewer, self.trace, self.run, self.tool_call, self.approval])
         self.db.commit()
 
     def tearDown(self) -> None:
@@ -1122,6 +1123,25 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(handoff.data["eventType"], "approval_separation_blocked")
         self.assertEqual(handoff.data["attemptedApprover"], self.user.id)
         self.assertEqual(handoff.data["requiredAction"], "four_eyes_approval")
+
+    async def test_non_admin_cannot_approve_ops_write(self) -> None:
+        """服务层应拒绝非管理员直接审批生产写操作，避免绕过路由 RBAC。"""
+
+        service = OpsAgentService(self.db)
+        toolkit = FakeToolkit()
+        service.toolkit = toolkit
+
+        with self.assertRaises(HTTPException) as context:
+            await service.approve(self.run.id, self.approval.id, True, "越权同意", self.viewer)
+
+        self.assertEqual(context.exception.status_code, 403)
+        self.assertIn("管理员权限", context.exception.detail)
+        self.assertFalse(toolkit.called)
+        self.db.refresh(self.approval)
+        self.db.refresh(self.tool_call)
+        self.assertEqual(self.approval.status, "pending")
+        self.assertIsNone(self.approval.approved_by)
+        self.assertEqual(self.tool_call.status, "blocked")
 
     async def test_approval_blocks_write_when_aiops_readiness_blocked(self) -> None:
         """AIOps 生产就绪检查阻塞时，即使人工批准也不能执行写操作。"""
@@ -1358,6 +1378,20 @@ class OpsApprovalAndTraceTest(unittest.IsolatedAsyncioTestCase):
         detail = service.get_run(self.run.id)
         self.assertEqual(detail["collaborations"][0]["data"]["eventType"], "manual_stop")
         self.assertIn("手动停止", detail["collaborations"][0]["content"])
+
+    def test_non_admin_cannot_stop_ops_run(self) -> None:
+        """服务层应拒绝非管理员直接停止运维运行。"""
+
+        service = OpsAgentService(self.db)
+
+        with self.assertRaises(HTTPException) as context:
+            service.stop(self.run.id, self.viewer)
+
+        self.assertEqual(context.exception.status_code, 403)
+        self.assertIn("管理员权限", context.exception.detail)
+        self.db.refresh(self.run)
+        self.assertEqual(self.run.status, "running")
+        self.assertEqual(self.db.query(AgentCollaboration).filter(AgentCollaboration.run_id == self.run.id).count(), 0)
 
     async def test_rejected_approval_does_not_execute_tool(self) -> None:
         service = OpsAgentService(self.db)
