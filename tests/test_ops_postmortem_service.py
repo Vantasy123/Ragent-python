@@ -26,7 +26,23 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.user = User(id="user-1", username="admin", nickname="管理员", password_hash="x", role="admin")
         self.approver = User(id="user-2", username="sre", nickname="值班 SRE", password_hash="x", role="admin")
         self.trace = TraceRun(id="trace-1", status="success", total_duration_ms=1200)
-        self.run = AgentRun(id="run-1", trace_id=self.trace.id, user_id=self.user.id, message="重启后端服务", status="completed")
+        self.run = AgentRun(
+            id="run-1",
+            trace_id=self.trace.id,
+            user_id=self.user.id,
+            message="重启后端服务",
+            status="completed",
+            final_report=(
+                "## 运维 Agent 诊断报告\n"
+                "### 修复方案与风险评估\n"
+                "- 修复步骤 1：重启 ragent-api 服务 [风险=high, 审批=是]\n"
+                "- 风险评估：high 包含生产变更动作，必须人工审批后执行\n"
+                "- 审批门禁：审批后才允许执行：重启 ragent-api 服务\n"
+                "- 验证计划：修复后重新采集告警、健康检查、指标趋势和日志错误模式，确认症状消失\n"
+                "### 回滚与人工接管\n"
+                "- 人工接管：重启失败时由 SRE 接管\n"
+            ),
+        )
         self.step = AgentStep(
             run=self.run,
             step_index=0,
@@ -167,6 +183,11 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertEqual(payload["metrics"]["auditCheckpointCount"], 1)
         self.assertEqual(payload["metrics"]["auditPlannedStepCount"], 1)
         self.assertEqual(payload["metrics"]["auditRecordedToolResultCount"], 3)
+        self.assertTrue(payload["metrics"]["remediationPlanPresent"])
+        self.assertTrue(payload["metrics"]["remediationRiskAssessmentPresent"])
+        self.assertTrue(payload["metrics"]["remediationApprovalGatePresent"])
+        self.assertTrue(payload["metrics"]["remediationVerificationPlanPresent"])
+        self.assertTrue(payload["metrics"]["remediationRollbackOrHandoffPresent"])
         self.assertTrue(any(item["eventType"] == "approval" for item in payload["timeline"]))
         self.assertTrue(any(item["eventType"] == "trace_verification" for item in payload["timeline"]))
         self.assertTrue(any(item["eventType"] == "trace_audit" for item in payload["timeline"]))
@@ -178,6 +199,7 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertEqual(checks["rollback_path"]["status"], "passed")
         self.assertEqual(checks["manual_handoff"]["status"], "passed")
         self.assertEqual(checks["approval_rejection_handoff"]["status"], "passed")
+        self.assertEqual(checks["remediation_plan"]["status"], "passed")
         self.assertEqual(checks["audit_checkpoint"]["status"], "passed")
         self.assertIn("审计闭环完整", payload["summary"])
         self.assertIn("0 个回滚建议", payload["summary"])
@@ -186,6 +208,7 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertIn("0 次手动接管", payload["summary"])
         self.assertIn("0 次审批拒绝接管", payload["summary"])
         self.assertIn("0 次同人审批", payload["summary"])
+        self.assertIn("修复计划=已记录", payload["summary"])
         self.assertTrue(payload["improvementActions"])
 
     def test_build_postmortem_flags_self_approved_write_operation(self) -> None:
@@ -274,6 +297,23 @@ class OpsPostmortemServiceTest(unittest.TestCase):
         self.assertEqual(checks["audit_checkpoint"]["severity"], "warning")
         self.assertEqual(payload["metrics"]["auditCheckpointCount"], 0)
         self.assertTrue(any("audit_checkpoint" in item for item in payload["improvementActions"]))
+
+    def test_build_postmortem_flags_missing_remediation_plan_for_write_run(self) -> None:
+        """涉及写操作的运行如果缺少最终修复计划，应在复盘中暴露计划闭环缺口。"""
+
+        self.run.final_report = "## 运维 Agent 诊断报告\n### 已确认事实\n- 服务已重启"
+        self.db.commit()
+
+        payload = OpsPostmortemService(self.db).build(self.run.id)
+        checks = {item["code"]: item for item in payload["complianceChecks"]}
+
+        self.assertEqual(checks["remediation_plan"]["status"], "failed")
+        self.assertEqual(checks["remediation_plan"]["severity"], "warning")
+        self.assertFalse(payload["metrics"]["remediationPlanPresent"])
+        self.assertFalse(payload["metrics"]["remediationApprovalGatePresent"])
+        self.assertFalse(payload["metrics"]["remediationVerificationPlanPresent"])
+        self.assertIn("修复计划=缺失", payload["summary"])
+        self.assertTrue(any("最终报告必须输出修复步骤" in item for item in payload["improvementActions"]))
 
     def test_build_postmortem_tracks_manual_stop_handoff(self) -> None:
         """停止态运行应能在复盘中追踪 manual_stop 人工接管事件。"""

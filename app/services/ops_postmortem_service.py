@@ -164,6 +164,7 @@ class OpsPostmortemService:
         checks: list[dict[str, str]] = []
         risky_calls = [item for item in tool_calls if item.risk_level in self.WRITE_RISK_LEVELS or item.approval_status in {"pending", "approved", "rejected"}]
         risky_without_gate = [item for item in risky_calls if item.status == "success" and item.approval_status != "approved"]
+        write_calls = [item for item in tool_calls if item.risk_level in self.WRITE_RISK_LEVELS]
         checks.append(
             self._check(
                 "approval_gate",
@@ -267,6 +268,23 @@ class OpsPostmortemService:
             )
         )
 
+        remediation_artifacts = self._final_report_remediation_artifacts(run.final_report or "")
+        remediation_required = bool(write_calls or approvals)
+        remediation_complete = all(
+            remediation_artifacts[key]
+            for key in ["section", "repairActions", "riskAssessment", "approvalGates", "verificationPlan"]
+        )
+        checks.append(
+            self._check(
+                "remediation_plan",
+                not remediation_required or remediation_complete,
+                "最终报告已记录修复方案、风险评估、审批门禁和验证计划"
+                if not remediation_required or remediation_complete
+                else "涉及写操作或审批的运行缺少完整修复方案、风险评估、审批门禁或验证计划",
+                "warning",
+            )
+        )
+
         unsafe_payloads = [item.tool_name for item in tool_calls if self._contains_unredacted_sensitive(item.args) or self._contains_unredacted_sensitive(item.result)]
         checks.append(
             self._check(
@@ -321,6 +339,7 @@ class OpsPostmortemService:
         self_approved_count = len(self._self_approved(approved))
         manual_handoffs = self._manual_handoffs(collaborations)
         approval_rejection_handoffs = self._approval_rejection_handoffs(collaborations)
+        remediation_artifacts = self._final_report_remediation_artifacts(run.final_report or "")
         noise = self._alert_noise_metrics(tool_calls)
         return {
             "durationMs": duration_ms,
@@ -352,6 +371,11 @@ class OpsPostmortemService:
             "auditPlannedStepCount": int(audit_metrics.get("plannedStepCount") or 0),
             "auditRecordedToolResultCount": int(audit_metrics.get("recordedToolResultCount") or 0),
             "auditBlockedStepCount": int(audit_metrics.get("blockedStepCount") or 0),
+            "remediationPlanPresent": bool(remediation_artifacts["section"]),
+            "remediationRiskAssessmentPresent": bool(remediation_artifacts["riskAssessment"]),
+            "remediationApprovalGatePresent": bool(remediation_artifacts["approvalGates"]),
+            "remediationVerificationPlanPresent": bool(remediation_artifacts["verificationPlan"]),
+            "remediationRollbackOrHandoffPresent": bool(remediation_artifacts["rollbackOrHandoff"]),
         }
 
     def _findings(
@@ -396,6 +420,8 @@ class OpsPostmortemService:
             actions.append("手动停止运行时必须写入 manual_stop 接管事件，记录操作人和停止前状态")
         if "approval_rejection_handoff" in failed_codes:
             actions.append("被拒绝的高风险审批必须写入 approval_rejected 接管事件，说明方案改写或人工接管要求")
+        if "remediation_plan" in failed_codes:
+            actions.append("最终报告必须输出修复步骤、风险评估、审批门禁和验证计划，便于审批人判断是否可执行")
         if "sensitive_redaction" in failed_codes:
             actions.append("扩大敏感字段脱敏规则，重新检查工具入参和结果审计副本")
         if "audit_checkpoint" in failed_codes:
@@ -423,7 +449,8 @@ class OpsPostmortemService:
             f"{metrics['rollbackRecommendationCount']} 个回滚建议、{metrics['auditCheckpointCount']} 个审计检查点、"
             f"告警降噪 {metrics['alertNoiseReductionCount']} 条、{metrics['handoffCount']} 次人工接管、"
             f"{metrics['manualTakeoverCount']} 次手动接管、{metrics['approvalRejectedHandoffCount']} 次审批拒绝接管、"
-            f"{metrics['selfApprovedCount']} 次同人审批"
+            f"{metrics['selfApprovedCount']} 次同人审批、"
+            f"修复计划={'已记录' if metrics['remediationPlanPresent'] else '缺失'}"
         )
 
     def _users_by_id(self, user_ids: set[str]) -> dict[str, User]:
@@ -485,6 +512,19 @@ class OpsPostmortemService:
             for item in collaborations
             if item.event_type == "handoff" and isinstance(item.data, dict) and item.data.get("eventType") == "approval_rejected"
         ]
+
+    def _final_report_remediation_artifacts(self, final_report: str) -> dict[str, bool]:
+        """从最终报告文本中检查修复计划闭环产物是否存在。"""
+
+        text = final_report or ""
+        return {
+            "section": "### 修复方案与风险评估" in text,
+            "repairActions": "修复步骤" in text,
+            "riskAssessment": "风险评估" in text,
+            "approvalGates": "审批门禁" in text,
+            "verificationPlan": "验证计划" in text,
+            "rollbackOrHandoff": "### 回滚与人工接管" in text or "回滚预案" in text or "人工接管" in text,
+        }
 
     def _alert_noise_metrics(self, tool_calls: list[AgentToolCall]) -> dict[str, Any]:
         """从告警关联工具结果中提取降噪指标。"""
