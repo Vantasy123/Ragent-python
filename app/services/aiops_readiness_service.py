@@ -7,6 +7,7 @@ from typing import Any
 from app.agents.tool_registry import UnifiedToolRegistry
 from app.agents.tools import OpsToolkit
 from app.core.config import settings
+from app.core.text_sanitizer import REDACTED_VALUE, redact_sensitive_payload
 from app.services.project_config_service import ProjectConfigService
 
 
@@ -38,6 +39,8 @@ class AIOpsReadinessService:
             self._approval_gate_check(tools),
             self._verification_tool_check(tools),
             self._executor_isolation_check(),
+            self._command_governance_check(),
+            self._audit_redaction_check(),
         ]
         failed = [item for item in checks if item["status"] == "failed"]
         warnings = [item for item in checks if item["status"] == "warning"]
@@ -58,6 +61,14 @@ class AIOpsReadinessService:
                 "cloud": bool(cloud_resources),
                 "release": self._has_tool(tools, "release_evidence"),
                 "databaseMiddleware": self._has_tool(tools, "database_middleware_health"),
+            },
+            "safetyControls": {
+                "approvalGates": self._check_passed(checks, "approval_gates"),
+                "executorIsolation": self._check_passed(checks, "executor_isolation"),
+                "commandWhitelist": self._check_passed(checks, "command_governance"),
+                "highRiskInterception": self._check_passed(checks, "command_governance"),
+                "secretIsolation": self._check_passed(checks, "command_governance") and self._check_passed(checks, "audit_redaction"),
+                "auditRedaction": self._check_passed(checks, "audit_redaction"),
             },
             "nextSteps": self._next_steps(checks),
         }
@@ -180,10 +191,74 @@ class AIOpsReadinessService:
             "生产启用执行器前确认 Docker socket 权限、服务白名单、审批人和回滚预案",
         )
 
+    def _command_governance_check(self) -> dict[str, Any]:
+        """检查命令行工具是否只能通过模板白名单和动态审批策略执行。"""
+
+        tool = self.registry.tools.get("safe_command")
+        if not tool:
+            return self._check(
+                "command_governance",
+                "命令白名单/高危拦截",
+                "failed",
+                "未注册 safe_command，Agent 无法按模板白名单执行受控命令",
+                "注册 safe_command，并为读命令、写命令、未知命令和敏感参数配置策略",
+            )
+
+        read_risk, read_approval = tool.policy_for({"commandId": "docker_ps"})
+        write_risk, write_approval = tool.policy_for({"commandId": "docker_restart", "args": {"service": "ragent-api"}})
+        blocked_risk, blocked_approval = tool.policy_for({"command": "rm -rf /"})
+        secret_risk, secret_approval = tool.policy_for({"commandId": "docker_logs", "args": {"service": "ragent-api", "apiToken": "secret-token"}})
+        passed = (
+            read_risk == "read"
+            and not read_approval
+            and write_risk in {"write", "admin", "danger", "high"}
+            and write_approval
+            and blocked_risk == "danger"
+            and not blocked_approval
+            and secret_risk == "danger"
+            and not secret_approval
+        )
+        return self._check(
+            "command_governance",
+            "命令白名单/高危拦截",
+            "passed" if passed else "failed",
+            "命令执行已限制为模板白名单，写命令需要审批，未知命令和敏感凭证会被拦截"
+            if passed
+            else "safe_command 未同时满足读命令免审批、写命令审批、未知命令阻断和敏感参数阻断",
+            "检查 safe_command 模板、动态审批策略和敏感参数拦截规则",
+        )
+
+    def _audit_redaction_check(self) -> dict[str, Any]:
+        """检查审计和 Trace 入库前是否能遮蔽常见凭证。"""
+
+        sample = {
+            "apiToken": "secret-token",
+            "url": "https://user:pass@example.com/api?token=url-token&safe=1",
+            "headers": {"Authorization": "Bearer header-token"},
+        }
+        redacted = redact_sensitive_payload(sample)
+        text = str(redacted)
+        leaked = any(secret in text for secret in ("secret-token", "url-token", "header-token", "user:pass"))
+        passed = REDACTED_VALUE in text and not leaked
+        return self._check(
+            "audit_redaction",
+            "审计脱敏",
+            "passed" if passed else "failed",
+            "审计 payload 会在入库前遮蔽 Token、Authorization、URL 凭证等敏感信息"
+            if passed
+            else "审计脱敏样本仍存在未遮蔽凭证",
+            "修正 text_sanitizer 的敏感字段和 URL 脱敏规则，避免凭证进入 Trace、工具结果和复盘报告",
+        )
+
     def _has_tool(self, tools: list[dict[str, Any]], name: str) -> bool:
         """判断工具目录中是否存在指定工具。"""
 
         return any(item.get("name") == name for item in tools)
+
+    def _check_passed(self, checks: list[dict[str, str]], code: str) -> bool:
+        """判断指定就绪检查是否通过，供安全控制面汇总使用。"""
+
+        return any(item.get("code") == code and item.get("status") == "passed" for item in checks)
 
     def _check(self, code: str, name: str, status: str, message: str, remediation: str) -> dict[str, str]:
         """构造统一就绪检查项。"""
