@@ -19,13 +19,6 @@ class TraceSpanHandle:
     """Trace span 的临时句柄，完成时再写入数据库。"""
 
     trace_id: str
-
-
-@dataclass
-class TraceSpanHandle:
-    """Trace span 的临时句柄，完成时再写入数据库。"""
-
-    trace_id: str
     operation: str
     started_at: float = field(default_factory=time.time)
     input_data: dict[str, Any] = field(default_factory=dict)

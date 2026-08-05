@@ -32,6 +32,8 @@
 """
 from __future__ import annotations
 
+from math import isfinite
+
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
@@ -71,6 +73,25 @@ class KnowledgeService:
             {"value": "semantic", "label": "语义切分"},
         ]
 
+    def _validate_retrieval_config(
+        self,
+        vector_weight: float,
+        bm25_weight: float,
+        rerank_threshold: float,
+        top_k: int,
+    ) -> None:
+        values = (vector_weight, bm25_weight, rerank_threshold)
+        if not all(isfinite(value) for value in values):
+            raise ValueError("检索参数必须是有限数值")
+        if not 0.0 <= vector_weight <= 1.0 or not 0.0 <= bm25_weight <= 1.0:
+            raise ValueError("检索权重必须在 0 到 1 之间")
+        if vector_weight + bm25_weight <= 0.0:
+            raise ValueError("检索权重之和必须大于 0")
+        if not 0.0 <= rerank_threshold <= 1.0:
+            raise ValueError("重排阈值必须在 0 到 1 之间")
+        if not 1 <= top_k <= 50:
+            raise ValueError("top_k 必须在 1 到 50 之间")
+
     def create_kb(
         self,
         name: str,
@@ -84,6 +105,7 @@ class KnowledgeService:
     ) -> KnowledgeBase:
         # 集合名改为东八区可读时间标识，避免界面或排障时看到 UTC 时间戳难以判断。
         """create_kb 函数：创建新的业务记录，负责组织入库字段并返回创建后的结果。"""
+        self._validate_retrieval_config(vector_weight, bm25_weight, rerank_threshold, top_k)
         kb = KnowledgeBase(
             name=name,
             description=description,
@@ -116,6 +138,13 @@ class KnowledgeService:
             "rerank_threshold",
             "top_k",
         ]
+        retrieval_config = {
+            "vector_weight": payload.get("vector_weight", kb.vector_weight),
+            "bm25_weight": payload.get("bm25_weight", kb.bm25_weight),
+            "rerank_threshold": payload.get("rerank_threshold", kb.rerank_threshold),
+            "top_k": payload.get("top_k", kb.top_k),
+        }
+        self._validate_retrieval_config(**retrieval_config)
         for field in allowed_fields:
             if field in payload and payload[field] is not None:
                 setattr(kb, field, payload[field])

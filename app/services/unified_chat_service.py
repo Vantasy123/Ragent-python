@@ -12,7 +12,7 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.domain.models import User
+from app.domain.models import KnowledgeBase, User
 from app.rag.workflow import build_primary_llm
 from app.services.chat_service import ConversationService, stream_chat
 from app.services.ops_agent_service import OpsAgentService
@@ -102,11 +102,22 @@ class UnifiedChatService:
         user: User,
         mode: ChatMode = "auto",
         conversation_id: str | None = None,
+        kb_id: str | None = None,
         deep_thinking: bool = False,
     ) -> AsyncIterator[dict]:
         """根据通道输出统一 SSE 事件，并补充 channel 字段。"""
 
         channel = await resolve_chat_mode(message, mode)
+        conversation_service = ConversationService(self.db)
+        if kb_id:
+            kb = self.db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id, KnowledgeBase.enabled.is_(True)).first()
+            if not kb:
+                yield {"type": "error", "channel": "rag", "content": "知识库不存在或已禁用"}
+                return
+        if conversation_id:
+            existing_conversation = conversation_service.get_conversation(conversation_id)
+            if existing_conversation and existing_conversation.user_id != user.id:
+                conversation_id = None
 
         if channel == "ops":
             # 运维 Agent 可以读取容器状态和触发审批，必须限制为管理员。
@@ -123,7 +134,7 @@ class UnifiedChatService:
             return
 
         # RAG 链路需要确保存在会话；没有 conversationId 时自动创建。
-        service = ConversationService(self.db)
+        service = conversation_service
         conversation = service.get_conversation(conversation_id) if conversation_id else None
         if not conversation:
             conversation = service.create_conversation(user.id, message[:30] or "新对话")
@@ -133,7 +144,14 @@ class UnifiedChatService:
             if not acquired:
                 yield {"type": "error", "channel": "rag", "content": "当前用户聊天并发已满，请等待上一轮回答完成"}
                 return
-            async for event in stream_chat(self.db, conversation.id, message, task_id, deep_thinking=deep_thinking):
+            async for event in stream_chat(
+                self.db,
+                conversation.id,
+                message,
+                task_id,
+                kb_id=kb_id,
+                deep_thinking=deep_thinking,
+            ):
                 event["channel"] = "rag"
                 event.setdefault("conversationId", conversation.id)
                 yield event

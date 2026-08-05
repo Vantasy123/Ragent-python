@@ -22,6 +22,7 @@ export interface UnifiedChatPayload {
   message: string
   mode: ChatMode
   conversationId?: string
+  kbId?: string
   deepThinking?: boolean
 }
 

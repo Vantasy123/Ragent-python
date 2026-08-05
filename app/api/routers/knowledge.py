@@ -29,7 +29,7 @@ API 端点：
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -51,11 +51,11 @@ class KnowledgeBasePayload(BaseModel):
     description: str = ""
     embedding_model: str = "text-embedding-v3"
     enabled: bool | None = None
-    vector_weight: float | None = None
-    bm25_weight: float | None = None
+    vector_weight: float | None = Field(default=None, ge=0.0, le=1.0)
+    bm25_weight: float | None = Field(default=None, ge=0.0, le=1.0)
     rerank_enabled: bool | None = None
-    rerank_threshold: float | None = None
-    top_k: int | None = None
+    rerank_threshold: float | None = Field(default=None, ge=0.0, le=1.0)
+    top_k: int | None = Field(default=None, ge=1, le=50)
 
 
 class DocumentUpdatePayload(BaseModel):
@@ -90,16 +90,19 @@ def chunk_strategies(db: Session = Depends(get_db), _: User = Depends(require_ad
 @router.post("/knowledge-base")
 def create_kb(payload: KnowledgeBasePayload, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     """create_kb 函数：创建新的业务记录，负责组织入库字段并返回创建后的结果。"""
-    kb = KnowledgeService(db).create_kb(
-        name=payload.name,
-        description=payload.description,
-        embedding_model=payload.embedding_model,
-        vector_weight=payload.vector_weight if payload.vector_weight is not None else 0.5,
-        bm25_weight=payload.bm25_weight if payload.bm25_weight is not None else 0.5,
-        rerank_enabled=payload.rerank_enabled if payload.rerank_enabled is not None else True,
-        rerank_threshold=payload.rerank_threshold if payload.rerank_threshold is not None else 0.0,
-        top_k=payload.top_k if payload.top_k is not None else 8,
-    )
+    try:
+        kb = KnowledgeService(db).create_kb(
+            name=payload.name,
+            description=payload.description,
+            embedding_model=payload.embedding_model,
+            vector_weight=payload.vector_weight if payload.vector_weight is not None else 0.5,
+            bm25_weight=payload.bm25_weight if payload.bm25_weight is not None else 0.5,
+            rerank_enabled=payload.rerank_enabled if payload.rerank_enabled is not None else True,
+            rerank_threshold=payload.rerank_threshold if payload.rerank_threshold is not None else 0.0,
+            top_k=payload.top_k if payload.top_k is not None else 8,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     kb.created_by = user.id
     db.commit()
     return success({"id": kb.id, "name": kb.name, "collectionName": kb.collection_name})
@@ -108,7 +111,10 @@ def create_kb(payload: KnowledgeBasePayload, db: Session = Depends(get_db), user
 @router.put("/knowledge-base/{kb_id}")
 def update_kb(kb_id: str, payload: KnowledgeBasePayload, db: Session = Depends(get_db), _: User = Depends(require_admin)):
     """update_kb 函数：更新已有业务记录，只修改调用方明确传入的字段。"""
-    kb = KnowledgeService(db).update_kb(kb_id, **payload.model_dump(exclude_none=True))
+    try:
+        kb = KnowledgeService(db).update_kb(kb_id, **payload.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not kb:
         raise HTTPException(status_code=404, detail="知识库不存在")
     return success({"id": kb.id})

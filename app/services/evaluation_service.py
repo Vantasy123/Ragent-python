@@ -771,6 +771,7 @@ class EvaluationService:
                 conversation.id,
                 case.question,
                 task_id=f"eval-{case.id}",
+                kb_id=case.kb_id,
                 deep_thinking=False,
             ):
                 if event.get("traceId"):

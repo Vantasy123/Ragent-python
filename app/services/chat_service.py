@@ -269,14 +269,18 @@ def _build_prompt(question: str, chunks: list, memory_block: str = "") -> str:
     )
 
 
-async def _prepare_rag_context(service: ConversationService, conversation_id: str, message: str) -> tuple[str, list, str]:
+async def _prepare_rag_context(
+    service: ConversationService,
+    conversation_id: str,
+    message: str,
+    kb_id: str | None = None,
+) -> tuple[str, list, str]:
     """_prepare_rag_context 函数：准备模型调用前需要的上下文、提示词或历史消息。"""
     try:
         from app.rag.workflow import multi_channel_retriever, query_rewriter, reranker
     except Exception as exc:
         raise ChatGenerationError("workflow_import", f"{type(exc).__name__}: {exc}") from exc
 
-    runtime = get_runtime_settings(service.db)
     conversation = service.get_conversation(conversation_id)
     user_id = conversation.user_id if conversation else None
     memory_block = LongTermMemoryService(service.db).build_prompt_block(user_id, message)
@@ -286,30 +290,36 @@ async def _prepare_rag_context(service: ConversationService, conversation_id: st
         raise ChatGenerationError("query_rewrite", f"{type(exc).__name__}: {exc}") from exc
 
     try:
-        retrieved_chunks = await multi_channel_retriever.retrieve(query=rewritten, top_k=runtime.top_k, db=service.db)
+        retrieved_chunks = await multi_channel_retriever.retrieve(
+            query=rewritten,
+            kb_id=kb_id,
+            top_k=None,
+            db=service.db,
+        )
     except Exception as exc:
         raise ChatGenerationError("retrieval", f"{type(exc).__name__}: {exc}") from exc
 
     final_chunks = retrieved_chunks
     try:
-        # 从检索结果中反推 kb_id
-        kb_id = None
-        for chunk in retrieved_chunks:
-            meta = _chunk_metadata(chunk)
-            if meta and meta.get("kb_id"):
-                kb_id = meta["kb_id"]
-                break
+        # 优先使用请求明确指定的知识库；全库检索时才从结果中推断来源知识库。
+        resolved_kb_id = kb_id
+        if not resolved_kb_id:
+            for chunk in retrieved_chunks:
+                meta = _chunk_metadata(chunk)
+                if meta and meta.get("kb_id"):
+                    resolved_kb_id = meta["kb_id"]
+                    break
 
         # 默认使用全局配置
         rerank_enabled = getattr(settings, "RERANK_ENABLED", True)
         rerank_threshold = getattr(settings, "RERANK_THRESHOLD", 0.0)
 
-        if kb_id and service.db:
+        if resolved_kb_id and service.db:
             try:
                 from app.domain.models import KnowledgeBase
-                kb = service.db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+                kb = service.db.query(KnowledgeBase).filter(KnowledgeBase.id == resolved_kb_id).first()
                 if not kb:
-                    kb = service.db.query(KnowledgeBase).filter(KnowledgeBase.collection_name == kb_id).first()
+                    kb = service.db.query(KnowledgeBase).filter(KnowledgeBase.collection_name == resolved_kb_id).first()
                 if kb:
                     rerank_enabled = kb.rerank_enabled
                     rerank_threshold = kb.rerank_threshold
@@ -355,6 +365,7 @@ async def stream_chat(
     conversation_id: str,
     message: str,
     task_id: str,
+    kb_id: str | None = None,
     deep_thinking: bool = False,
 ) -> AsyncIterator[dict]:
     """stream_chat 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
@@ -380,11 +391,18 @@ async def stream_chat(
     )
     answer = ""
 
-    trace_service.complete_span(intent_span, output_data={"mode": "rag", "agentMode": "react"})
+    trace_service.complete_span(intent_span, output_data={"mode": "rag", "agentMode": "direct_rag" if kb_id else "react"})
     react_span = trace_service.create_span(trace.id, "react_loop", input_data={"question": message, "history": history_for_agent})
     react_events: list[dict] = []
-    try:
+
+    async def run_react_if_unscoped():
+        if kb_id:
+            return
         async for event in ConversationReactAgent().run(message, history_for_agent):
+            yield event
+
+    try:
+        async for event in run_react_if_unscoped():
             event["taskId"] = task_id
             event["traceId"] = trace.id
             react_events.append(event)
@@ -421,7 +439,10 @@ async def stream_chat(
             trace_service.complete_run(trace.id, "success")
             yield {"type": "done", "taskId": task_id, "traceId": trace.id}
             return
-        trace_service.complete_span(react_span, status="error", error_message="ReAct 未产出最终回答", output_data={"events": react_events})
+        if kb_id:
+            trace_service.complete_span(react_span, output_data={"skipped": True, "reason": "kb_id 指定知识库检索范围"})
+        else:
+            trace_service.complete_span(react_span, status="error", error_message="ReAct 未产出最终回答", output_data={"events": react_events})
     except Exception as exc:
         # ReAct 是增强路径，失败时保留 Trace 后回退到原 RAG 链路。
         trace_service.complete_span(react_span, status="error", error_message=str(exc), output_data={"events": react_events})
@@ -431,7 +452,7 @@ async def stream_chat(
     generation_span = trace_service.create_span(trace.id, "generation")
 
     try:
-        rewritten, chunks, prompt = await _prepare_rag_context(service, conversation_id, message)
+        rewritten, chunks, prompt = await _prepare_rag_context(service, conversation_id, message, kb_id=kb_id)
         sources = _build_source_items(chunks)
         rewrite_span.input_data["query"] = rewritten
         retrieval_span.input_data = {"query": rewritten}

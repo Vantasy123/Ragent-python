@@ -27,6 +27,7 @@ class UnifiedChatRequest(BaseModel):
     message: str
     mode: Literal["auto", "rag", "ops"] = "auto"
     conversationId: str | None = None
+    kbId: str | None = None
     deepThinking: bool = False
 
 
@@ -46,6 +47,7 @@ async def unified_chat(payload: UnifiedChatRequest, db: Session = Depends(get_db
             user,
             mode=payload.mode,
             conversation_id=payload.conversationId,
+            kb_id=payload.kbId,
             deep_thinking=payload.deepThinking,
         ):
             # SSE 每个事件都用 data 行输出，ensure_ascii=False 保留中文诊断信息。
