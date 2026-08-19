@@ -129,6 +129,31 @@ class HybridEvaluationMetricTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metrics["faithfulness"]["status"], "skipped")
         self.assertTrue(any(issue["issueKey"] == "judge_skipped" for issue in issues))
 
+    def test_compare_batch_runs_reports_quality_regression(self) -> None:
+        """基线和候选批次应给出可用于 CI 的回归结论。"""
+
+        baseline = EvaluationBatchRun(dataset=self.dataset, status="completed")
+        candidate = EvaluationBatchRun(dataset=self.dataset, status="completed")
+        baseline_result = EvaluationCaseResult(
+            batch_run=baseline,
+            case=self.case,
+            status="completed",
+            metrics={"answer_correctness": {"status": "completed", "score": 0.9}},
+        )
+        candidate_result = EvaluationCaseResult(
+            batch_run=candidate,
+            case=self.case,
+            status="completed",
+            metrics={"answer_correctness": {"status": "completed", "score": 0.5}},
+        )
+        self.db.add_all([baseline, candidate, baseline_result, candidate_result])
+        self.db.commit()
+
+        comparison = EvaluationService(self.db).compare_batch_runs(baseline.id, candidate.id)
+
+        self.assertEqual(comparison["regressionGate"], "failed")
+        self.assertIn("answer_correctness", comparison["regressed"])
+
     def test_batch_with_failed_case_becomes_completed_with_errors(self) -> None:
         """批次存在失败用例时，最终状态应明确标记为部分失败。"""
 

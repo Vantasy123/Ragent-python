@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "ragent-career-hub-sse": {
+      "url": "http://localhost:8001/mcp/sse"
+    },
+    "ragent-career-hub-stdio": {
+      "command": "python",
+      "args": ["-m", "app.mcp_server"],
+      "env": {
+        "PYTHONPATH": "."
+      }
+    }
+  }
+}

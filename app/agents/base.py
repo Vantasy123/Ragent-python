@@ -11,9 +11,11 @@ class AgentRole(str, Enum):
     """多 Agent 协作中的固定角色。"""
 
     ORCHESTRATOR = "orchestrator"
+    PLANNER = "planner"
     DIAGNOSTICS = "diagnostics"
     MONITOR = "monitor"
     EXECUTOR = "executor"
+    REPLANNER = "replanner"
     KNOWLEDGE = "knowledge"
     VERIFICATION = "verification"
     AUDIT = "audit"

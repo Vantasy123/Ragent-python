@@ -1,13 +1,14 @@
-"""模块导读：本文件位于 app/rag/retrieval/reranker.py，属于RAG 问答链路。
+"""模块导读：本文件位于 app/rag/retrieval/reranker.py，属于 RAG 问答链路。
 
-主要职责：处理问题改写、知识检索、结果融合、重排和最终回答生成。
-阅读建议：先看模块顶部导入，理解它依赖哪些服务或外部组件；再看公开类和函数，顺着调用链理解数据如何流转。"""
+主要职责：处理知识检索结果重排 (Rerank)，支持 SiliconFlow API、本地 FlagEmbedding 与轻量词项相关性兜底。
+"""
 
 from __future__ import annotations
 
 import logging
 import math
 import re
+import requests
 
 from app.core.config import settings
 
@@ -15,10 +16,10 @@ logger = logging.getLogger(__name__)
 
 
 class RerankerService:
-    """检索结果重排服务；优先使用专用模型，失败时回退到轻量词项相关性。"""
+    """检索结果重排服务；支持 SiliconFlow 云端 API、本地 FlagEmbedding 以及词项相关性兜底。"""
 
     def __init__(self) -> None:
-        """延迟加载重排模型，避免应用启动时强依赖本地模型可用。"""
+        """延迟加载重排模型或客户端配置。"""
         self._model = None
         self._model_load_failed = False
 
@@ -27,11 +28,8 @@ class RerankerService:
         if not documents:
             return []
 
-        scores = self._model_scores(query, documents)
-        source = "model" if scores is not None else "lexical"
-        effective_threshold = max(0.0, float(threshold or 0.0)) if source == "model" else 0.0
-        if scores is None:
-            scores = self._lexical_scores(query, documents)
+        scores, source = self._compute_scores(query, documents)
+        effective_threshold = max(0.0, float(threshold or 0.0)) if source in ("siliconflow", "model") else 0.0
 
         ranked = [
             {"index": index, "score": float(score), "source": source}
@@ -41,13 +39,88 @@ class RerankerService:
         ranked.sort(key=lambda item: item["score"], reverse=True)
         return ranked
 
-    def _model_scores(self, query: str, documents: list[str]) -> list[float] | None:
-        """使用 FlagEmbedding reranker 计算 query-document 相关性分数。"""
+    def _compute_scores(self, query: str, documents: list[str]) -> tuple[list[float], str]:
+        """按配置优先级依次尝试 SiliconFlow API、本地 FlagEmbedding 与词频兜底。"""
         if not getattr(settings, "RERANK_ENABLED", True):
-            return None
-        if str(getattr(settings, "RERANK_PROVIDER", "flag_embedding")).lower() != "flag_embedding":
+            return self._lexical_scores(query, documents), "lexical"
+
+        provider = str(getattr(settings, "RERANK_PROVIDER", "siliconflow")).lower()
+
+        # 1. 优先尝试 SiliconFlow / API 模式
+        if provider in ("siliconflow", "api", "auto"):
+            api_scores = self._api_scores(query, documents)
+            if api_scores is not None:
+                return api_scores, "siliconflow"
+
+        # 2. 尝试本地 FlagEmbedding 模式
+        if provider in ("flag_embedding", "local", "auto"):
+            model_scores = self._model_scores(query, documents)
+            if model_scores is not None:
+                return model_scores, "model"
+
+        # 3. 词项覆盖率启发式降级
+        return self._lexical_scores(query, documents), "lexical"
+
+    def _api_scores(self, query: str, documents: list[str]) -> list[float] | None:
+        """调用 SiliconFlow 等兼容的 /v1/rerank 接口计算 Cross-Encoder 语义匹配得分。"""
+        api_key = (
+            getattr(settings, "RERANK_API_KEY", "")
+            or getattr(settings, "SILICONFLOW_API_KEY", "")
+            or getattr(settings, "EMBEDDING_API_KEY", "")
+        )
+        if not api_key:
             return None
 
+        base_url = (
+            getattr(settings, "RERANK_API_BASE", "")
+            or getattr(settings, "EMBEDDING_API_BASE", "")
+            or "https://api.siliconflow.cn/v1"
+        ).rstrip("/")
+        if not base_url.endswith("/rerank"):
+            base_url = f"{base_url}/rerank"
+
+        model_name = getattr(settings, "RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
+
+        try:
+            resp = requests.post(
+                base_url,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model_name,
+                    "query": query,
+                    "documents": documents,
+                    "top_n": len(documents),
+                    "return_documents": False,
+                },
+                timeout=15.0,
+            )
+            if resp.status_code != 200:
+                logger.warning("SiliconFlow Rerank API 调用失败: %s - %s", resp.status_code, resp.text)
+                return None
+
+            data = resp.json()
+            results = data.get("results", [])
+            if not results:
+                return None
+
+            # 将 results 按原始 index 还原为列表
+            scores = [0.0] * len(documents)
+            for item in results:
+                idx = item.get("index")
+                score = item.get("relevance_score", 0.0)
+                if idx is not None and 0 <= idx < len(scores):
+                    scores[idx] = float(score)
+
+            return scores
+        except Exception as exc:
+            logger.warning("SiliconFlow Rerank API 请求异常，将自动降级: %s", exc)
+            return None
+
+    def _model_scores(self, query: str, documents: list[str]) -> list[float] | None:
+        """使用本地 FlagEmbedding reranker 计算 query-document 相关性分数。"""
         model = self._load_model()
         if model is None:
             return None
@@ -62,7 +135,7 @@ class RerankerService:
                 raise RuntimeError("rerank 模型返回分数数量与文档数量不一致")
             return scores
         except Exception as exc:
-            logger.warning("Rerank model scoring failed, falling back to lexical rerank: %s", exc)
+            logger.warning("本地 Rerank 模型计算失败，将回退: %s", exc)
             return None
 
     def _load_model(self):
@@ -81,7 +154,7 @@ class RerankerService:
             return self._model
         except Exception as exc:
             self._model_load_failed = True
-            logger.warning("Rerank model unavailable, using lexical fallback: %s", exc)
+            logger.warning("本地 Rerank 模型不可用，使用词项或 API 模式: %s", exc)
             return None
 
     def _lexical_scores(self, query: str, documents: list[str]) -> list[float]:
@@ -103,7 +176,7 @@ class RerankerService:
         return scores
 
     def _tokenize(self, text: str) -> list[str]:
-        """中英文统一分词，优先用 jieba，缺失时回退正则。"""
+        """中英文统一分词，优先用 jieba，缺失时回退正则与 2-gram。"""
         normalized = (text or "").strip().lower()
         if not normalized:
             return []

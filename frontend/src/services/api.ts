@@ -2,8 +2,12 @@ import axios from 'axios'
 
 const apiClient = axios.create({
   baseURL: '/api',
-  timeout: 30000,
+  timeout: 120000,
 })
+
+function notifyUnauthorized() {
+  window.dispatchEvent(new Event('ragent:unauthorized'))
+}
 
 apiClient.interceptors.request.use((config) => {
   const token = localStorage.getItem('ragent_token')
@@ -19,6 +23,10 @@ apiClient.interceptors.response.use(
     const response = error.response
     const payload = response?.data
     let detail = payload?.detail
+
+    if (response?.status === 401 && !String(response.config?.url || '').includes('/auth/login')) {
+      notifyUnauthorized()
+    }
 
     if (!detail && typeof payload === 'string') {
       if (response?.status === 413) {

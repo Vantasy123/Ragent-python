@@ -1,486 +1,287 @@
-# Ragent Python
+# Ragent Python - 智能求职 Agent 平台 (NowClaw 对齐与大模型测评体系)
 
-`ragent-python` 是一个以后端能力为核心的 Agentic RAG 与运维 Agent 平台，基于 `FastAPI + SQLAlchemy + MySQL + Milvus` 构建。当前后端统一在 `app/` 包下，普通对话优先走 ReAct 工具调用循环，失败时回退到传统 RAG；运维诊断走 Plan-Execute-Replan，并通过 Trace 记录关键节点、工具调用和耗时。
+`ragent-python` 是一个以全链路求职智能化为核心的 **AI 智能求职 Agent 与大模型测评平台**（对齐牛客 NowClaw 架构体系），基于 `FastAPI + SQLAlchemy + MySQL/SQLite + Milvus + Vue3 + Tailwind CSS` 构建。
 
-前端只作为最小交互入口：提供聊天页、后台管理页、Trace 查看页和运维 Agent 页面；聊天页默认只展示当前阶段和最终输出，点击“显示详情”后展开流式过程。
+平台集成了 **智能简历中枢、岗位检索与人岗精准匹配、求职投递看板、AI 沉浸式模拟面试厅、网申自动填表 Bridge 协议、大模型/智能体评测中心 (Evaluations) 与八股面经知识库 RAG**，全流程赋能求职者高效拿 Offer，同时为智能体研发提供完整的评估基准与回归门禁。
 
-## 后端能力
+---
 
-- 统一聊天入口：`POST /api/agent/chat`，支持 `auto / rag / ops`。
-- 普通对话 Agent：ReAct 优先，可调用 MCP 风格安全工具；模型或动作解析失败时回退到 RAG。
-- 运维 Agent：Planner 生成计划，Executor 单步执行工具，Replanner 根据观察结果继续、完成、阻塞或修订计划。
-- 统一工具层：`UnifiedToolRegistry` 合并 MCP 工具与运维白名单工具。
-- 知识库：支持知识库、文档、Chunk、上传、分块、重建、启停和检索。
-- 摄取流水线：`fetch -> parse -> chunk -> index` 节点化处理。
-- Trace：显式记录 input、output、context、节点耗时和错误信息。
-- 评估：基于 Trace、工具调用和反馈数据生成评估记录，深度整合 LangSmith（链路追踪、用例同步与指标 Feedback 回传）与 OpenAI Evals（自动化复评与报告同步）。
-- 安全审计中心：对敏感数据导出、配置与权限访问进行全程审计，支持安全合规日志的 CSV 导出。
-- 运维安全：只读工具可自动执行，写操作必须进入审批。
+## 🎯 智能求职核心体系 (NowClaw 体系对齐)
 
-## 后端目录
+1. **智能简历中枢 (Resume Intelligence & STAR Polishing)**
+   - 简历多格式智能解析（PDF/Word/Markdown/文本），大模型多维度结构化提取（基本信息、教育经历、工作经历、项目经历、专业技能、荣誉证书）。
+   - 简历多版本定制管理（针对不同岗位方向派生版本），AI 质量评分卡（完整度、清晰度、量化成果、契合度）与痛点诊断建议。
+   - **STAR 法则智能润色重构**（情境 S、任务 T、行动 A、结果 R 量化，突出底层架构原理与核心收益）。
 
-| 目录 | 作用 |
-| --- | --- |
-| `app/main.py` | FastAPI 应用入口、生命周期和路由注册 |
-| `app/api/routers/` | HTTP API 路由 |
-| `app/core/` | 配置、数据库、时间、文本清洗等基础能力 |
-| `app/domain/models.py` | SQLAlchemy ORM 模型 |
-| `app/services/` | 业务服务层，包括聊天、知识库、Trace、运维和评估 |
-| `app/agents/` | Agent 基础类型、ReAct、运维编排和统一工具层 |
-| `app/agents/tools/` | 运维白名单工具 |
-| `app/rag/` | 查询改写、检索、重排和模型工作流 |
-| `app/knowledge/` | 向量库适配和知识库兼容入口 |
-| `app/ingestion/` | 文档摄取流水线和节点 |
-| `app/infrastructure/` | MCP、模型路由、会话记忆等基础设施 |
-| `scripts/` | Windows 启动脚本和迁移/回填脚本 |
+2. **岗位检索与人岗精准匹配 (Job Match Engine)**
+   - 多渠道岗位机会聚合检索（牛客网申、BOSS直聘、校招/社招岗位库）。
+   - 深度全维度人岗匹配打分算法（0-100 综合分、必备技能与加分项比对、核心竞争优势、短板缺口与补强建议）。
+   - **一键生成高情商破冰打招呼话术与专属求职信 (Cover Letter)**。
 
-## 启动
+3. **求职投递看板 (Application Pipeline & Kanban)**
+   - 可视化 Kanban 流水线全生命周期管理：`意向岗位 -> 已网申 -> 简历初筛 -> 笔试测评 -> 一面/二面/HR面 -> 斩获Offer -> 归档`。
+   - 阶段拖拽流转、面试日程记录、面试复盘笔记、录用 Offer 薪资包详情与入职决策分析。
 
-开源使用推荐先复制示例配置，再按个人环境修改：
+4. **AI 沉浸式模拟面试厅 (Mock Interview Room)**
+   - 多角色面试官设定（大厂技术专家、架构师/技术总监、资深 HRBP、骨干研发）。
+   - 针对目标岗位 JD 与候选人简历的动态多轮沉浸式提问（技术八股、项目深挖、高并发系统设计、行为面试 BQ）。
+   - 实时作答大模型评测打分、采分点覆盖分析、大厂标准示范回答 (Model Answer) 对比与五维能力雷达图复盘报告。
+
+5. **网申助手与自动填表 (Auto-Fill & Bridge Protocol)**
+   - 严格对齐 NowClaw 浏览器扩展与 Bridge 通信规范（`fill.state` 协议）。
+   - 将结构化简历自动映射为各招聘平台的标准填表 Payload，支持一键复制与插件桥接。
+
+6. **求职数据分析大盘 (Job Analytics Dashboard)**
+   - 全周期投递转化漏斗分析、面试通过率、Offer 转化率、能力成长曲线与求职策略周报。
+
+7. **求职专用 ReAct Agent 与工具箱 (`JobToolkit`)**
+   - 统一工具注册表集成 `job_parse_resume`, `job_optimize_project_star`, `job_search_postings`, `job_match_analysis`, `job_generate_interview_questions`, `job_generate_greeting` 等 6 大求职专有工具，对话台支持自然语言一站式调度。
+
+---
+
+## 📊 大模型与智能体测评体系 (Evaluations)
+
+平台配备了企业级大模型与智能体评测体系，支持自动化评估、数据集批次对比、回归门禁与外部评测平台深度集成：
+
+1. **评测数据集管理 (Datasets & Testcases)**：支持构建面经问答、人岗匹配、简历润色、代码能力等多领域黄金测试集。
+2. **批次对比评测 (Batch Runs & Regression Gating)**：支持候选模型与基线批次对比，自动计算准确率、召回率、BLEU、ROUGE 与结构化采分率。
+3. **OpenAI Evals 深度集成**：支持将智能体评测数据集一键同步至 OpenAI Evals 规范并执行评测打分。
+4. **LangSmith 链路追踪集成**：支持全链路 Trace 上报、延迟分析与自动化指标回传。
+
+---
+
+## 🏗️ 系统架构设计
+
+```mermaid
+flowchart TD
+    subgraph 前端交互层 [Vue 3 + Tailwind CSS + Pinia]
+        UI1["🎯 智能求职中枢\n(简历/匹配/看板/面试/网申/大盘)"]
+        UI2["💬 求职对话工作台\n(自然语言 ReAct Agent)"]
+        UI3["📊 智能体评测中心\n(数据集/批次对比/门禁)"]
+        UI4["📚 面经知识库\n(文档分块/多路检索)"]
+    end
+
+    subgraph 网关与路由层 [FastAPI Gateway]
+        GW["FastAPI /api Gateway"]
+        AuthMid["JWT 认证与安全审计中间件"]
+    end
+
+    subgraph 智能体与核心服务层 [Core Services & Agents]
+        JobService["Job Services\n(Resume / Match / Pipeline / Interview / AutoFill)"]
+        ChatEngine["Unified Chat & ReAct Agent Engine"]
+        EvalEngine["Evaluation Engine\n(Metrics / OpenAI Evals / LangSmith)"]
+        RAGEngine["RAG Workflow\n(Rewrite / Multi-channel / Rerank)"]
+    end
+
+    subgraph 工具注册表 [Unified Tool Registry]
+        JT["JobToolkit\n(6 大求职专属工具)"]
+        KT["Knowledge & MCP Tools"]
+    end
+
+    subgraph 存储与基础设施 [Data & Storage Layer]
+        MySQL[("MySQL 8.4\n(业务实体/看板/评测结果)")]
+        Redis[("Redis 7\n(会话缓存/并发频控)")]
+        Milvus[("Milvus 2.5\n(八股面经向量索引)")]
+        RustFS[("RustFS / MinIO\n(简历原件/文档存储)")]
+    end
+
+    UI1 & UI2 & UI3 & UI4 --> GW
+    GW --> AuthMid
+    AuthMid --> JobService & ChatEngine & EvalEngine & RAGEngine
+    ChatEngine --> JT & KT
+    JobService & ChatEngine & EvalEngine & RAGEngine --> MySQL & Redis & Milvus & RustFS
+```
+
+---
+
+## 📁 项目目录结构
+
+```text
+ragent-python/
+├── app/
+│   ├── agents/                  # ReAct 智能体编排、工具注册表与工具定义
+│   │   ├── tools/
+│   │   │   └── job_toolkit.py   # 6 大求职专有工具实现 (NowClaw 对齐)
+│   │   ├── react_agent.py       # 对话 ReAct 循环引擎
+│   │   └── tool_registry.py     # 统一工具注册表 (UnifiedToolRegistry)
+│   ├── api/routers/             # HTTP API 路由层
+│   │   ├── job_resumes.py       # 简历中枢 API
+│   │   ├── job_matching.py      # 岗位与人岗匹配 API
+│   │   ├── job_applications.py  # 投递看板流水线 API
+│   │   ├── mock_interviews.py   # AI 模拟面试厅 API
+│   │   ├── job_autofill.py      # 网申自动填表 API
+│   │   ├── evaluations.py       # 智能体评估与测评中心 API
+│   │   ├── unified_chat.py      # 统一求职对话 API
+│   │   ├── knowledge.py         # 八股面经知识库 API
+│   │   ├── trace.py             # 链路追踪 API
+│   │   └── security_audit.py    # 安全审计 API
+│   ├── core/                    # 配置、数据库会话、安全头与工具函数
+│   ├── domain/models.py         # SQLAlchemy 领域实体定义 (求职/评测/知识库)
+│   ├── infrastructure/          # MCP 客户端、模型路由与多模型适配
+│   ├── ingestion/               # 知识库文档摄取与 ETL 流水线
+│   ├── rag/                     # 查询重写、多路召回 (向量+BM25)、RRF 融合与重排
+│   ├── services/                # 业务服务层
+│   │   ├── job_resume_service.py
+│   │   ├── job_matching_service.py
+│   │   ├── job_application_service.py
+│   │   ├── mock_interview_service.py
+│   │   ├── job_auto_fill_service.py
+│   │   ├── evaluation_service.py
+│   │   └── unified_chat_service.py
+│   └── main.py                  # FastAPI 主入口与生命周期管理
+├── frontend/                    # Vue3 + Tailwind CSS 前端工程
+│   ├── src/
+│   │   ├── pages/job/           # 6 大求职核心页面
+│   │   │   ├── ResumeCenterPage.vue
+│   │   │   ├── JobMatchingPage.vue
+│   │   │   ├── JobKanbanPage.vue
+│   │   │   ├── MockInterviewPage.vue
+│   │   │   ├── JobAutoFillPage.vue
+│   │   │   └── JobDashboardPage.vue
+│   │   ├── pages/EvaluationPage.vue  # 智能体评测中心页面
+│   │   ├── pages/ChatPage.vue        # 求职对话工作台
+│   │   └── router.ts                 # 前端路由配置
+│   └── package.json
+├── tests/                       # 自动化单测套件 (求职/评测/安全)
+│   ├── test_job_agent_full.py
+│   ├── test_evaluation_hybrid.py
+│   ├── test_agent_eval_service.py
+│   ├── test_openai_evals_service.py
+│   └── test_langsmith_integration.py
+├── docker-compose.yml           # 容器化编排 (MySQL+Redis+Milvus+RustFS+API+Frontend)
+├── requirements.txt             # 后端 Python 依赖清单
+└── .env.example                 # 环境变量示例
+```
+
+---
+
+## 🚀 快速启动
+
+### 1. 环境准备
+
+复制环境变量示例配置：
 
 ```powershell
 copy .env.example .env
-copy config\servers.example.yml config\servers.yml
-copy config\monitoring.example.yml config\monitoring.yml
 ```
 
-也可以直接运行启动脚本；如果这些文件不存在，脚本会自动从示例生成。
-
-`.env` 至少包含：
+在 `.env` 中填入你的大模型 API 配置（支持通义千问、DeepSeek、OpenAI、SiliconFlow 等兼容接口）：
 
 ```env
 OPENAI_API_KEY=your-api-key
 OPENAI_API_BASE=https://dashscope.aliyuncs.com/compatible-mode/v1
 CHAT_MODEL=qwen-plus
-DEBUG=false
-SILICONFLOW_API_KEY=
-MILVUS_TOKEN=
+EMBEDDING_MODEL=text-embedding-v3
 ```
 
-推荐使用脚本启动：
+### 2. Docker Compose 一键启动 (推荐)
+
+使用项目提供的启动脚本，一键拉起完整前后端与存储底座：
 
 ```powershell
+# Windows
 scripts\start-project.bat
-```
 
-默认模式是 `ops`，会加载 `docker-compose.ops.yml`，让运维 Agent 具备 Docker 白名单工具能力。默认不强制重建镜像；修改代码后使用：
-
-```powershell
+# 修改代码后强制重新构建镜像并启动
 scripts\start-project.bat -Build
 ```
 
-需要完整监控栈时使用：
+或使用原生 Docker Compose 命令：
 
 ```powershell
-scripts\start-project.bat monitoring -Build
+# 启动全栈服务（含 Nginx 前端与后端所有存储组件）
+docker compose --profile full up -d --build
 ```
 
-可选模式：
+### 3. 本地独立开发启动
 
+**后端启动**：
 ```powershell
-# 完整前后端，等价于 ops
-scripts\start-project.bat full
+# 创建并激活虚拟环境
+python -m venv venv
+.\venv\Scripts\activate
 
-# 仅后端依赖和 API，仍启用运维 override，等价于 ops-backend
-scripts\start-project.bat backend
-
-# 完整前后端，并启用运维工具
-scripts\start-project.bat ops
-
-# 仅后端，并启用运维工具
-scripts\start-project.bat ops-backend
-
-# 完整前后端、运维工具和 Prometheus / Alertmanager / Grafana
-scripts\start-project.bat monitoring
-
-# 仅后端、运维工具和监控栈
-scripts\start-project.bat monitoring-backend
-```
-
-Linux / macOS 可使用：
-
-```bash
-bash scripts/start-project.sh monitoring --build
-```
-
-手动启动：
-
-```powershell
-# 完整模式
-docker compose -f docker-compose.yml -f docker-compose.ops.yml --profile full up -d --build
-
-# 完整监控模式
-docker compose -f docker-compose.yml -f docker-compose.ops.yml -f docker-compose.monitoring.yml --profile full up -d --build
-
-# 仅后端依赖和 API
-docker compose -f docker-compose.yml -f docker-compose.ops.yml up -d --build mysql rustfs etcd milvus redis ragent-api ops-test-service
-
-# 停止
-docker compose -f docker-compose.yml -f docker-compose.ops.yml down
-```
-
-本地后端开发：
-
-```powershell
+# 安装依赖
 pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
+
+# 启动 FastAPI 服务
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-## 常用地址
-
-- 后端健康检查：`http://localhost:8000/api/health`
-- 前端代理健康检查：`http://localhost/api/health`
-- FastAPI 文档：`http://localhost:8000/docs`
-- 前端入口：`http://localhost/`
-- 聊天页：`http://localhost/chat`
-- 后台首页：`http://localhost/admin/dashboard`
-- Prometheus：`http://localhost:9090/`
-- Alertmanager：`http://localhost:9093/`
-- Grafana：`http://localhost:3001/`，默认账号 `admin/admin`
-
-更多开源部署说明见：
-
-- `docs/open-source-quick-start.md`
-- `docs/connect-business-server.md`
-- Trace 页面：`http://localhost/admin/traces`
-- 运维测试服务：`http://localhost:18081/`
-
-## API 概览
-
-核心接口统一使用 `/api` 前缀，历史无前缀接口和旧 RAG v3 入口已移除。
-
-| 能力 | 接口 |
-| --- | --- |
-| 健康检查 | `GET /api/health` |
-| 登录 | `POST /api/auth/login` |
-| 统一聊天 | `POST /api/agent/chat` |
-| 会话列表 | `GET /api/conversations` |
-| 会话消息 | `GET /api/conversations/{id}/messages` |
-| 知识库列表 | `GET /api/knowledge-base` |
-| 上传文档 | `POST /api/knowledge-base/{kb_id}/docs/upload` |
-| 触发分块 | `POST /api/knowledge-base/docs/{doc_id}/chunk` |
-| Trace 列表 | `GET /api/rag/traces/runs` |
-| Trace 节点 | `GET /api/rag/traces/runs/{trace_id}/nodes` |
-| 运维工具列表 | `GET /api/agent/ops/tools` |
-| 运维 Agent 聊天 | `POST /api/agent/ops/chat` |
-| 审批工具调用 | `POST /api/agent/ops/runs/{run_id}/approve` |
-
-## 统一聊天
-
-`POST /api/agent/chat`
-
-```json
-{
-  "message": "检查后端日志",
-  "mode": "auto",
-  "conversationId": null,
-  "deepThinking": false
-}
-```
-
-模式：
-
-- `auto`：根据关键词自动路由到普通 RAG 或运维 Agent。
-- `rag`：强制普通对话链路。
-- `ops`：强制运维 Agent 链路，要求管理员权限。
-
-## Agent 流程图
-
-### 统一聊天路由
-
-```mermaid
-flowchart TD
-    User["用户请求 /api/agent/chat"] --> Router["resolve_chat_mode"]
-    Router -->|rag| React["ConversationReactAgent"]
-    Router -->|ops| Ops["OpsAgentService"]
-    Router -->|auto 命中运维关键词| Ops
-    Router -->|auto 未命中| React
-    React --> SafeTools["MCP 安全工具"]
-    React --> Final["最终回答"]
-    React -->|模型失败或动作非法| RagFallback["传统 RAG 回退"]
-    Ops --> Planner["PlannerAgent"]
-    Planner --> Executor["StepExecutorAgent"]
-    Executor --> Replanner["ReplannerAgent"]
-    Replanner --> OpsReport["最终运维报告"]
-```
-
-### 普通对话 ReAct
-
-```mermaid
-sequenceDiagram
-    participant U as 用户
-    participant C as ChatService
-    participant R as ConversationReactAgent
-    participant T as UnifiedToolRegistry
-    participant L as LLM
-
-    U->>C: message
-    C->>R: run(question, history)
-    loop 最多 5 轮
-        R->>L: 生成 JSON 动作
-        alt tool_call
-            R->>T: call(tool, args)
-            T-->>R: observation
-        else final_answer
-            R-->>C: final_answer
-        end
-    end
-    C-->>U: SSE token / final_answer / done
-```
-
-### RAG 回退链路
-
-```mermaid
-flowchart TD
-    Question["用户问题"] --> History["读取最近历史"]
-    History --> Rewrite["QueryRewriter"]
-    Rewrite --> Retrieve["MultiChannelRetriever"]
-    Retrieve --> Vector[("Milvus 向量召回")]
-    Retrieve --> Keyword[("MySQL Chunk BM25 关键词召回")]
-    Vector --> Fusion["RRF 融合去重"]
-    Keyword --> Fusion
-    Fusion --> Rerank["RerankerService"]
-    Rerank --> Prompt["构造知识库提示词"]
-    Prompt --> LLM["build_primary_llm"]
-    LLM --> Answer["流式回答"]
-```
-
-检索默认启用混合召回：Milvus 负责语义相似度，BM25 负责关键词精确匹配，随后使用 RRF 融合排序。关键词通道失败时自动回退到向量检索，不影响聊天接口。
-
-### 运维 Plan-Execute-Replan
-
-```mermaid
-flowchart TD
-    Input["运维问题"] --> KB["knowledge_search"]
-    KB --> Planner["PlannerAgent 生成计划"]
-    Planner --> Plan["plan_created / agent_plan"]
-    Plan --> Executor["Executor 执行单步工具"]
-    Executor --> Tool{"工具是否需要审批"}
-    Tool -->|否| Observation["observation / step_observed"]
-    Tool -->|是| Approval["approval_required"]
-    Observation --> Replanner["Replanner 判断"]
-    Replanner -->|continue| Executor
-    Replanner -->|complete| Report["report / final_answer"]
-    Replanner -->|blocked| Approval
-    Replanner -->|revise| Plan
-```
-
-## 工具体系
-
-普通用户可见工具：
-
-| 工具 | 类型 | 说明 |
-| --- | --- | --- |
-| `get_time` | MCP / system | 获取当前时间 |
-| `search_knowledge_base` | MCP / knowledge | 检索知识库内容 |
-| `knowledge_search` | MCP / knowledge | 运维 Planner 兼容用知识检索别名 |
-| `get_weather` | MCP / external | 天气占位工具 |
-
-管理员运维额外可见工具：
-
-| 工具 | 风险 | 是否审批 | 说明 |
-| --- | --- | --- | --- |
-| `compose_ps` | read | 否 | 查看 Docker Compose 服务状态 |
-| `container_logs` | read | 否 | 读取容器最近日志 |
-| `api_health_check` | read | 否 | 检查后端健康接口 |
-| `frontend_health_check` | read | 否 | 检查前端入口 |
-| `nginx_proxy_check` | read | 否 | 检查前端代理到后端是否可达 |
-| `container_inspect` | read | 否 | 查看容器元信息 |
-| `log_analyzer` | read | 否 | 分析容器日志中的错误模式 |
-| `port_check` | read | 否 | 检查主机端口连通性 |
-| `system_metrics` | read | 否 | 读取基础系统指标 |
-| `container_stats` | read | 否 | 读取容器资源指标 |
-| `response_time_probe` | read | 否 | 探测接口响应时间 |
-| `alert_status` | read | 否 | 查看当前告警状态 |
-| `metric_trend` | read | 否 | 查看指标趋势 |
-| `prometheus_query` | read | 否 | 执行 Prometheus 即时查询 |
-| `compose_restart_service` | write | 是 | 重启指定 Compose 服务 |
-
-安全规则：
-
-- 运维工具只对管理员开放。
-- 只读工具可自动执行。
-- 写操作工具只产生审批事件，不会被 Agent 直接执行。
-- 工具服务名经过白名单和别名归一化，避免模型幻觉出不可控目标。
-- 监控工具默认不强依赖外部服务；需要真实数据时配置 `MONITORING_ENABLED=true`、`PROMETHEUS_URL` 和 `ALERTMANAGER_URL`。
-
-## 知识库入库流程
-
-```mermaid
-flowchart TD
-    Upload["上传文档"] --> Store["保存文件"]
-    Store --> DocRow["写入 knowledge_document"]
-    DocRow --> ChunkAPI["触发分块"]
-    ChunkAPI --> Engine["PipelineEngine"]
-    Engine --> Fetcher["读取文件"]
-    Fetcher --> Parser["解析内容"]
-    Parser --> Clean["文本清洗"]
-    Clean --> Chunker["分块 fixed / recursive / markdown / semantic"]
-    Chunker --> ChunkRows["写入 knowledge_chunk"]
-    Chunker --> Indexer["写入 Milvus"]
-    Engine --> Log["写入 chunk log"]
-```
-
-分块策略说明：
-
-- `fixed`：保留历史固定字符滑窗，适合兼容旧行为。
-- `recursive`：默认策略，按标题、段落、句子边界切分，超长片段固定窗口兜底。
-- `markdown`：优先保留 Markdown 标题路径、列表和代码块边界。
-- `semantic`：先规则切段，再用 embedding 相似度在低相关位置断开；embedding 不可用时自动回退 `recursive`。
-
-## Trace 流程
-
-```mermaid
-flowchart LR
-    Run["TraceRun"] --> Span["TraceSpan"]
-    Span --> Input["metadata.input"]
-    Span --> Output["metadata.output"]
-    Span --> Context["metadata.context"]
-    Span --> Duration["duration_ms"]
-    Span --> Status["status / error_message"]
-    API["Trace API"] --> Nodes["/api/rag/traces/runs/{trace_id}/nodes"]
-    Nodes --> UI["Trace 页面"]
-```
-
-Trace 当前记录：
-
-- 输入摘要：用户问题、工具名、工具参数、事件类型。
-- 输出摘要：工具结果、计划内容、重规划决策、最终报告。
-- 上下文：Agent 名称等运行上下文。
-- 节点耗时：Planner、工具调用、Replanner、最终回答会写入毫秒耗时。
-
-## 系统架构图
-
-```mermaid
-flowchart LR
-    User["用户 / 管理员"] --> Web["Vue 3 前端"]
-    Web --> Nginx["Nginx"]
-    Nginx --> API["FastAPI app.main"]
-
-    API --> Chat["统一聊天 /agent/chat"]
-    Chat --> Router["auto / rag / ops"]
-
-    Router --> React["对话 ReAct Agent"]
-    React --> SafeTools["MCP 安全工具"]
-    React --> RagFallback["RAG 回退链路"]
-
-    RagFallback --> Rewrite["查询改写"]
-    Rewrite --> Retrieve["检索"]
-    Retrieve --> Rerank["重排"]
-    Rerank --> LLM["LLM 生成"]
-
-    Router --> Ops["运维 Agent"]
-    Ops --> Planner["Planner"]
-    Planner --> Executor["Executor"]
-    Executor --> Replanner["Replanner"]
-    Executor --> OpsTools["运维白名单工具"]
-
-    Retrieve --> Vector[("Milvus")]
-    API --> DB[("MySQL")]
-    API --> Trace["Trace / Evaluation"]
-    Trace --> DB
-```
-
-## 前端最小说明
-
-- 前端目录：`frontend/`
-- 入口地址：`http://localhost/`
-- 聊天页：`http://localhost/chat`
-- 后台首页：`http://localhost/admin/dashboard`
-- 聊天页默认只展示当前运行阶段和最终输出。
-- 点击“显示详情”后展开 ReAct / 运维 Agent 流式过程。
-- 输入框固定在屏幕底部，`Enter` 发送，`Shift + Enter` 换行。
-
-前端本地构建：
-
+**前端启动**：
 ```powershell
 cd frontend
-npm run build
+npm install
+npm run dev
 ```
 
-仅重建前端容器：
+---
+
+## 🌐 访问地址与默认账号
+
+- **前端控制台入口**：`http://localhost/` 或 `http://localhost:5173/`
+- **求职智能对话台**：`http://localhost/chat`
+- **智能简历中枢**：`http://localhost/admin/resumes`
+- **岗位与人岗匹配**：`http://localhost/admin/job-matching`
+- **求职投递看板**：`http://localhost/admin/job-kanban`
+- **AI 模拟面试厅**：`http://localhost/admin/mock-interviews`
+- **网申自动填表**：`http://localhost/admin/job-autofill`
+- **智能体评测中心**：`http://localhost/admin/evaluations`
+- **八股面经知识库**：`http://localhost/admin/knowledge`
+- **FastAPI 接口文档 (Swagger)**：`http://localhost:8000/docs`
+
+**默认管理员账号**：
+- 用户名：`admin`
+- 密码：`admin123`（可在 `.env` 中通过 `DEFAULT_ADMIN_PASSWORD` 自定义）
+
+---
+
+## 🔌 API 核心接口速查
+
+| 业务分类 | 接口路径 | 请求方式 | 说明 |
+| :--- | :--- | :---: | :--- |
+| **简历中枢** | `/api/jobs/resumes` | `GET` | 获取当前用户的简历列表 |
+| | `/api/jobs/resumes/parse` | `POST` | 智能解析原始简历文本并诊断 |
+| | `/api/jobs/resumes/star-polish` | `POST` | 基于 STAR 法则优化项目经历 |
+| | `/api/jobs/resumes/{id}/versions` | `POST` | 为目标岗位创建针对性简历版本 |
+| **岗位与匹配** | `/api/jobs/postings` | `GET` | 检索岗位机会列表 |
+| | `/api/jobs/matching/analyze` | `POST` | 深度全维度人岗匹配打分 |
+| | `/api/jobs/matching/greeting` | `POST` | 生成 HR 高情商破冰与求职信 |
+| **投递看板** | `/api/jobs/applications` | `GET` | 获取投递全阶段看板数据 |
+| | `/api/jobs/applications` | `POST` | 新增投递跟进记录 |
+| | `/api/jobs/applications/{id}/stage` | `PUT` | 流转投递阶段（一面/二面/Offer） |
+| **模拟面试** | `/api/jobs/interviews/sessions` | `POST` | 创建针对岗位的模拟面试会话 |
+| | `/api/jobs/interviews/sessions/{id}/question`| `POST` | 生成下一轮面试官提问 |
+| | `/api/jobs/interviews/records/{id}/evaluate` | `POST` | 评估候选人回答并给出评分与示范 |
+| | `/api/jobs/interviews/sessions/{id}/finish` | `POST` | 结束面试并生成五维复盘雷达图报告 |
+| **网申自动填表** | `/api/jobs/autofill/mappings` | `GET` | 获取各平台 Bridge 字段映射规则 |
+| | `/api/jobs/autofill/payload` | `POST` | 生成用于插件自动填表的标准化 Payload |
+| **智能体测评** | `/api/admin/evaluations/datasets` | `GET/POST` | 测评数据集管理 |
+| | `/api/admin/evaluations/datasets/{id}/runs` | `POST` | 触发全量测试用例评测批次 |
+| | `/api/admin/evaluations/batch-runs` | `GET` | 获取评测历史与准确率/召回率对比 |
+| **对话与问答** | `/api/agent/chat` | `POST` | 智能求职 ReAct Agent 与 RAG 流式对话 |
+
+---
+
+## 🧪 自动化测试与质量保障
+
+项目拥有完善的自动化测试套件，全面覆盖求职全链路、大模型评测、OpenAI Evals、LangSmith 回传与安全合规体系：
 
 ```powershell
-docker compose -f docker-compose.yml -f docker-compose.ops.yml up -d --build frontend
+# 运行全部自动化测试 (106 项测试)
+pytest
+
+# 仅运行智能求职核心与测评测试
+pytest tests/test_job_agent_full.py tests/test_evaluation_hybrid.py tests/test_agent_eval_service.py tests/test_openai_evals_service.py
 ```
 
-## 常用命令
-
-```powershell
-# 启动完整版本
-scripts\start-project.bat
-
-# 修改代码后强制重建并启动
-scripts\start-project.bat -Build
-
-# 查看容器状态
-docker compose -f docker-compose.yml -f docker-compose.ops.yml ps
-
-# 查看后端日志
-docker compose -f docker-compose.yml -f docker-compose.ops.yml logs --tail 120 ragent-api
-
-# 重建并重启后端
-docker compose -f docker-compose.yml -f docker-compose.ops.yml up -d --build ragent-api
-
-# 停止服务
-docker compose -f docker-compose.yml -f docker-compose.ops.yml down
-
-# 后端编译检查
-python -m compileall app
-```
-
-## 故障排查
-
-### 后端健康检查失败
-
-```powershell
-docker compose -f docker-compose.yml -f docker-compose.ops.yml ps
-docker compose -f docker-compose.yml -f docker-compose.ops.yml logs --tail 120 ragent-api
-```
-
-常见原因：
-
-- `mysql / etcd / milvus / rustfs` 未启动或非 healthy。
-- `ragent-api` 启动时连不上 `mysql`。
-- `.env` 中模型配置缺失或错误。
-
-### 运维 Agent 无法调用 Docker 工具
-
-确认启动时加载了 `docker-compose.ops.yml`：
-
-```powershell
-docker compose -f docker-compose.yml -f docker-compose.ops.yml ps
-```
-
-同时确认 API 容器环境变量和挂载：
-
-- `AGENT_EXECUTOR_ENABLED=true`
-- `AGENT_COMPOSE_PROJECT=ragent-python`
-- 已挂载 `/var/run/docker.sock`
-
-### 运维 Agent 无法读取监控数据
-
-监控工具默认保持降级可用；未配置外部监控时会返回 `monitoring_not_configured`，Agent 会继续执行日志和健康检查。需要接入真实数据时配置：
-
-- `MONITORING_ENABLED=true`
-- `PROMETHEUS_URL=http://prometheus:9090`
-- `ALERTMANAGER_URL=http://alertmanager:9093`
-- `MONITORING_TIMEOUT_SECONDS=5`
-
-### Trace 节点耗时异常
-
-旧 trace 可能保留历史 `0ms` 数据。新 trace 会从 Planner、工具调用、Replanner 等执行点记录真实耗时。
-
-权威查看接口：
-
+测试执行结果：
 ```text
-GET /api/rag/traces/runs/{trace_id}/nodes
+============================ 106 passed in 57.55s =============================
 ```
 
-## 开发约定
+---
 
-- 后端重要代码注释使用简体中文。
-- 新增工具必须通过统一工具注册表暴露，不允许 Agent 直接获得任意 shell 能力。
-- 写操作必须标记 `requires_approval=True`。
-- 外部 API 必须统一使用 `/api` 前缀。
-- 聊天能力统一接入 `/api/agent/chat`，不再保留旧 RAG v3 入口。
+## 📄 License
+
+本项目基于 [Apache 2.0 License](LICENSE) 开源发布。

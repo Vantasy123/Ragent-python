@@ -1,4 +1,4 @@
-"""统一工具注册表，适配 MCP 工具与运维白名单工具。"""
+"""统一工具注册表，适配 MCP 工具与求职专用 Agent 工具。"""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from app.agents.base import ToolSpec
-from app.agents.tools import OpsToolkit
+from app.agents.tools.job_toolkit import JobToolkit
 from app.infrastructure.mcp.tool_registry import ToolRegistry
 
 
@@ -99,22 +99,24 @@ class UnifiedTool:
     def policy_for(self, args: dict[str, Any] | None = None) -> tuple[str, bool]:
         """按工具参数计算实际风险等级和审批要求。"""
 
-        if self.approval_policy:
-            return self.approval_policy(args or {})
-        return self.spec.risk_level, self.spec.requires_approval
+        if self.approval_policy is None:
+            return self.spec.risk_level, self.spec.requires_approval
+        return self.approval_policy(args or {})
 
     async def call(self, **kwargs: Any) -> ToolCallResult:
-        """执行工具并规范化返回值。"""
+        """统一调用封装，自动补齐错误兜底与结构化返回。"""
 
         try:
-            result = self.handler(**kwargs)
-            if hasattr(result, "__await__"):
-                result = await result
+            res = self.handler(**kwargs)
+            if hasattr(res, "__await__"):
+                result = await res
+            else:
+                result = res
         except Exception as exc:
             return ToolCallResult(
                 success=False,
-                summary=f"工具调用失败：{exc}",
-                error=type(exc).__name__,
+                summary=f"工具执行异常：{self.spec.name}",
+                error=str(exc),
                 risk_level=self.spec.risk_level,
                 requires_approval=self.spec.requires_approval,
                 source=self.spec.source,
@@ -163,55 +165,79 @@ class UnifiedTool:
 
 
 class UnifiedToolRegistry:
-    """统一内置工具、MCP 工具和运维工具的注册表。"""
+    """统一内置工具、MCP 工具与求职 Agent 工具的注册表。"""
 
-    def __init__(self, include_ops: bool = False, toolkit: OpsToolkit | None = None) -> None:
-        """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
+    def __init__(self, include_ops: bool = False, toolkit: Any = None) -> None:
         self.include_ops = include_ops
-        self.toolkit = toolkit or OpsToolkit()
         self.mcp_registry = ToolRegistry()
         self._tools: dict[str, UnifiedTool] = {}
         self._register_mcp_tools()
-        if include_ops:
-            self._register_ops_tools()
+        self._register_job_tools()
 
     @property
     def tools(self) -> dict[str, UnifiedTool]:
         """返回按名称索引的统一工具。"""
-
         return self._tools
 
     def list_tools(self, audience: str = "user") -> list[dict[str, Any]]:
         """按用户类型返回可见工具。"""
-
         return [
             tool.to_public_dict()
             for tool in self._tools.values()
             if audience in tool.spec.enabled_for or "all" in tool.spec.enabled_for
         ]
 
-    async def call(self, request: ToolCallRequest, *, skip_approval: bool = False) -> ToolCallResult:
+    async def call(self, request: ToolCallRequest, *, skip_approval: bool = False, actor_role: str = "admin") -> ToolCallResult:
         """执行统一工具调用，未知工具返回结构化失败。"""
-
         tool = self._tools.get(request.name)
         if tool is None:
             return ToolCallResult(success=False, summary=f"工具不存在：{request.name}", error="unknown_tool")
+        access = self._tool_access_decision(tool, actor_role)
         risk_level, requires_approval = tool.policy_for(request.args)
+        if not access["allowed"]:
+            return ToolCallResult(
+                success=False,
+                summary=f"当前角色无权调用工具：{request.name}",
+                data={"toolAccess": access},
+                error="tool_permission_denied",
+                risk_level=risk_level,
+                requires_approval=requires_approval,
+                source=tool.spec.source,
+                category=tool.spec.category,
+            )
         if requires_approval and not skip_approval:
             return ToolCallResult(
                 success=False,
                 summary=f"工具需要审批：{request.name}",
+                data={"toolAccess": access},
                 error="approval_required",
                 risk_level=risk_level,
                 requires_approval=True,
                 source=tool.spec.source,
                 category=tool.spec.category,
             )
-        return await tool.call(**request.args)
+        result = await tool.call(**request.args)
+        result.data = {**(result.data or {}), "toolAccess": access}
+        return result
+
+    def _tool_access_decision(self, tool: UnifiedTool, actor_role: str) -> dict[str, Any]:
+        """按 ToolSpec.enabled_for 生成最小权限授权快照。"""
+        role = str(actor_role or "anonymous").lower()
+        enabled_for = [str(item).lower() for item in (tool.spec.enabled_for or [])]
+        allowed = "all" in enabled_for or role in enabled_for
+        return {
+            "allowed": allowed,
+            "actorRole": role,
+            "enabledFor": enabled_for,
+            "toolName": tool.spec.name,
+            "source": tool.spec.source,
+            "category": tool.spec.category,
+            "reasonCode": "role_allowed" if allowed else "role_not_allowed",
+            "leastPrivilege": "enforced",
+        }
 
     def _register_mcp_tools(self) -> None:
         """把内置 MCP 工具注册为普通对话可用的安全工具。"""
-
         for item in self.mcp_registry.tools.values():
             spec = ToolSpec(
                 name=item.name,
@@ -220,49 +246,141 @@ class UnifiedToolRegistry:
                 risk_level="read",
                 requires_approval=False,
                 source="mcp",
-                category=item.category,
+                category="general",
                 enabled_for=["user", "admin"],
             )
-            self._tools[item.name] = UnifiedTool(spec=spec, handler=lambda _name=item.name, **kwargs: self.mcp_registry.call(_name, **kwargs))
+            self._tools[item.name] = UnifiedTool(spec=spec, handler=item.handler)
 
-        # 兼容运维 Planner 中更自然的知识库工具名。
-        if "search_knowledge_base" in self._tools:
-            original = self._tools["search_knowledge_base"]
-            alias_spec = ToolSpec(
-                name="knowledge_search",
-                description=original.spec.description,
-                args_schema={"query": "string", "topK": "integer"},
-                risk_level="read",
-                requires_approval=False,
-                source="mcp",
-                category="knowledge",
-                enabled_for=["user", "admin"],
-            )
-            self._tools["knowledge_search"] = UnifiedTool(
-                spec=alias_spec,
-                handler=lambda **kwargs: self.mcp_registry.call(
-                    "search_knowledge_base",
-                    query=kwargs.get("query", ""),
-                    top_k=kwargs.get("topK", kwargs.get("top_k", 5)),
+    def _register_job_tools(self) -> None:
+        """注册智能求职 Agent 专属工具套件。"""
+        job_tools = [
+            (
+                ToolSpec(
+                    name="job_parse_resume",
+                    description="将候选人简历原始文本解析为多维结构化数据（基本信息、教育、工作、项目、技能）并进行质量诊断。",
+                    args_schema={"raw_text": "string"},
+                    risk_level="read",
+                    requires_approval=False,
+                    source="job_agent",
+                    category="job",
+                    enabled_for=["user", "admin"],
                 ),
-            )
+                lambda **kwargs: JobToolkit.parse_resume(kwargs.get("raw_text", ""))
+            ),
+            (
+                ToolSpec(
+                    name="job_optimize_project_star",
+                    description="使用 STAR 法则对项目经历进行深度润色重构（情境S、任务T、行动A、结果R量化）。",
+                    args_schema={"project_name": "string", "tech_stack": "array", "background": "string", "target_jd": "string"},
+                    risk_level="read",
+                    requires_approval=False,
+                    source="job_agent",
+                    category="job",
+                    enabled_for=["user", "admin"],
+                ),
+                lambda **kwargs: JobToolkit.optimize_project_star(
+                    project_name=kwargs.get("project_name", ""),
+                    tech_stack=kwargs.get("tech_stack", []),
+                    background=kwargs.get("background", ""),
+                    target_jd=kwargs.get("target_jd", "")
+                )
+            ),
+            (
+                ToolSpec(
+                    name="job_search_postings",
+                    description="检索牛客、BOSS直聘等多渠道岗位库中的职位机会。",
+                    args_schema={"keyword": "string", "city": "string", "job_type": "string", "limit": "integer"},
+                    risk_level="read",
+                    requires_approval=False,
+                    source="job_agent",
+                    category="job",
+                    enabled_for=["user", "admin"],
+                ),
+                lambda **kwargs: JobToolkit.search_jobs(
+                    keyword=kwargs.get("keyword", ""),
+                    city=kwargs.get("city", "全国"),
+                    job_type=kwargs.get("job_type", "all"),
+                    limit=kwargs.get("limit", 10)
+                )
+            ),
+            (
+                ToolSpec(
+                    name="job_match_analysis",
+                    description="执行候选人简历与目标岗位 JD 的深度全维度匹配打分、优劣势分析与定制化建议。",
+                    args_schema={"resume_text": "string", "jd_text": "string", "target_title": "string"},
+                    risk_level="read",
+                    requires_approval=False,
+                    source="job_agent",
+                    category="job",
+                    enabled_for=["user", "admin"],
+                ),
+                lambda **kwargs: JobToolkit.match_resume_with_job(
+                    resume_text=kwargs.get("resume_text", ""),
+                    jd_text=kwargs.get("jd_text", ""),
+                    target_title=kwargs.get("target_title", "开发工程师")
+                )
+            ),
+            (
+                ToolSpec(
+                    name="job_generate_interview_questions",
+                    description="针对目标岗位 JD 和简历生成高频大厂模拟面试题集（含技术八股、项目深挖、系统设计、BQ）。",
+                    args_schema={"target_role": "string", "jd_text": "string", "resume_text": "string", "count": "integer"},
+                    risk_level="read",
+                    requires_approval=False,
+                    source="job_agent",
+                    category="job",
+                    enabled_for=["user", "admin"],
+                ),
+                lambda **kwargs: JobToolkit.generate_interview_questions(
+                    target_role=kwargs.get("target_role", "后端开发工程师"),
+                    jd_text=kwargs.get("jd_text", ""),
+                    resume_text=kwargs.get("resume_text", ""),
+                    count=kwargs.get("count", 3)
+                )
+            ),
+            (
+                ToolSpec(
+                    name="job_generate_greeting",
+                    description="一键生成针对目标企业与 HR 的高情商、高回复率打招呼破冰文案与定制求职信。",
+                    args_schema={"candidate_name": "string", "target_role": "string", "company": "string", "core_skills": "array"},
+                    risk_level="read",
+                    requires_approval=False,
+                    source="job_agent",
+                    category="job",
+                    enabled_for=["user", "admin"],
+                ),
+                lambda **kwargs: JobToolkit.generate_greeting_and_cover_letter(
+                    candidate_name=kwargs.get("candidate_name", "求职者"),
+                    target_role=kwargs.get("target_role", "后端工程师"),
+                    company=kwargs.get("company", "目标公司"),
+                    core_skills=kwargs.get("core_skills", [])
+                )
+            ),
+            (
+                ToolSpec(
+                    name="job_sync_platforms",
+                    description="从 BOSS直聘、猎聘、前程无忧 51job、牛客网实时采集和增量同步最新招聘岗位入库。",
+                    args_schema={"platform": "string", "keyword": "string", "city": "string", "limit": "integer"},
+                    risk_level="read",
+                    requires_approval=False,
+                    source="job_agent",
+                    category="job",
+                    enabled_for=["user", "admin"],
+                ),
+                lambda **kwargs: JobToolkit.sync_jobs_from_platforms(
+                    platform=kwargs.get("platform", "all"),
+                    keyword=kwargs.get("keyword", "后端开发"),
+                    city=kwargs.get("city", "全国"),
+                    limit=kwargs.get("limit", 5)
+                )
+            ),
+        ]
 
-    def _register_ops_tools(self) -> None:
-        """把运维白名单工具注册为管理员可用工具。"""
-
-        for spec in self.toolkit.specs():
-            spec.source = "builtin"
-            spec.category = "ops"
-            spec.enabled_for = ["admin"]
-            handler = self.toolkit.tools.get(spec.name)
-            if handler:
-                policy_factory = getattr(self.toolkit, "approval_policy", None)
-                approval_policy = policy_factory(spec.name) if policy_factory else None
-                self._tools[spec.name] = UnifiedTool(spec=spec, handler=handler, approval_policy=approval_policy)
+        for spec, handler in job_tools:
+            self._tools[spec.name] = UnifiedTool(spec=spec, handler=handler)
 
     def _mcp_args_schema(self, name: str) -> dict[str, Any]:
         """为当前内置 MCP 工具补充轻量参数描述。"""
-
         if name == "search_knowledge_base":
             return {"query": "string", "top_k": "integer"}
         if name == "get_weather":

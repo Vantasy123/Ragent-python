@@ -184,6 +184,7 @@
                 <tr>
                   <th>时间</th>
                   <th>工具</th>
+                  <th>风险</th>
                   <th>状态</th>
                   <th>审批人</th>
                   <th>意见</th>
@@ -196,6 +197,12 @@
                   <td>
                     <div class="font-medium text-slate-800">{{ row.toolName }}</div>
                     <div class="helper-text">{{ row.runId }}</div>
+                  </td>
+                  <td>
+                    <span class="status-badge" :class="opsRiskClass(row.riskReview)">
+                      {{ opsRiskLabel(row.riskReview) }}
+                    </span>
+                    <div class="helper-text mt-1">{{ opsReadinessLabel(row.riskReview) }}</div>
                   </td>
                   <td>
                     <span class="status-badge" :class="opsStatusClass(row.status)">{{ opsStatusLabel(row.status) }}</span>
@@ -280,6 +287,7 @@ type OpsAuditRow = {
   approvedByName?: string
   comment?: string
   message?: string
+  riskReview?: Record<string, any>
   createdAt?: string
   decidedAt?: string
 }
@@ -429,11 +437,13 @@ function activeCsvPayload() {
   if (activeTab.value === 'ops') {
     return {
       filename: `运维审批审计-${opsAudit.pageNo}.csv`,
-      headers: ['时间', '运行ID', '工具', '状态', '审批人', '意见'],
+      headers: ['时间', '运行ID', '工具', '风险等级', '生产就绪', '状态', '审批人', '意见'],
       rows: opsAudit.items.map((row) => [
         formatTime(row.decidedAt || row.createdAt),
         row.runId,
         row.toolName,
+        opsRiskLabel(row.riskReview),
+        opsReadinessLabel(row.riskReview),
         opsStatusLabel(row.status),
         row.approvedByName || row.requestedByName || '-',
         row.comment || row.message || '-',
@@ -498,11 +508,13 @@ async function allCsvPayload() {
     const rows = await loadAllRows<OpsAuditRow>((pageNo) => adminService.opsApprovalAuditLogs(pageNo, EXPORT_PAGE_SIZE, opsFilter.status, opsFilter.runId.trim()))
     return {
       filename: '运维审批审计-筛选结果.csv',
-      headers: ['时间', '运行ID', '工具', '状态', '审批人', '意见'],
+      headers: ['时间', '运行ID', '工具', '风险等级', '生产就绪', '状态', '审批人', '意见'],
       rows: rows.items.map((row) => [
         formatTime(row.decidedAt || row.createdAt),
         row.runId,
         row.toolName,
+        opsRiskLabel(row.riskReview),
+        opsReadinessLabel(row.riskReview),
         opsStatusLabel(row.status),
         row.approvedByName || row.requestedByName || '-',
         row.comment || row.message || '-',
@@ -631,6 +643,12 @@ function opsDetailItems(row: OpsAuditRow) {
     { label: '运行 ID', value: row.runId },
     { label: '工具调用 ID', value: row.toolCallId || '-' },
     { label: '工具名称', value: row.toolName },
+    { label: '风险等级', value: opsRiskLabel(row.riskReview) },
+    { label: '生产就绪', value: opsReadinessLabel(row.riskReview) },
+    { label: '审批门禁', value: riskReviewControl(row.riskReview, 'approvalGate') },
+    { label: '职责分离', value: riskReviewControl(row.riskReview, 'approvalSeparation') },
+    { label: '风险因素', value: riskReviewList(row.riskReview, 'riskFactors') },
+    { label: '审批证据', value: riskReviewList(row.riskReview, 'requiredEvidence') },
     { label: '审批状态', value: opsStatusLabel(row.status) },
     { label: '申请人', value: row.requestedByName || row.requestedBy || '-' },
     { label: '审批人', value: row.approvedByName || row.approvedBy || '-' },
@@ -681,6 +699,35 @@ function opsStatusClass(status?: string) {
   if (normalized === 'rejected') return 'status-danger'
   if (normalized === 'pending') return 'status-warn'
   return 'status-badge-neutral'
+}
+
+function opsRiskLabel(riskReview?: Record<string, any>) {
+  const risk = String(riskReview?.riskLevel || '').toLowerCase()
+  const map: Record<string, string> = { read: '低风险', write: '写操作', admin: '高风险', danger: '危险', high: '高风险', unknown: '未知' }
+  return map[risk] || risk || '未评估'
+}
+
+function opsRiskClass(riskReview?: Record<string, any>) {
+  const risk = String(riskReview?.riskLevel || '').toLowerCase()
+  if (['admin', 'danger', 'high'].includes(risk)) return 'status-danger'
+  if (risk === 'write') return 'status-warn'
+  if (risk === 'read') return 'status-ok'
+  return 'status-badge-neutral'
+}
+
+function opsReadinessLabel(riskReview?: Record<string, any>) {
+  const status = String((riskReview?.readiness as Record<string, any> | undefined)?.status || riskReview?.controls?.productionReadinessStatus || '')
+  const map: Record<string, string> = { ready: '生产就绪', degraded: '降级可控', blocked: '就绪阻塞', not_required: '无需检查' }
+  return map[status] || status || '未记录就绪状态'
+}
+
+function riskReviewControl(riskReview: Record<string, any> | undefined, key: string) {
+  return String((riskReview?.controls as Record<string, any> | undefined)?.[key] || '-')
+}
+
+function riskReviewList(riskReview: Record<string, any> | undefined, key: string) {
+  const value = riskReview?.[key]
+  return Array.isArray(value) && value.length ? value.join('；') : '-'
 }
 
 function eventCategoryLabel(category?: string) {

@@ -112,7 +112,24 @@ services:
       DATABASE_URL: mysql+pymysql://root:root@mysql:3306/ragent?charset=utf8mb4
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_API_BASE: ${OPENAI_API_BASE}
-      CHAT_MODEL: ${CHAT_MODEL}
+      CHAT_MODEL: ${CHAT_MODEL:-Qwen/Qwen2.5-14B-Instruct}
+      REWRITE_MODEL: ${REWRITE_MODEL:-Qwen/Qwen2.5-7B-Instruct}
+      INTERVIEW_MODEL: ${INTERVIEW_MODEL:-deepseek-ai/DeepSeek-R1-0528-Qwen3-8B}
+      STAR_MODEL: ${STAR_MODEL:-Qwen/Qwen2.5-14B-Instruct}
+      OCR_MODEL: ${OCR_MODEL:-PaddlePaddle/PaddleOCR-VL-1.5}
+      VISION_MODEL: ${VISION_MODEL:-Qwen/Qwen3-VL-8B-Instruct}
+      TTS_MODEL: ${TTS_MODEL:-FunAudioLLM/CosyVoice2-0.5B}
+      TTS_VOICE: ${TTS_VOICE:-FunAudioLLM/CosyVoice2-0.5B:alex}
+      ASR_MODEL: ${ASR_MODEL:-FunAudioLLM/SenseVoiceSmall}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_API_BASE: ${EMBEDDING_API_BASE:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      RERANK_ENABLED: ${RERANK_ENABLED:-true}
+      RERANK_PROVIDER: ${RERANK_PROVIDER:-siliconflow}
+      RERANK_MODEL: ${RERANK_MODEL:-BAAI/bge-reranker-v2-m3}
+      RERANK_API_KEY: ${RERANK_API_KEY:-}
+      RERANK_API_BASE: ${RERANK_API_BASE:-https://api.siliconflow.cn/v1}
+      RERANK_THRESHOLD: ${RERANK_THRESHOLD:-0.001}
       SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
       VECTOR_BACKEND: milvus
       MILVUS_URI: http://milvus:19530
@@ -122,12 +139,14 @@ services:
       RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
       RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-120}
       CHAT_MAX_CONCURRENCY_PER_USER: ${CHAT_MAX_CONCURRENCY_PER_USER:-3}
-      OPS_AGENT_MAX_CONCURRENCY: ${OPS_AGENT_MAX_CONCURRENCY:-2}
       DEBUG: ${DEBUG:-false}
-      APP_NAME: "Ragent Python API"
+      APP_NAME: "Ragent Job Agent API"
       STORAGE_TYPE: local
       STORAGE_BASE_DIR: /app/uploads
       ALLOWED_ORIGINS: '["http://localhost:5173","http://localhost:3000","http://localhost:8000","http://frontend:80"]'
+      HTTP_PROXY: ${HTTP_PROXY:-http://172.22.176.1:7897}
+      HTTPS_PROXY: ${HTTPS_PROXY:-http://172.22.176.1:7897}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,mysql,redis,milvus,rustfs,etcd,frontend,ragent-api}
     ports:
       - "8000:8000"
     depends_on:
@@ -137,7 +156,62 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    extra_hosts:
+      - "api.siliconflow.cn:47.102.215.139"
+      - "api.deepseek.com:101.71.73.135"
+    dns:
+      - 223.5.5.5
+      - 119.29.29.29
+      - 8.8.8.8
     volumes:
+      - ./app:/app/app
+      - ./logs:/app/logs
+      - ./uploads:/app/uploads
+      - ./config:/app/config
+    networks:
+      - ragent-network
+    restart: unless-stopped
+
+  ragent-mcp-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: ["uvicorn", "app.mcp_main:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-ragent}:${MYSQL_PASSWORD:-ragent}@mysql:3306/${MYSQL_DATABASE:-ragent}?charset=utf8mb4
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_API_BASE: ${OPENAI_API_BASE:-https://api.siliconflow.cn/v1}
+      CHAT_MODEL: ${CHAT_MODEL:-deepseek-ai/DeepSeek-V3}
+      FAST_MODEL: ${FAST_MODEL:-Qwen/Qwen2.5-7B-Instruct}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+      EMBEDDING_API_BASE: ${EMBEDDING_API_BASE:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-m3}
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
+      VECTOR_BACKEND: milvus
+      MILVUS_URI: http://milvus:19530
+      REDIS_ENABLED: ${REDIS_ENABLED:-true}
+      REDIS_URL: redis://redis:6379/0
+      HTTP_PROXY: ${HTTP_PROXY:-http://172.22.176.1:7897}
+      HTTPS_PROXY: ${HTTPS_PROXY:-http://172.22.176.1:7897}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,mysql,redis,milvus,rustfs,etcd,frontend,ragent-api,ragent-mcp-api}
+    ports:
+      - "8001:8001"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      milvus:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    extra_hosts:
+      - "api.siliconflow.cn:47.102.215.139"
+      - "api.deepseek.com:101.71.73.135"
+    dns:
+      - 223.5.5.5
+      - 119.29.29.29
+      - 8.8.8.8
+    volumes:
+      - ./app:/app/app
       - ./logs:/app/logs
       - ./uploads:/app/uploads
       - ./config:/app/config
@@ -153,6 +227,9 @@ services:
       - "80:80"
     depends_on:
       - ragent-api
+    volumes:
+      - ./frontend/dist:/usr/share/nginx/html
+      - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf
     networks:
       - ragent-network
     restart: unless-stopped
@@ -190,3 +267,5 @@ volumes:
 networks:
   ragent-network:
     driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: "1350"

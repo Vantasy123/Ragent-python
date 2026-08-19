@@ -767,14 +767,14 @@ select {
 .conversation-shell {
   display: grid;
   grid-template-columns: 320px minmax(0, 1fr);
-  min-height: 100vh;
+  min-height: calc(100vh - 64px);
 }
 
 .conversation-sidebar {
   position: sticky;
-  top: 0;
+  top: 64px;
   display: flex;
-  max-height: 100vh;
+  max-height: calc(100vh - 64px);
   flex-direction: column;
   gap: 16px;
   overflow-y: auto;

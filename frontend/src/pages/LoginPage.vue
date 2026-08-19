@@ -26,11 +26,11 @@
       <section class="panel border-slate-200 bg-white p-8 rounded-2xl shadow-xl">
         <div class="page-eyebrow !text-slate-400 font-semibold">登录</div>
         <h2 class="mt-2 text-2xl font-bold text-slate-800">登录控制台</h2>
-        <p class="page-description mt-2 text-xs text-slate-500">登录后可进入后台或聊天工作区。默认管理员为 `admin / admin123`。</p>
+        <p class="page-description mt-2 text-xs text-slate-500">登录后可进入后台或聊天工作区。请使用已配置的账号登录。</p>
         <form class="mt-6 form-grid gap-4" @submit.prevent="submit">
-          <input v-model="username" class="input border-slate-200 text-slate-800 placeholder-slate-400 focus:border-blue-500" placeholder="用户名" />
-          <input v-model="password" type="password" class="input border-slate-200 text-slate-800 placeholder-slate-400 focus:border-blue-500" placeholder="密码" />
-          <button class="btn btn-primary w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2.5 rounded-xl transition-all">登录</button>
+          <input v-model="username" autocomplete="username" :disabled="loading" class="input border-slate-200 text-slate-800 placeholder-slate-400 focus:border-blue-500" placeholder="用户名" />
+          <input v-model="password" type="password" autocomplete="current-password" :disabled="loading" class="input border-slate-200 text-slate-800 placeholder-slate-400 focus:border-blue-500" placeholder="密码" />
+          <button :disabled="loading || !username.trim() || !password" class="btn btn-primary w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2.5 rounded-xl transition-all disabled:cursor-not-allowed disabled:opacity-60">{{ loading ? '登录中…' : '登录' }}</button>
         </form>
         <p v-if="error" class="mt-4 text-xs text-red-600">{{ error }}</p>
       </section>
@@ -39,23 +39,29 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/authStore'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
-const username = ref('admin')
-const password = ref('admin123')
+const username = ref('')
+const password = ref('')
 const error = ref('')
+const loading = ref(false)
+const redirect = computed(() => typeof route.query.redirect === 'string' ? route.query.redirect : '')
 
 async function submit() {
   error.value = ''
+  loading.value = true
   try {
     await auth.login(username.value, password.value)
-    router.push(auth.user?.role === 'admin' ? '/admin/dashboard' : '/chat')
+    router.replace(redirect.value || '/chat')
   } catch (err: any) {
     error.value = err?.detail || err?.message || '登录失败'
+  } finally {
+    loading.value = false
   }
 }
 </script>

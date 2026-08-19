@@ -19,16 +19,16 @@ multi_channel_retriever = MultiChannelRetriever()
 reranker = RerankerService()
 
 
-def build_primary_llm(streaming: bool = True) -> ChatOpenAI:
-    """构建主聊天模型；运行时温度从系统设置读取，模型名仍来自环境配置。"""
+def build_primary_llm(streaming: bool = True, model: str | None = None) -> ChatOpenAI:
+    """构建聊天模型；支持指定子任务模型，未指定时默认使用 CHAT_MODEL。"""
 
     runtime = get_runtime_settings()
     api_key = settings.OPENAI_API_KEY or settings.SILICONFLOW_API_KEY
+    selected_model = model or settings.CHAT_MODEL
     return ChatOpenAI(
-        model=settings.CHAT_MODEL,
+        model=selected_model,
         api_key=api_key,
         base_url=settings.OPENAI_API_BASE,
         temperature=runtime.temperature,
         streaming=streaming,
     )
-

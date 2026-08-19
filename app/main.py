@@ -1,4 +1,4 @@
-"""FastAPI 应用启动入口，负责生命周期、路由注册和兼容接口。"""
+"""FastAPI 应用启动入口，负责生命周期、路由注册和智能求职 Agent 核心能力初始化。"""
 
 from __future__ import annotations
 
@@ -11,15 +11,19 @@ from app.core.config import settings
 from app.core.database import Base, SessionLocal, engine
 from app.core.security_headers import SecurityHeadersMiddleware
 from app.api.routers import (
+    audio,
     auth,
     conversations,
     dashboard,
     evaluations,
     ingestion,
+    job_applications,
+    job_autofill,
+    job_matching,
+    job_postings,
+    job_resumes,
     knowledge,
-    monitoring,
-    ops,
-    ops_agent,
+    mock_interviews,
     project_config,
     security_audit,
     settings as settings_router,
@@ -28,12 +32,12 @@ from app.api.routers import (
     users,
 )
 from app.services.auth import ensure_default_admin
+from app.services.job_matching_service import ensure_default_job_samples
 from app.services.schema_migrations import run_compatible_migrations
 
 try:
     from apscheduler.schedulers.asyncio import AsyncIOScheduler
 except Exception:  # pragma: no cover - optional runtime dependency
-    # APScheduler 是可选依赖；缺失时仅关闭本地轮询任务，不影响 API 主流程。
     AsyncIOScheduler = None
 
 
@@ -43,7 +47,6 @@ scheduler = None
 def run_ingestion_poll() -> None:
     """轮询待处理的摄取任务，供本地进程内调度器周期调用。"""
 
-    # 延迟导入可以避免 FastAPI 启动阶段产生服务层循环依赖。
     from app.services.ingestion_service import IngestionService
 
     db = SessionLocal()
@@ -55,7 +58,7 @@ def run_ingestion_poll() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期：初始化数据库、默认管理员和后台轮询任务。"""
+    """应用生命周期：初始化数据库、默认管理员、求职初始样本与评测基线数据。"""
 
     global scheduler
 
@@ -63,16 +66,16 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     run_compatible_migrations(engine)
 
-    # 默认管理员必须在启动时保证存在，避免部署后无法进入后台。
+    # 默认管理员与求职初始数据、评测基线
     db = SessionLocal()
     try:
         ensure_default_admin(db)
         from app.services.evaluation_service import ensure_default_evaluation_dataset
         ensure_default_evaluation_dataset(db)
+        ensure_default_job_samples(db)
     finally:
         db.close()
 
-    # 第一阶段不引入 Redis 队列，摄取任务由进程内 APScheduler 轮询推进。
     if AsyncIOScheduler is not None:
         scheduler = AsyncIOScheduler()
         scheduler.add_job(run_ingestion_poll, "interval", seconds=5, id="ingestion-poll")
@@ -80,25 +83,14 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # 优雅关闭调度器，避免应用退出时残留后台任务。
     if scheduler is not None:
         scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title=settings.APP_NAME, version=settings.APP_VERSION, lifespan=lifespan)
 
-# 统一补齐浏览器安全响应头，降低点击劫持、MIME 嗅探和来源泄露风险。
 app.add_middleware(SecurityHeadersMiddleware)
 
-# 暴露 Prometheus 指标端点，便于监控服务抓取 FastAPI 运行指标。
-try:
-    from prometheus_fastapi_instrumentator import Instrumentator
-    Instrumentator().instrument(app).expose(app, include_in_schema=False)
-except ImportError:
-    # 未安装监控依赖时保持 API 主流程可用，适配轻量本地运行场景。
-    pass
-
-# 前端开发服务器、Docker Nginx 和本地调试都通过这里统一放行。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -112,30 +104,31 @@ app.add_middleware(
 def health():
     """容器健康检查和 Nginx 代理探活入口。"""
 
-    return {"status": "ok", "message": "Ragent Python FastAPI is running properly."}
+    return {"status": "ok", "message": "Ragent Intelligent Job Hunting Agent is running properly."}
 
 
-# 所有业务路由集中注册，便于入口文件一眼看清模块边界。
+# 所有业务路由集中注册：智能求职核心、智能体评测中心、知识库与后台管理
 ROUTERS = [
     auth.router,
     users.router,
     dashboard.router,
+    job_resumes.router,
+    job_postings.router,
+    job_matching.router,
+    job_applications.router,
+    mock_interviews.router,
+    job_autofill.router,
     evaluations.router,
     settings_router.router,
     knowledge.router,
     ingestion.router,
     unified_chat.router,
+    audio.router,
     conversations.router,
     trace.router,
-    ops.router,
-    ops_agent.router,
-    monitoring.router,
     project_config.router,
     security_audit.router,
 ]
 
 for router in ROUTERS:
-    # 对外 API 统一使用 /api 前缀，避免历史无前缀接口继续扩散。
     app.include_router(router, prefix="/api")
-
-

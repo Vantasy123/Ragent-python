@@ -29,40 +29,38 @@ def route_methods(path: str) -> set[str]:
 
 
 class RouteCleanupTest(unittest.TestCase):
-    """验证旧接口已移除，当前统一入口仍保留。"""
+    """验证求职核心与评估体系接口已注册，旧运维接口已彻底削减。"""
 
     def test_current_api_routes_are_registered(self) -> None:
+        # 求职 Agent 核心路由
         self.assertIn("POST", route_methods("/api/agent/chat"))
         self.assertIn("GET", route_methods("/api/conversations"))
-        self.assertIn("GET", route_methods("/api/intent-tree"))
+        self.assertIn("GET", route_methods("/api/jobs/resumes"))
+        self.assertIn("POST", route_methods("/api/jobs/resumes/parse"))
+        self.assertIn("GET", route_methods("/api/jobs/postings"))
+        self.assertIn("POST", route_methods("/api/jobs/matching/analyze"))
+        self.assertIn("GET", route_methods("/api/jobs/applications"))
+        self.assertIn("GET", route_methods("/api/jobs/interviews/sessions"))
+        self.assertIn("POST", route_methods("/api/jobs/autofill/payload"))
+
+        # 智能体评估与测评中心（必须保留）
         self.assertIn("GET", route_methods("/api/admin/evaluations/datasets"))
         self.assertIn("POST", route_methods("/api/admin/evaluations/datasets/{dataset_id}/runs"))
-        self.assertIn("GET", route_methods("/api/admin/monitoring/overview"))
-        self.assertIn("POST", route_methods("/api/admin/monitoring/query"))
-        self.assertIn("GET", route_methods("/api/admin/monitoring/alert-correlations"))
-        self.assertIn("GET", route_methods("/api/admin/monitoring/kubernetes-events"))
-        self.assertIn("GET", route_methods("/api/admin/monitoring/trace-analysis"))
-        self.assertIn("GET", route_methods("/api/admin/monitoring/database-middleware"))
-        self.assertIn("GET", route_methods("/api/admin/monitoring/cloud-resources"))
-        self.assertIn("GET", route_methods("/api/admin/monitoring/change-correlations"))
-        self.assertIn("GET", route_methods("/api/admin/monitoring/release-evidence"))
-        self.assertIn("GET", route_methods("/api/admin/monitoring/service-topology"))
-        self.assertIn("GET", route_methods("/api/admin/monitoring/anomalies/{metric}"))
+        self.assertIn("GET", route_methods("/api/admin/evaluations/batch-runs"))
+
+        # 系统与安全审计
         self.assertIn("GET", route_methods("/api/admin/project-config/status"))
         self.assertIn("PUT", route_methods("/api/admin/project-config/servers"))
         self.assertIn("GET", route_methods("/api/admin/security-audit/events"))
-        self.assertIn("POST", route_methods("/api/admin/security-audit/events"))
-        self.assertIn("GET", route_methods("/api/agent/ops/runs/{run_id}/postmortem"))
 
     def test_legacy_routes_are_removed(self) -> None:
+        # 验证已删除的旧运维路由与意图树路由返回空
+        self.assertEqual(route_methods("/api/admin/monitoring/overview"), set())
+        self.assertEqual(route_methods("/api/agent/ops/runs/{run_id}/postmortem"), set())
+        self.assertEqual(route_methods("/api/intent-tree"), set())
         self.assertEqual(route_methods("/rag/v3/chat"), set())
         self.assertEqual(route_methods("/api/rag/v3/chat"), set())
         self.assertEqual(route_methods("/api/rag/v3/stop"), set())
-        self.assertEqual(route_methods("/api/workflow/chat"), set())
-        self.assertEqual(route_methods("/api/sessions"), set())
-        self.assertEqual(route_methods("/agent/chat"), set())
-        self.assertEqual(route_methods("/intent-tree"), set())
-        self.assertEqual(route_methods("/api/intent-tree/trees"), set())
 
 
 if __name__ == "__main__":

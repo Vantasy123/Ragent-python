@@ -19,10 +19,10 @@ class QueryRewriter:
     def __init__(self, llm: ChatOpenAI | None = None):
         """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.llm = llm or ChatOpenAI(
-            model=settings.CHAT_MODEL,
+            model=settings.REWRITE_MODEL or settings.CHAT_MODEL,
             temperature=0.0,
             streaming=False,
-            openai_api_key=settings.OPENAI_API_KEY,
+            openai_api_key=settings.OPENAI_API_KEY or settings.SILICONFLOW_API_KEY,
             openai_api_base=settings.OPENAI_API_BASE,
         )
         self.rewrite_prompt = """You are a search-query rewriting assistant.

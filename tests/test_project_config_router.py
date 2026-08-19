@@ -105,44 +105,18 @@ class ProjectConfigRouterTest(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(self.db.query(SecurityAuditLog).count(), 0)
 
-    def test_save_monitoring_records_config_audit_summary(self) -> None:
-        """保存监控配置后应记录启用状态和探测目标数量。"""
 
-        response = self.client.put(
-            "/admin/project-config/monitoring",
-            json={
-                "monitoring": {
-                    "enabled": True,
-                    "prometheus_url": "http://prometheus:9090",
-                    "alertmanager_url": "http://alertmanager:9093",
-                    "timeout_seconds": 5,
-                },
-                "probes": [
-                    {"id": "gateway", "name": "网关", "enabled": True, "url": "https://gateway.example.com/health"},
-                    {"id": "admin", "name": "后台", "enabled": False, "url": ""},
-                ],
-            },
-        )
-
-        self.assertEqual(response.status_code, 200)
-        row = self.db.query(SecurityAuditLog).one()
-        self.assertEqual(row.action, "update_monitoring_config")
-        self.assertEqual(row.target_id, "monitoring")
-        self.assertTrue(row.detail["enabled"])
-        self.assertTrue(row.detail["prometheusConfigured"])
-        self.assertTrue(row.detail["alertmanagerConfigured"])
-        self.assertEqual(row.detail["probeCount"], 2)
-        self.assertEqual(row.detail["enabledProbeCount"], 1)
 
     def test_probe_test_records_sanitized_url(self) -> None:
         """手动探测审计应移除 URL 中的账号、查询参数和片段。"""
 
-        async def fake_http_probe(_service, _target_id, _name, _url, _meta):
-            """替代真实 HTTP 请求，专注验证路由审计行为。"""
+        class FakeResponse:
+            status_code = 200
 
-            return {"status": "up", "statusCode": 200, "durationMs": 12}
+        async def fake_get(*args, **kwargs):
+            return FakeResponse()
 
-        with patch("app.api.routers.project_config.MonitoringService.http_probe", fake_http_probe):
+        with patch("httpx.AsyncClient.get", fake_get):
             response = self.client.post(
                 "/admin/project-config/probe-test",
                 json={"name": "网关", "url": "https://user:pass@gateway.example.com:8443/health?token=secret#frag"},

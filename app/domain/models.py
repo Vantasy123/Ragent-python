@@ -140,6 +140,8 @@ class KnowledgeBase(Base, TimestampMixin):
     embedding_model: Mapped[str] = mapped_column(String(100), default="text-embedding-v3")
     # 知识库总开关，关闭后检索链路应跳过该知识库。
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # 领域类型：career(求职面经八股知识库), ops_archive(历史运维知识库)
+    category: Mapped[str] = mapped_column(String(64), default="career", nullable=False)
     created_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
@@ -311,6 +313,8 @@ class Conversation(Base, TimestampMixin):
     message_count: Mapped[int] = mapped_column(Integer, default=0)
     # 会话摘要，可用于长对话压缩或后续上下文恢复。
     summary: Mapped[str] = mapped_column(Text, default="")
+    # 业务域类型：career(求职智能体会话), ops_archive(历史运维Agent会话)
+    domain: Mapped[str] = mapped_column(String(32), default="career", nullable=False)
 
     messages: Mapped[list["ConversationMessage"]] = relationship(back_populates="conversation", cascade="all, delete-orphan")
 
@@ -378,6 +382,8 @@ class TraceRun(Base):
     session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # 前端或后台任务 ID，用于定位一次具体请求。
     task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 业务域类型：career(求职链路), ops_archive(历史运维链路)
+    domain: Mapped[str] = mapped_column(String(32), default="career", nullable=False)
     # 整体运行状态，表示这次 Trace 是否成功完成。
     status: Mapped[str] = mapped_column(String(20), default="success")
     # 整条链路总耗时，性能分析时优先看该字段。
@@ -439,6 +445,8 @@ class EvaluationRun(Base):
     overall_score: Mapped[float] = mapped_column(Float, default=0.0)
     # 评估摘要，给出本次回答质量的总体结论。
     summary: Mapped[str] = mapped_column(Text, default="")
+    # 业务域类型：career(求职评测), ops_archive(历史运维评测)
+    domain: Mapped[str] = mapped_column(String(32), default="career", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utc_now_naive, nullable=False)
 
     trace_run: Mapped["TraceRun"] = relationship(back_populates="evaluation_runs")
@@ -501,6 +509,8 @@ class EvaluationDataset(Base, TimestampMixin):
     # 数据集名称用于前端选择和批次报告展示。
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="")
+    # 业务域类型：career(求职智能体评测集), ops_archive(历史运维评测集)
+    domain: Mapped[str] = mapped_column(String(32), default="career", nullable=False)
     # 可选知识库 ID，批量评估时优先把用例限定到该知识库范围。
     kb_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # 标签用于区分回归集、验收集、专项评测集等用途。
@@ -772,3 +782,171 @@ class QueryTermMapping(Base, TimestampMixin):
     target_term: Mapped[str] = mapped_column(String(255), nullable=False)
     # 映射是否启用，关闭后 query rewrite 不应使用该规则。
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+# =====================================================================
+# 智能求职 Agent 核心领域模型 (对齐 NowClaw 架构体系)
+# =====================================================================
+
+class ResumeProfile(Base, TimestampMixin):
+    """候选人核心简历档案模型：存储简历原始文本、结构化解析内容与质量诊断。"""
+    __tablename__ = "resume_profile"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), default="我的求职简历")
+    target_role: Mapped[str] = mapped_column(String(128), default="后端开发工程师")
+    years_of_experience: Mapped[int] = mapped_column(Integer, default=0)
+    education_level: Mapped[str] = mapped_column(String(64), default="本科")
+    current_city: Mapped[str] = mapped_column(String(64), default="北京")
+    target_city: Mapped[str] = mapped_column(String(64), default="北京")
+    expected_salary: Mapped[str] = mapped_column(String(64), default="20k-35k")
+    raw_text: Mapped[str] = mapped_column(Text, default="")
+    parsed_data: Mapped[dict] = mapped_column(JSON, default=dict)
+    score: Mapped[int] = mapped_column(Integer, default=80)
+    score_details: Mapped[dict] = mapped_column(JSON, default=dict)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    versions: Mapped[list["ResumeVersion"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan"
+    )
+
+
+class ResumeVersion(Base, TimestampMixin):
+    """简历多版本管理：支持针对不同岗位方向（如后端、全栈、算法）定制的版本及 STAR 优化。"""
+    __tablename__ = "resume_version"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    resume_id: Mapped[str] = mapped_column(String(64), ForeignKey("resume_profile.id"), nullable=False)
+    version_name: Mapped[str] = mapped_column(String(128), default="通用版")
+    target_job_title: Mapped[str] = mapped_column(String(128), default="")
+    custom_content: Mapped[dict] = mapped_column(JSON, default=dict)
+    star_enhanced_projects: Mapped[list] = mapped_column(JSON, default=list)
+    tailored_jd: Mapped[str] = mapped_column(Text, default="")
+    score: Mapped[int] = mapped_column(Integer, default=85)
+
+    profile: Mapped["ResumeProfile"] = relationship(back_populates="versions")
+
+
+class JobOpportunity(Base, TimestampMixin):
+    """招聘岗位机会库：聚合牛客、BOSS直聘、猎聘等多源岗位信息及结构化 JD。"""
+    __tablename__ = "job_opportunity"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    company: Mapped[str] = mapped_column(String(255), nullable=False)
+    company_logo: Mapped[str] = mapped_column(String(512), default="")
+    city: Mapped[str] = mapped_column(String(64), default="全国")
+    salary_min: Mapped[int] = mapped_column(Integer, default=0)
+    salary_max: Mapped[int] = mapped_column(Integer, default=0)
+    salary_unit: Mapped[str] = mapped_column(String(32), default="K/月")
+    education_req: Mapped[str] = mapped_column(String(64), default="本科及以上")
+    experience_req: Mapped[str] = mapped_column(String(64), default="不限")
+    job_type: Mapped[str] = mapped_column(String(32), default="campus")  # campus/social/intern
+    source_platform: Mapped[str] = mapped_column(String(64), default="nowcoder")  # nowcoder/boss/liepin/zhilian/other
+    source_url: Mapped[str] = mapped_column(String(512), default="")
+    company_tags: Mapped[list] = mapped_column(JSON, default=list)
+    jd_text: Mapped[str] = mapped_column(Text, default="")
+    required_skills: Mapped[list] = mapped_column(JSON, default=list)
+    preferred_skills: Mapped[list] = mapped_column(JSON, default=list)
+    responsibilities: Mapped[list] = mapped_column(JSON, default=list)
+    benefits: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), default="active")  # active/closed
+
+
+class JobMatchAnalysis(Base, TimestampMixin):
+    """人岗精准匹配报告：记录简历与目标 JD 的全维度匹配分、优劣势与定制优化策略。"""
+    __tablename__ = "job_match_analysis"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), nullable=False)
+    resume_id: Mapped[str] = mapped_column(String(64), ForeignKey("resume_profile.id"), nullable=False)
+    job_id: Mapped[str] = mapped_column(String(64), ForeignKey("job_opportunity.id"), nullable=False)
+    overall_score: Mapped[int] = mapped_column(Integer, default=0)  # 0-100
+    skill_match_score: Mapped[int] = mapped_column(Integer, default=0)
+    experience_match_score: Mapped[int] = mapped_column(Integer, default=0)
+    education_match_score: Mapped[int] = mapped_column(Integer, default=0)
+    match_level: Mapped[str] = mapped_column(String(32), default="medium")  # high/medium/low
+    matched_skills: Mapped[list] = mapped_column(JSON, default=list)
+    missing_skills: Mapped[list] = mapped_column(JSON, default=list)
+    strong_points: Mapped[list] = mapped_column(JSON, default=list)
+    weak_points: Mapped[list] = mapped_column(JSON, default=list)
+    star_project_suggestions: Mapped[list] = mapped_column(JSON, default=list)
+    customized_greeting: Mapped[str] = mapped_column(Text, default="")
+    customized_cover_letter: Mapped[str] = mapped_column(Text, default="")
+
+
+class JobApplication(Base, TimestampMixin):
+    """求职投递全流程追踪：支持看板化管理各阶段状态（意向、投递、笔试、面试、Offer）。"""
+    __tablename__ = "job_application"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), nullable=False)
+    resume_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("resume_profile.id"), nullable=True)
+    job_id: Mapped[str] = mapped_column(String(64), ForeignKey("job_opportunity.id"), nullable=False)
+    stage: Mapped[str] = mapped_column(String(32), default="wishlist")
+    # wishlist(意向), applied(已网申), screening(初筛), assessment(笔试/测评),
+    # interview_1(一面), interview_2(二面), hr_interview(HR面), offer(已录用), rejected(未通过), withdrawn(已放弃)
+    apply_channel: Mapped[str] = mapped_column(String(64), default="牛客网申")
+    apply_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    hr_contact: Mapped[str] = mapped_column(String(255), default="")
+    next_action_date: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    interview_records: Mapped[list] = mapped_column(JSON, default=list)
+    offer_details: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class MockInterviewSession(Base, TimestampMixin):
+    """AI 模拟面试会话：支持多面试官角色设定、针对目标 JD/简历的多轮智能模拟评测。"""
+    __tablename__ = "mock_interview_session"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    user_id: Mapped[str] = mapped_column(String(64), ForeignKey("users.id"), nullable=False)
+    resume_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("resume_profile.id"), nullable=True)
+    job_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("job_opportunity.id"), nullable=True)
+    role_type: Mapped[str] = mapped_column(String(64), default="tech_expert")  # tech_expert/hr/tech_director/peer
+    target_role: Mapped[str] = mapped_column(String(128), default="后端开发工程师")
+    difficulty: Mapped[str] = mapped_column(String(32), default="intermediate")  # entry/intermediate/senior/expert
+    status: Mapped[str] = mapped_column(String(32), default="in_progress")  # in_progress/completed/cancelled
+    overall_score: Mapped[int] = mapped_column(Integer, default=0)
+    feedback_summary: Mapped[str] = mapped_column(Text, default="")
+    detailed_dimensions: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    records: Mapped[list["MockInterviewRecord"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan"
+    )
+
+
+class MockInterviewRecord(Base, TimestampMixin):
+    """模拟面试单轮问答与评估记录。"""
+    __tablename__ = "mock_interview_record"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    session_id: Mapped[str] = mapped_column(String(64), ForeignKey("mock_interview_session.id"), nullable=False)
+    round_number: Mapped[int] = mapped_column(Integer, default=1)
+    question_type: Mapped[str] = mapped_column(String(64), default="technical")
+    # technical(技术八股), project_deep_dive(项目深挖), system_design(系统设计), behavioral(行为BQ), hr(HR综合)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    expected_key_points: Mapped[list] = mapped_column(JSON, default=list)
+    user_answer: Mapped[str] = mapped_column(Text, default="")
+    audio_url: Mapped[str] = mapped_column(String(512), default="")
+    score: Mapped[int] = mapped_column(Integer, default=0)
+    feedback: Mapped[str] = mapped_column(Text, default="")
+    model_answer: Mapped[str] = mapped_column(Text, default="")
+    improvement_tips: Mapped[list] = mapped_column(JSON, default=list)
+
+    session: Mapped["MockInterviewSession"] = relationship(back_populates="records")
+
+
+class ApplicationFormMapping(Base, TimestampMixin):
+    """网申系统表单映射规则与模板（对齐 NowClaw Bridge / 表单自动填充）。"""
+    __tablename__ = "application_form_mapping"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
+    user_id: Mapped[str | None] = mapped_column(String(64), ForeignKey("users.id"), nullable=True)
+    platform_name: Mapped[str] = mapped_column(String(64), default="nowcoder")  # nowcoder/boss/liepin/custom
+    template_name: Mapped[str] = mapped_column(String(128), default="通用网申映射模板")
+    field_mappings: Mapped[dict] = mapped_column(JSON, default=dict)
+    default_values: Mapped[dict] = mapped_column(JSON, default=dict)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+

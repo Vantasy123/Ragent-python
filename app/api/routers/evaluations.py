@@ -53,6 +53,13 @@ class CaseImportPayload(BaseModel):
     csvText: str = ""
 
 
+class BatchComparisonPayload(BaseModel):
+    """离线评估基线与候选批次对比请求体。"""
+
+    baselineBatchId: str
+    candidateBatchId: str
+
+
 async def process_evaluation_batch_background(batch_id: str, user_id: str | None) -> None:
     """后台执行评估批次，使用独立数据库会话避免复用请求会话。"""
 
@@ -73,12 +80,13 @@ def overview(db: Session = Depends(get_db), _: User = Depends(require_admin)):
 def list_datasets(
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=100),
+    domain: str | None = Query(None, description="业务域过滤：career(求职智能体), ops_archive(历史运维), all(全部)"),
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):
     """查询评估数据集列表。"""
     service = EvaluationService(db)
-    rows, total = service.list_datasets(pageNo, pageSize)
+    rows, total = service.list_datasets(pageNo, pageSize, domain=domain)
     return success(page([service.dataset_to_dict(row) for row in rows], total, pageNo, pageSize))
 
 
@@ -190,6 +198,24 @@ def create_batch_run(
     return success(EvaluationService(db).batch_to_dict(row))
 
 
+@router.post("/compare")
+def compare_batch_runs(
+    payload: BatchComparisonPayload,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """比较基线和候选评估批次，返回指标变化与回归门禁。"""
+
+    try:
+        result = EvaluationService(db).compare_batch_runs(
+            payload.baselineBatchId,
+            payload.candidateBatchId,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return success(result)
+
+
 @router.get("/batch-runs")
 def list_batch_runs(
     datasetId: str | None = None,
@@ -262,12 +288,13 @@ def sync_openai_evals(batch_id: str, db: Session = Depends(get_db), _: User = De
 def list_runs(
     pageNo: int = Query(1, ge=1),
     pageSize: int = Query(20, ge=1, le=100),
+    domain: str | None = Query(None, description="业务域过滤：career(求职智能体), ops_archive(历史运维), all(全部)"),
     db: Session = Depends(get_db),
     _: User = Depends(require_admin),
 ):
     """list_runs 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
     service = EvaluationService(db)
-    rows, total = service.list_runs(pageNo, pageSize)
+    rows, total = service.list_runs(pageNo, pageSize, domain=domain)
     return success(page([service.run_to_dict(row) for row in rows], total, pageNo, pageSize))
 
 

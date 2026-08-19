@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.time_utils import to_shanghai_iso
+from app.services.agent_eval_service import compare_experiments, summarize_experiment
 from app.domain.models import (
     ConversationMessage,
     EvaluationBatchRun,
@@ -156,9 +157,12 @@ class EvaluationService:
         except ValueError:
             return None
 
-    def list_runs(self, page_no: int, page_size: int) -> tuple[list[EvaluationRun], int]:
-        """list_runs 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
-        query = self.db.query(EvaluationRun).order_by(EvaluationRun.created_at.desc())
+    def list_runs(self, page_no: int, page_size: int, domain: str | None = None) -> tuple[list[EvaluationRun], int]:
+        """list_runs 函数：查询评估运行记录，支持按业务域 (career/ops_archive) 过滤。"""
+        query = self.db.query(EvaluationRun)
+        if domain and domain != "all":
+            query = query.filter(EvaluationRun.domain == domain)
+        query = query.order_by(EvaluationRun.created_at.desc())
         total = query.count()
         rows = query.offset((page_no - 1) * page_size).limit(page_size).all()
         return rows, total
@@ -173,10 +177,12 @@ class EvaluationService:
         rows = query.offset((page_no - 1) * page_size).limit(page_size).all()
         return rows, total
 
-    def list_datasets(self, page_no: int, page_size: int) -> tuple[list[EvaluationDataset], int]:
-        """查询评估数据集列表。"""
-
-        query = self.db.query(EvaluationDataset).order_by(EvaluationDataset.created_at.desc())
+    def list_datasets(self, page_no: int, page_size: int, domain: str | None = None) -> tuple[list[EvaluationDataset], int]:
+        """查询评估数据集列表，支持按业务域 (career/ops_archive) 过滤。"""
+        query = self.db.query(EvaluationDataset)
+        if domain and domain != "all":
+            query = query.filter(EvaluationDataset.domain == domain)
+        query = query.order_by(EvaluationDataset.created_at.desc())
         total = query.count()
         rows = query.offset((page_no - 1) * page_size).limit(page_size).all()
         return rows, total
@@ -378,6 +384,51 @@ class EvaluationService:
         total = query.count()
         rows = query.offset((page_no - 1) * page_size).limit(page_size).all()
         return rows, total
+
+    def compare_batch_runs(self, baseline_batch_id: str, candidate_batch_id: str) -> dict[str, Any]:
+        """比较两个离线批次，为检索、提示词或工具编排优化提供回归门禁。"""
+
+        baseline = self.get_batch_run(baseline_batch_id)
+        candidate = self.get_batch_run(candidate_batch_id)
+        if not baseline or not candidate:
+            raise ValueError("基线或候选评估批次不存在")
+
+        def payload(batch: EvaluationBatchRun) -> list[dict[str, Any]]:
+            return [
+                {
+                    "metrics": result.metrics or {},
+                    "overallScore": result.overall_score,
+                    "status": result.status,
+                }
+                for result in batch.results
+                if result.status == "completed"
+            ]
+
+        baseline_summary = summarize_experiment(payload(baseline))
+        candidate_summary = summarize_experiment(payload(candidate))
+        quality_metrics = {
+            "hit_at_k",
+            "recall_at_k",
+            "mrr",
+            "context_precision",
+            "context_recall",
+            "faithfulness",
+            "answer_relevancy",
+            "answer_correctness",
+            "reference_token_f1",
+            "execution_success",
+            "tool_effectiveness",
+            "execution_error_free",
+            "trace_success",
+        }
+        comparison = compare_experiments(
+            baseline_summary,
+            candidate_summary,
+            higher_is_better=quality_metrics,
+        )
+        comparison["baseline"] = {"id": baseline.id, "datasetName": self._dataset_name(baseline), **baseline_summary}
+        comparison["candidate"] = {"id": candidate.id, "datasetName": self._dataset_name(candidate), **candidate_summary}
+        return comparison
 
     def overview(self) -> dict[str, Any]:
         """overview 函数：查询一组数据并整理成列表或分页结果，通常直接服务于前端列表页。"""
@@ -1189,6 +1240,12 @@ JSON 示例：
                 if isinstance(metric, dict) and metric.get("status") == "completed":
                     buckets[key].append(float(metric.get("score") or 0.0))
         return {key: round(sum(values) / max(len(values), 1), 4) for key, values in buckets.items()}
+
+    @staticmethod
+    def _dataset_name(batch: EvaluationBatchRun) -> str:
+        """读取批次所属数据集名称，兼容历史孤立批次。"""
+
+        return batch.dataset.name if batch.dataset else ""
 
     @staticmethod
     def _case_metric(label: str, score: float, reason: str, evidence: dict[str, Any]) -> dict[str, Any]:

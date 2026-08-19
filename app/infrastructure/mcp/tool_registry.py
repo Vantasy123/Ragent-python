@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from app.core.time_utils import to_shanghai_iso, shanghai_now
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 
 @dataclass
@@ -53,6 +53,10 @@ class ToolRegistry:
     async def _search_kb(self, query: str = "", top_k: int = 5, kb_id: str | None = None, **kwargs) -> dict:
         """_search_kb 函数：执行检索逻辑，从知识库或索引中找出和用户问题最相关的内容。"""
         try:
+            db = kwargs.get("db")
+            if db is not None:
+                return {"success": True, "data": self._search_kb_from_db(db, query, kb_id, top_k)}
+
             from app.rag.retrieval.multi_channel_retriever import MultiChannelRetriever
 
             rows = await MultiChannelRetriever().retrieve(query, kb_id=kb_id, top_k=top_k)
@@ -65,6 +69,47 @@ class ToolRegistry:
             }
         except Exception as exc:
             return {"success": False, "error": str(exc)}
+
+    def _search_kb_from_db(self, db: Any, query: str, kb_id: str | None, top_k: int) -> list[dict]:
+        """使用当前请求 DB 执行轻量关键词检索，确保刚发布的手工分块可被工具验证。"""
+
+        import re
+
+        from app.domain.models import KnowledgeChunk
+
+        normalized = str(query or "").strip().lower()
+        tokens = [normalized] if normalized else []
+        tokens.extend(token.strip().lower() for token in re.findall(r"[\w\u4e00-\u9fff-]+", normalized) if token.strip())
+        tokens = [token for index, token in enumerate(tokens) if token and token not in tokens[:index]]
+        if not tokens:
+            return []
+
+        db_query = db.query(KnowledgeChunk).filter(KnowledgeChunk.enabled.is_(True))
+        if kb_id:
+            db_query = db_query.filter(KnowledgeChunk.kb_id == kb_id)
+        rows = db_query.order_by(KnowledgeChunk.updated_at.desc()).limit(3000).all()
+        ranked: list[tuple[int, KnowledgeChunk, list[str]]] = []
+        for row in rows:
+            content = str(row.content or "").lower()
+            hits = [token for token in tokens if token in content]
+            if hits:
+                ranked.append((len(hits), row, hits))
+        ranked.sort(key=lambda item: item[0], reverse=True)
+        return [
+            {
+                "content": row.content,
+                "metadata": {
+                    **(row.meta_data or {}),
+                    "chunk_id": row.id,
+                    "kb_id": row.kb_id,
+                    "doc_id": row.doc_id,
+                    "chunkIndex": row.chunk_index,
+                    "matchedTerms": hits[:8],
+                    "channel": "request_db_keyword",
+                },
+            }
+            for _, row, hits in ranked[: max(1, top_k)]
+        ]
 
     async def _get_weather(self, location: str = "北京", **kwargs) -> dict:
         """_get_weather 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""

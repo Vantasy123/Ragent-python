@@ -3,11 +3,9 @@
     <aside class="conversation-sidebar">
       <div class="conversation-sidebar-head">
         <div>
-          <div class="meta-label !text-slate-500">会话工作台</div>
-          <div class="conversation-title">Ragent 智能对话</div>
-          <div class="helper-text mt-2 text-sm">统一入口支持知识问答和运维诊断。</div>
+          <div class="meta-label !text-slate-500">求职会话管理</div>
+          <div class="conversation-title">历史会话</div>
         </div>
-        <router-link v-if="auth.user?.role === 'admin'" to="/admin/dashboard" class="btn btn-secondary conversation-admin-link">后台</router-link>
       </div>
 
       <div class="flex w-full gap-2">
@@ -19,11 +17,11 @@
         <label class="meta-label mb-2 block !text-slate-500">对话模式</label>
         <div class="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 p-1 border border-slate-200">
           <button 
-            v-for="opt in [{value: 'auto', label: '自动'}, {value: 'rag', label: '问答'}, {value: 'ops', label: '运维'}]" 
+            v-for="opt in [{value: 'auto', label: '自动'}, {value: 'job', label: '求职'}, {value: 'rag', label: '面经'}]" 
             :key="opt.value" 
             type="button"
             :class="['px-1 py-1.5 text-xs font-semibold rounded-md transition-all text-center', chat.mode === opt.value ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-900']"
-            @click="chat.setMode(opt.value)"
+            @click="chat.setMode(opt.value as any)"
           >
             {{ opt.label }}
           </button>
@@ -34,7 +32,6 @@
           :items="[
             { label: '当前会话', value: chat.currentConversationId || '未创建' },
             { label: '最新 Trace', value: chat.currentTraceId || '等待生成' },
-            { label: '运维 Run', value: chat.currentRunId || '未触发' },
           ]"
         />
       </SurfaceCard>
@@ -80,8 +77,8 @@
         <AsyncState
           :loading="false"
           :empty="!messages.length"
-          empty-title="开始一段新对话"
-          empty-description="普通问题会走知识问答；运维问题可自动进入多 Agent 诊断，也可以手动选择运维诊断模式。"
+          empty-title="开始与智能求职 Agent 对话"
+          empty-description="支持简历诊断、项目 STAR 润色、大厂模拟面试、人岗精准匹配与八股面经知识库问答。"
         >
           <div class="space-y-6">
             <article 
@@ -107,15 +104,26 @@
               <!-- Message Block -->
               <div :class="['flex-1 min-w-0 flex flex-col', message.role === 'user' ? 'items-end' : 'items-start']">
                 <span class="text-xs font-semibold text-zinc-500 mb-1">
-                  {{ message.role === 'user' ? '用户' : 'Ragent 助手' }}
+                  {{ message.role === 'user' ? '求职者' : 'Ragent 求职助手' }}
                 </span>
                 
                 <!-- Chat Bubble Container -->
                 <div 
                   v-if="message.role === 'user'" 
-                  class="text-left text-sm text-white bg-blue-600 border border-blue-700 rounded-2xl rounded-tr-none px-4 py-2.5 max-w-[85%] whitespace-pre-wrap selection:bg-blue-800/30"
+                  class="text-left max-w-[85%]"
                 >
-                  {{ message.content }}
+                  <div v-if="message.attachments?.length" class="flex flex-wrap gap-1.5 mb-1.5 justify-end">
+                    <span 
+                      v-for="att in message.attachments" 
+                      :key="att.filename" 
+                      class="inline-flex items-center gap-1 text-[11px] bg-slate-700 text-slate-100 px-2 py-0.5 rounded-md border border-slate-600 shadow-2xs font-mono"
+                    >
+                      📎 {{ att.filename }} <span class="text-slate-400">({{ att.char_count }}字)</span>
+                    </span>
+                  </div>
+                  <div class="text-sm text-white bg-blue-600 border border-blue-700 rounded-2xl rounded-tr-none px-4 py-2.5 whitespace-pre-wrap selection:bg-blue-800/30">
+                    {{ message.content }}
+                  </div>
                 </div>
                 <div 
                   v-else 
@@ -129,20 +137,20 @@
         </AsyncState>
       </div>
 
+      <!-- Agent Steps Logs -->
       <SurfaceCard v-if="chat.streamEvents.length" compact class="border-slate-200 bg-slate-50/80">
         <div class="flex items-center justify-between border-b border-slate-200 pb-3">
           <div class="flex items-center gap-2">
             <span class="flex h-2 w-2 rounded-full bg-blue-500 animate-pulse"></span>
-            <span class="text-xs font-semibold text-slate-500">智能体运维执行日志</span>
+            <span class="text-xs font-semibold text-slate-500">Agent 推理与工具执行动态</span>
           </div>
-          <button class="btn btn-secondary !px-2.5 !py-1 text-xs" @click="showOpsDetails = !showOpsDetails">
-            {{ showOpsDetails ? '隐藏日志明细' : '查看日志明细 (' + chat.streamEvents.length + ')' }}
+          <button class="btn btn-secondary !px-2.5 !py-1 text-xs" @click="showDetails = !showDetails">
+            {{ showDetails ? '收起明细' : '查看执行明细 (' + chat.streamEvents.length + ')' }}
           </button>
         </div>
 
-        <div v-if="showOpsDetails" class="mt-4 border-l border-slate-200 ml-2 pl-4 space-y-4">
-          <article v-for="(event, index) in chat.streamEvents" :key="eventKey(event, index)" class="relative text-xs">
-            <!-- Timeline dot -->
+        <div v-if="showDetails" class="mt-4 border-l border-slate-200 ml-2 pl-4 space-y-3">
+          <article v-for="(event, index) in chat.streamEvents" :key="index" class="relative text-xs">
             <span class="absolute -left-[21px] top-1 flex h-2 w-2 items-center justify-center rounded-full bg-slate-200 ring-4 ring-slate-100">
               <span :class="['h-1.5 w-1.5 rounded-full', event.type === 'error' ? 'bg-red-500' : event.type === 'done' || event.type === 'final_answer' ? 'bg-emerald-500' : 'bg-blue-500']"></span>
             </span>
@@ -150,85 +158,161 @@
             <div class="flex items-start justify-between gap-3">
               <div class="min-w-0">
                 <div class="flex items-center flex-wrap gap-2">
-                  <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700 border border-slate-200" :style="{ borderLeft: '2px solid ' + agentTheme(event.agent).color }">
-                    {{ agentTheme(event.agent).label }}
+                  <span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                    {{ event.type === 'tool_call' ? '工具调用' : (event.type === 'observation' ? '观察结果' : (event.type === 'react_step' ? '推理思考' : '执行事件')) }}
                   </span>
-                  <span class="font-semibold text-slate-700">{{ eventTypeLabel(event.type) }}</span>
-                  <span v-if="event.tool" class="text-zinc-500">工具: {{ event.tool }}</span>
+                  <span v-if="event.tool" class="text-zinc-600 font-mono">工具: {{ event.tool }}</span>
                 </div>
-                <p class="mt-1 text-slate-500 font-mono">{{ eventText(event) }}</p>
+                <p class="mt-1 text-slate-600 font-mono">{{ event.thought || event.reason || event.content || event.result?.summary || '执行中' }}</p>
               </div>
-
-              <button
-                v-if="hasEventDetails(event)"
-                class="text-[10px] text-blue-500 hover:text-blue-400 font-semibold shrink-0"
-                @click="toggleEventExpanded(event, index)"
-              >
-                {{ isEventExpanded(event, index) ? '收起数据' : '查看数据' }}
-              </button>
             </div>
 
-            <!-- Details section -->
-            <div v-if="isEventExpanded(event, index)" class="mt-2 space-y-2 bg-white rounded-lg p-2.5 border border-slate-200">
-              <div v-if="event.subTasks?.length" class="space-y-1.5">
-                <div class="text-[10px] font-semibold text-zinc-500">拆解子任务</div>
-                <div v-for="(task, taskIndex) in event.subTasks" :key="taskIndex" class="border border-slate-150 bg-slate-50 rounded p-2">
-                  <div class="font-semibold text-slate-700">{{ task.agent || '智能体' }}</div>
-                  <div class="mt-0.5 text-slate-600">{{ task.task || task.message || '-' }}</div>
-                  <div v-if="task.reason" class="text-[10px] text-zinc-500 mt-0.5">原因: {{ task.reason }}</div>
-                </div>
-              </div>
-
-              <DataPreview v-if="event.steps?.length" class="mt-1 font-mono text-[11px]" :data="event.steps" empty-text="暂无计划步骤" />
-              <DataPreview v-if="event.args" class="mt-1 font-mono text-[11px]" :data="event.args" empty-text="暂无工具参数" />
-              <DataPreview v-if="event.result" class="mt-1 font-mono text-[11px]" :data="event.result" empty-text="暂无观察结果" />
-              <DataPreview v-if="event.memory" class="mt-1 font-mono text-[11px]" :data="event.memory" empty-text="暂无共享记忆" />
-              <DataPreview v-if="event.sources?.length" class="mt-1 font-mono text-[11px]" :data="event.sources" empty-text="暂无来源出处" />
-
-              <div v-if="event.type === 'approval_required'" class="border border-amber-900/30 bg-amber-950/20 rounded p-2">
-                <div class="font-semibold text-amber-500">此高危运维操作需要您的授权审批</div>
-                <div class="text-[10px] text-zinc-500 mt-0.5">风险等级: {{ event.riskLevel || '未标注' }} | 审批ID: {{ event.approvalId || '-' }}</div>
-                <div class="mt-2 flex gap-2">
-                  <button class="btn btn-primary !px-2.5 !py-1 text-[10px]" :disabled="isApprovalBusyOrHandled(event)" @click="approve(event, true)">批准执行</button>
-                  <button class="btn btn-secondary !px-2.5 !py-1 text-[10px]" :disabled="isApprovalBusyOrHandled(event)" @click="approve(event, false)">拒绝执行</button>
-                </div>
-                <div v-if="approvalDecisionLabel(event)" class="mt-2 text-[10px] text-amber-600">
-                  {{ approvalDecisionLabel(event) }}
-                </div>
-              </div>
+            <div v-if="event.args || event.result" class="mt-2 space-y-1 bg-white rounded-lg p-2 border border-slate-200 font-mono text-[11px]">
+              <DataPreview v-if="event.args" :data="event.args" empty-text="" />
+              <DataPreview v-if="event.result" :data="event.result" empty-text="" />
             </div>
           </article>
         </div>
       </SurfaceCard>
 
-      <div class="chat-composer">
+      <div 
+        class="chat-composer relative"
+        @dragover.prevent="isDraggingOver = true"
+        @dragleave.prevent="isDraggingOver = false"
+        @drop.prevent="handleFileDrop"
+      >
+        <!-- Drag Over Overlay -->
+        <div v-if="isDraggingOver" class="absolute inset-0 z-20 flex items-center justify-center bg-blue-50/90 border-2 border-dashed border-blue-400 rounded-2xl backdrop-blur-xs">
+          <div class="text-center">
+            <span class="text-2xl">📄</span>
+            <p class="mt-1 text-sm font-bold text-blue-700">松开鼠标即可上传并解析文档或图片</p>
+            <p class="text-xs text-blue-500">支持 PDF、Word (.docx/.doc)、TXT、Markdown 以及图片/长截图 (PNG/JPG/WEBP)</p>
+          </div>
+        </div>
+
+        <!-- Attached Files Badges Area -->
+        <div v-if="attachedFiles.length > 0" class="mb-2 p-2 bg-blue-50/70 border border-blue-200 rounded-xl flex flex-wrap items-center gap-2">
+          <div 
+            v-for="(att, idx) in attachedFiles" 
+            :key="idx" 
+            class="flex items-center gap-2 bg-white px-3 py-1.5 rounded-lg border border-blue-200 shadow-2xs text-xs"
+          >
+            <span 
+              class="px-1.5 py-0.5 rounded text-white font-bold text-[10px]"
+              :class="['PNG','JPG','JPEG','WEBP','BMP'].includes(att.file_type) ? 'bg-amber-600' : 'bg-blue-600'"
+            >
+              {{ ['PNG','JPG','JPEG','WEBP','BMP'].includes(att.file_type) ? '🖼️ ' + att.file_type : att.file_type }}
+            </span>
+            <span class="font-semibold text-slate-800 truncate max-w-[200px]">{{ att.filename }}</span>
+            <span class="text-slate-400 text-[11px]">({{ formatFileSize(att.file_size) }} · {{ att.char_count }}字)</span>
+            <button 
+              type="button" 
+              class="text-slate-400 hover:text-red-600 font-bold ml-1 transition-colors" 
+              title="移除附件" 
+              @click="removeAttachment(idx)"
+            >
+              ✕
+            </button>
+          </div>
+          <span class="text-[11px] text-blue-600 ml-auto font-medium">📎 已附加 {{ attachedFiles.length }} 个附件</span>
+        </div>
+
+        <!-- Quick Job Prompts Chips -->
+        <div class="flex items-center gap-1.5 overflow-x-auto pb-2 mb-1 scrollbar-none">
+          <!-- 上传文件后的专属推荐 Prompt -->
+          <template v-if="attachedFiles.length > 0">
+            <button
+              v-for="chip in [
+                '🎯 帮我深度诊断这份简历并给出多维评分',
+                '✨ 提炼简历核心项目经历并按 STAR 法则重构润色',
+                '🔍 根据这份简历推荐匹配的目标岗位并分析优势短板',
+                '🎤 针对这份简历中的技术栈设计 3 道大厂高频面试真题'
+              ]"
+              :key="chip"
+              type="button"
+              class="px-2.5 py-1 text-xs bg-blue-50 text-blue-700 font-medium hover:bg-blue-100 hover:border-blue-400 rounded-lg border border-blue-200 shadow-2xs whitespace-nowrap transition-all cursor-pointer"
+              @click="clickChip(chip)"
+            >
+              {{ chip }}
+            </button>
+          </template>
+          <!-- 常规求职推荐 Prompt -->
+          <template v-else>
+            <button
+              v-for="chip in [
+                '🎯 帮我分析岗位JD并计算人岗匹配度',
+                '✨ 根据 STAR 法则重构项目经历',
+                '💬 生成字节后端 HR 高情商破冰话术',
+                '🚀 扮演大厂面试官进行模拟面试出题',
+                '📋 帮我生成牛客网申自动填表 Payload'
+              ]"
+              :key="chip"
+              type="button"
+              class="px-2.5 py-1 text-xs bg-white text-slate-700 hover:text-blue-600 hover:border-blue-300 rounded-lg border border-slate-200 shadow-2xs whitespace-nowrap transition-all cursor-pointer"
+              @click="clickChip(chip)"
+            >
+              {{ chip }}
+            </button>
+          </template>
+        </div>
+
+        <p v-if="uploadError" class="mb-2 text-xs text-red-600">{{ uploadError }}</p>
         <p v-if="chat.errorMessage" class="mb-2 text-sm text-red-600">{{ chat.errorMessage }}</p>
-        <form class="chat-composer-form border-slate-300 bg-white/95 shadow-md" @submit.prevent="submit">
+
+        <!-- Form & Toolbar -->
+        <form class="!flex items-center gap-2 w-full max-w-[920px] mx-auto border border-slate-300 bg-white/95 shadow-md rounded-2xl p-2" @submit.prevent="submit">
+          <!-- 隐藏的文件选择 Input -->
+          <input 
+            ref="fileInputRef" 
+            type="file" 
+            class="hidden" 
+            accept=".pdf,.docx,.doc,.txt,.md,.markdown,.json,.csv,.png,.jpg,.jpeg,.webp,.bmp" 
+            multiple 
+            @change="onFileSelected" 
+          />
+
+          <!-- 附件上传按钮 -->
+          <button 
+            type="button" 
+            :disabled="uploadingFile || isLoading"
+            class="p-2 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all shrink-0 flex items-center justify-center disabled:opacity-50" 
+            title="上传简历或文档附件 (支持 PDF、Word、TXT、MD、PNG、JPG 图片截图)"
+            @click="triggerFileInput"
+          >
+            <svg v-if="!uploadingFile" xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+            </svg>
+            <span v-else class="flex h-4 w-4 rounded-full border-2 border-blue-600 border-t-transparent animate-spin"></span>
+          </button>
+
           <textarea
             v-model="question"
-            class="chat-composer-input text-slate-800 placeholder-slate-400"
-            placeholder="输入问题，例如：后端 502 帮我诊断，或查询知识库内容。"
+            class="flex-1 min-h-[40px] max-h-[160px] resize-none outline-none border-0 bg-transparent text-slate-800 placeholder-slate-400 py-2 px-2 text-sm"
+            :placeholder="attachedFiles.length ? '已附加上传文件/图片，输入您的诉求（如：请帮我分析诊断并优化简历）...' : '输入求职诉求，或点击左侧 📎 上传简历/图片/文档，或直接拖拽文件到这里...'"
             rows="1"
             @keydown="handleComposerKeydown"
           />
-          <button class="chat-send-button" :disabled="isLoading || !question.trim()" type="submit" title="发送">
+
+          <button class="chat-send-button shrink-0" :disabled="isLoading || (!question.trim() && !attachedFiles.length)" type="submit" title="发送">
             {{ isLoading ? '...' : '发送' }}
           </button>
         </form>
-        <div class="chat-composer-hint text-slate-400">Enter 发送，Shift + Enter 换行</div>
+        <div class="chat-composer-hint text-slate-400 flex items-center justify-between text-xs mt-1 px-1">
+          <span>Enter 发送，Shift + Enter 换行</span>
+          <span class="text-slate-400">支持拖拽 PDF、DOCX、TXT、MD、PNG、JPG 图片上传</span>
+        </div>
       </div>
     </main>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
-import type { ChatMode } from '@/services/chatService'
-import { AGENT_THEME, type OpsAgentEvent } from '@/services/opsAgentService'
+import { computed, onMounted, ref } from 'vue'
 import AsyncState from '@/components/admin/AsyncState.vue'
 import DataPreview from '@/components/admin/DataPreview.vue'
 import KeyValueGrid from '@/components/admin/KeyValueGrid.vue'
 import SurfaceCard from '@/components/admin/SurfaceCard.vue'
+import { uploadChatFile, type ChatAttachment } from '@/services/chatService'
 import { useAuthStore } from '@/stores/authStore'
 import { useChatStore } from '@/stores/chatStore'
 import { formatShanghaiDateTime } from '@/utils/date'
@@ -241,8 +325,61 @@ const loadingConversations = ref(false)
 const messages = computed(() => chat.messages)
 const conversations = computed(() => chat.conversations)
 const isLoading = computed(() => chat.isLoading)
-const expandedEventKeys = reactive(new Set<string>())
-const showOpsDetails = ref(false)
+const showDetails = ref(false)
+
+// 附件上传与拖拽状态
+const fileInputRef = ref<HTMLInputElement | null>(null)
+const attachedFiles = ref<ChatAttachment[]>([])
+const uploadingFile = ref(false)
+const uploadError = ref('')
+const isDraggingOver = ref(false)
+
+function triggerFileInput() {
+  uploadError.value = ''
+  fileInputRef.value?.click()
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / 1024 / 1024).toFixed(1) + ' MB'
+}
+
+async function handleFiles(files: FileList | File[]) {
+  if (!files || !files.length) return
+  uploadError.value = ''
+  uploadingFile.value = true
+  try {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+      const result = await uploadChatFile(file)
+      attachedFiles.value.push(result)
+    }
+  } catch (err: any) {
+    uploadError.value = err?.message || '文件上传解析失败'
+  } finally {
+    uploadingFile.value = false
+    if (fileInputRef.value) fileInputRef.value.value = ''
+  }
+}
+
+async function onFileSelected(e: Event) {
+  const target = e.target as HTMLInputElement
+  if (target.files) {
+    await handleFiles(target.files)
+  }
+}
+
+async function handleFileDrop(e: DragEvent) {
+  isDraggingOver.value = false
+  if (e.dataTransfer?.files) {
+    await handleFiles(e.dataTransfer.files)
+  }
+}
+
+function removeAttachment(index: number) {
+  attachedFiles.value.splice(index, 1)
+}
 
 function renderMarkdown(content: string) {
   if (!content) return ''
@@ -260,16 +397,28 @@ async function refresh() {
 
 function startConversation() {
   question.value = ''
+  attachedFiles.value = []
   chat.startConversation()
-  expandedEventKeys.clear()
-  showOpsDetails.value = false
+  showDetails.value = false
 }
 
 async function submit() {
-  if (!question.value.trim()) return
-  const current = question.value
+  const currentMsg = question.value.trim()
+  if (!currentMsg && !attachedFiles.value.length) return
+
+  const effectiveMsg = currentMsg || '请帮我深度分析这份已上传的文档，并给出专业评估与优化建议。'
+  const attachmentsToSend = attachedFiles.value.length ? [...attachedFiles.value] : undefined
+
   question.value = ''
-  await chat.sendMessage(current)
+  attachedFiles.value = []
+  uploadError.value = ''
+
+  await chat.sendMessage(effectiveMsg, attachmentsToSend)
+}
+
+function clickChip(chip: string) {
+  question.value = chip
+  submit()
 }
 
 function handleComposerKeydown(event: KeyboardEvent) {
@@ -285,107 +434,7 @@ async function select(id: string) {
 async function clearConversation(id: string) {
   if (!window.confirm('确定清空该会话的对话记录吗？会话本身会保留。')) return
   await chat.clearConversation(id)
-  expandedEventKeys.clear()
-  showOpsDetails.value = false
-}
-
-async function approve(event: OpsAgentEvent, approved: boolean) {
-  await chat.approveOpsEvent(event, approved)
-}
-
-function approvalDecisionLabel(event: OpsAgentEvent) {
-  if (!event.approvalId) return ''
-  for (let index = chat.opsEvents.length - 1; index >= 0; index -= 1) {
-    const item = chat.opsEvents[index]
-    if (item.approvalId === event.approvalId && ['approval_approved', 'approval_rejected'].includes(item.type)) {
-      return item.type === 'approval_approved' ? '审批已通过，不能重复提交。' : '审批已拒绝，不能重复提交。'
-    }
-  }
-  return ''
-}
-
-function isApprovalBusyOrHandled(event: OpsAgentEvent) {
-  return chat.approvalLoading === event.approvalId || Boolean(approvalDecisionLabel(event))
-}
-
-function agentTheme(agent?: string) {
-  return AGENT_THEME[agent || ''] || { color: '#475569', label: agent || '系统事件' }
-}
-
-function eventTypeLabel(type: string) {
-  const labels: Record<string, string> = {
-    run_created: '任务创建',
-    orchestrator_start: '编排启动',
-    task_decomposition: '任务拆解',
-    agent_assigned: '智能体分配',
-    plan_created: '计划生成',
-    step_started: '步骤执行',
-    step_observed: '步骤观察',
-    replan_decision: '重规划',
-    final_answer: '最终输出',
-    react_step: '对话推理',
-    agent_plan: '执行计划',
-    tool_call: '工具调用',
-    observation: '观察结果',
-    approval_required: '等待审批',
-    approval_approved: '审批通过',
-    approval_rejected: '审批拒绝',
-    agent_done: '智能体完成',
-    sources: '来源出处',
-    report: '诊断报告',
-    done: '完成',
-    error: '错误',
-  }
-  return labels[type] || type
-}
-
-function eventText(event: OpsAgentEvent) {
-  if (event.content) return event.content
-  if (event.message) return event.message
-  if (event.report) return event.report
-  if (event.type === 'task_decomposition') return `已拆解 ${event.subTasks?.length || 0} 个子任务。`
-  if (event.type === 'agent_plan') return `生成 ${event.steps?.length || 0} 个计划步骤。`
-  if (event.type === 'plan_created') return `生成 ${event.steps?.length || 0} 个计划步骤。`
-  if (event.type === 'replan_decision') return event.reason || '已完成重规划判断。'
-  if (event.type === 'step_started') return '正在执行计划步骤。'
-  if (event.type === 'step_observed') return event.result?.summary || '步骤已返回观察结果。'
-  if (event.type === 'final_answer') return event.content || '已生成最终输出。'
-  if (event.type === 'react_step') return event.reason || event.thought || '对话 Agent 正在判断下一步。'
-  if (event.type === 'tool_call') return `正在调用 ${event.tool || '未知工具'}。`
-  if (event.type === 'sources') return `已生成 ${event.sources?.length || 0} 条来源出处。`
-  if (event.type === 'approval_required') return `工具 ${event.tool || '未知工具'} 需要人工审批。`
-  return eventTypeLabel(event.type)
-}
-
-// 事件详情默认折叠，只在用户展开时渲染结构化内容，避免流式过程直接铺满页面。
-function eventKey(event: OpsAgentEvent, index: number) {
-  return `${event.type}-${event.approvalId || event.runId || event.tool || index}`
-}
-
-function hasEventDetails(event: OpsAgentEvent) {
-  return Boolean(
-    event.subTasks?.length ||
-      event.steps?.length ||
-      event.step ||
-      event.args ||
-      event.result ||
-      event.memory ||
-      event.sources?.length ||
-      event.type === 'approval_required',
-  )
-}
-
-function isEventExpanded(event: OpsAgentEvent, index: number) {
-  return expandedEventKeys.has(eventKey(event, index))
-}
-
-function toggleEventExpanded(event: OpsAgentEvent, index: number) {
-  const key = eventKey(event, index)
-  if (expandedEventKeys.has(key)) {
-    expandedEventKeys.delete(key)
-    return
-  }
-  expandedEventKeys.add(key)
+  showDetails.value = false
 }
 
 function formatDate(value?: string) {

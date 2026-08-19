@@ -356,17 +356,23 @@ async def stream_chat(
     message: str,
     task_id: str,
     deep_thinking: bool = False,
+    display_message: str | None = None,
+    attachments_meta: list[dict] | None = None,
 ) -> AsyncIterator[dict]:
     """stream_chat 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     trace_service = TraceService(db)
     trace = trace_service.start_run(session_id=conversation_id, task_id=task_id)
     service = ConversationService(db)
-    user_message = service.add_message(conversation_id, "user", message, {"taskId": task_id, "traceId": trace.id})
+    user_display = display_message or message
+    msg_metadata: dict[str, Any] = {"taskId": task_id, "traceId": trace.id}
+    if attachments_meta:
+        msg_metadata["attachments"] = attachments_meta
+    user_message = service.add_message(conversation_id, "user", user_display, msg_metadata)
 
     conversation = service.get_conversation(conversation_id)
     user_id = conversation.user_id if conversation else None
     memory_service = LongTermMemoryService(db)
-    remembered = memory_service.remember_from_user_message(user_id, conversation_id, user_message.id, message)
+    remembered = memory_service.remember_from_user_message(user_id, conversation_id, user_message.id, user_display)
     memory_block = memory_service.build_prompt_block(user_id, message)
 
     # 为 Trace 显式记录输入，避免详情页把一份 metadata 同时展示成输入和输出。

@@ -25,7 +25,7 @@ class ReactState:
 class ConversationReactAgent:
     """普通对话 Agent，按思考、工具、观察、回答的 ReAct 流程运行。"""
 
-    def __init__(self, registry: UnifiedToolRegistry | None = None, max_steps: int = 5) -> None:
+    def __init__(self, registry: UnifiedToolRegistry | None = None, max_steps: int = 3) -> None:
         """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.registry = registry or UnifiedToolRegistry(include_ops=False)
         self.max_steps = max(1, max_steps)
@@ -50,9 +50,16 @@ class ConversationReactAgent:
             yield {"type": "react_step", "stepIndex": step_index, "thought": thought, "action": action}
 
             if action == "final_answer":
-                answer = str(decision.get("final_answer") or decision.get("answer") or "")
+                answer = str(
+                    decision.get("final_answer")
+                    or decision.get("answer")
+                    or decision.get("content")
+                    or decision.get("response")
+                    or decision.get("result")
+                    or ""
+                )
                 if not answer:
-                    return
+                    answer = thought or "已完成分析处理。"
                 state.final_answer = answer
                 yield {"type": "final_answer", "content": answer}
                 return
@@ -81,6 +88,30 @@ class ConversationReactAgent:
                 "result": result_data,
             }
 
+        # 若多轮工具调用完成但模型未显式返回 final_answer，自动基于已有观察合成最终结构化报告
+        if state.observations:
+            obs_json = json.dumps(state.observations, ensure_ascii=False)
+            synth_prompt = (
+                "你是一个资深大厂求职总监与智能面试专家。请基于以下用户问题与已调用的工具执行结果，输出一份详尽、结构清晰、专业多维度的最终诊断与建议报告（使用 Markdown 标题、分段与列表渲染）：\n\n"
+                f"【用户问题与需求】：\n{state.question}\n\n"
+                f"【工具执行数据】：\n{obs_json[:6000]}\n\n"
+                "请给出最终完整回复："
+            )
+            try:
+                llm = build_primary_llm(streaming=True)
+                full_synthesized = ""
+                async for chunk in llm.astream([HumanMessage(content=synth_prompt)]):
+                    tok = getattr(chunk, "content", "")
+                    if tok:
+                        full_synthesized += tok
+                        yield {"type": "token", "content": tok}
+                if full_synthesized:
+                    state.final_answer = full_synthesized
+                    yield {"type": "final_answer", "content": full_synthesized}
+                    return
+            except Exception:
+                pass
+
         yield {
             "type": "react_step",
             "stepIndex": self.max_steps,
@@ -107,11 +138,11 @@ class ConversationReactAgent:
         history = json.dumps(state.history[-6:], ensure_ascii=False)[:3000]
         return (
             "你是 Ragent 的对话 Agent，需要按 ReAct 流程解决用户问题。\n"
-            "只能输出 JSON，不要输出 Markdown。\n"
+            "只能输出 JSON，不要输出 Markdown 代码块。\n"
             "JSON 格式二选一：\n"
             "{\"thought\":\"思考\", \"action\":\"tool_call\", \"tool\":\"工具名\", \"args\":{}}\n"
             "{\"thought\":\"思考\", \"action\":\"final_answer\", \"final_answer\":\"最终回答\"}\n"
-            "规则：如果需要知识库、时间或天气信息，优先调用工具；如果已有足够信息，直接 final_answer。\n\n"
+            "规则：如果需要知识库或简历分析工具，执行 1 次关键工具调用；一旦获得已有观察（observations）或已有足够信息，必须直接给出完整专业的 final_answer，切勿重复调用。\n\n"
             f"当前轮次：{step_index + 1}/{self.max_steps}\n"
             f"可用工具：{json.dumps(tools, ensure_ascii=False)}\n"
             f"历史消息：{history}\n"

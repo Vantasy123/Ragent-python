@@ -1,37 +1,6 @@
 import apiClient from './api'
 import { toArrayResult, toTablePageResult, unwrapData } from './result'
 
-function normalizeIntent(item: Record<string, any>) {
-  return {
-    ...item,
-    parentId: item.parentId ?? item.parent_id ?? null,
-    kbId: item.kbId ?? item.kb_id ?? null,
-  }
-}
-
-function normalizeSample(item: Record<string, any>) {
-  return {
-    ...item,
-    sortOrder: item.sortOrder ?? item.sort_order ?? 0,
-  }
-}
-
-function normalizeMapping(item: Record<string, any>) {
-  return {
-    ...item,
-    sourceTerm: item.sourceTerm ?? item.source_term ?? '',
-    targetTerm: item.targetTerm ?? item.target_term ?? '',
-  }
-}
-
-function nestedItems(payload: any) {
-  const data = unwrapData<any>(payload, {})
-  if (Array.isArray(data)) return data
-  if (Array.isArray(data.items)) return data.items
-  if (Array.isArray(data.data?.items)) return data.data.items
-  return []
-}
-
 export const adminService = {
   async overview() {
     return unwrapData(await apiClient.get('/admin/dashboard/overview'), {})
@@ -141,15 +110,6 @@ export const adminService = {
     if (action) params.set('action', action)
     return toTablePageResult(await apiClient.get(`/users/audit?${params.toString()}`))
   },
-  async opsApprovalAuditLogs(pageNo = 1, pageSize = 10, status = '', runId = '') {
-    const params = new URLSearchParams({
-      pageNo: String(pageNo),
-      pageSize: String(pageSize),
-    })
-    if (status) params.set('status', status)
-    if (runId) params.set('runId', runId)
-    return toTablePageResult(await apiClient.get(`/agent/ops/approvals/audit?${params.toString()}`))
-  },
   async securityAuditEvents(pageNo = 1, pageSize = 10, category = '', action = '', targetType = '', targetId = '') {
     const params = new URLSearchParams({
       pageNo: String(pageNo),
@@ -203,72 +163,6 @@ export const adminService = {
   async taskNodes(taskId: string) {
     return toArrayResult(await apiClient.get(`/ingestion/tasks/${taskId}/nodes`))
   },
-  async intents() {
-    return toArrayResult(await apiClient.get('/intent-tree')).map((item: any) => normalizeIntent(item))
-  },
-  async intentDetail(itemId: string) {
-    return normalizeIntent(unwrapData(await apiClient.get(`/intent-tree/${itemId}`), {}))
-  },
-  createIntent(payload: Record<string, unknown>) {
-    return apiClient.post('/intent-tree', payload)
-  },
-  updateIntent(itemId: string, payload: Record<string, unknown>) {
-    return apiClient.put(`/intent-tree/${itemId}`, payload)
-  },
-  deleteIntent(itemId: string) {
-    return apiClient.delete(`/intent-tree/${itemId}`)
-  },
-  async samples() {
-    return toArrayResult(await apiClient.get('/sample-questions')).map((item: any) => normalizeSample(item))
-  },
-  async sampleDetail(itemId: string) {
-    return normalizeSample(unwrapData(await apiClient.get(`/sample-questions/${itemId}`), {}))
-  },
-  createSample(payload: Record<string, unknown>) {
-    return apiClient.post('/sample-questions', payload)
-  },
-  updateSample(itemId: string, payload: Record<string, unknown>) {
-    return apiClient.put(`/sample-questions/${itemId}`, payload)
-  },
-  deleteSample(itemId: string) {
-    return apiClient.delete(`/sample-questions/${itemId}`)
-  },
-  async mappings() {
-    return toArrayResult(await apiClient.get('/mappings')).map((item: any) => normalizeMapping(item))
-  },
-  async mappingDetail(itemId: string) {
-    return normalizeMapping(unwrapData(await apiClient.get(`/mappings/${itemId}`), {}))
-  },
-  createMapping(payload: Record<string, unknown>) {
-    return apiClient.post('/mappings', payload)
-  },
-  updateMapping(itemId: string, payload: Record<string, unknown>) {
-    return apiClient.put(`/mappings/${itemId}`, payload)
-  },
-  deleteMapping(itemId: string) {
-    return apiClient.delete(`/mappings/${itemId}`)
-  },
-  async monitoringOverview() {
-    return unwrapData(await apiClient.get('/admin/monitoring/overview'), {})
-  },
-  async monitoringTargets() {
-    return nestedItems(await apiClient.get('/admin/monitoring/targets'))
-  },
-  async monitoringAlerts() {
-    return nestedItems(await apiClient.get('/admin/monitoring/alerts'))
-  },
-  async monitoringSeries(metric: string, minutes = 30) {
-    return unwrapData(await apiClient.get(`/admin/monitoring/series/${metric}?minutes=${minutes}`), {})
-  },
-  async monitoringProbes() {
-    return nestedItems(await apiClient.get('/admin/monitoring/probes'))
-  },
-  async monitoringQuery(payload: { query: string, time: string | null }) {
-    return unwrapData(await apiClient.post('/admin/monitoring/query', payload), {})
-  },
-  async aiopsReadiness() {
-    return unwrapData(await apiClient.get('/admin/monitoring/aiops-readiness'), {})
-  },
   async projectConfigStatus() {
     return unwrapData(await apiClient.get('/admin/project-config/status'), {})
   },
@@ -277,14 +171,5 @@ export const adminService = {
   },
   async saveProjectConfigServers(payload: { servers: Record<string, unknown>[] }) {
     return unwrapData(await apiClient.put('/admin/project-config/servers', payload), {})
-  },
-  async projectConfigMonitoring() {
-    return unwrapData(await apiClient.get('/admin/project-config/monitoring'), {})
-  },
-  async saveProjectConfigMonitoring(payload: { monitoring: Record<string, unknown>, probes: Record<string, unknown>[] }) {
-    return unwrapData(await apiClient.put('/admin/project-config/monitoring', payload), {})
-  },
-  async projectConfigProbeTest(payload: { name: string, url: string }) {
-    return unwrapData(await apiClient.post('/admin/project-config/probe-test', payload), {})
   },
 }

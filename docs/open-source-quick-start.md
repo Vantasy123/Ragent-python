@@ -1,99 +1,81 @@
-# 开源部署快速开始
+# 智能求职 Agent 开源快速开始 (Quick Start)
 
-目标是让使用者下载项目后只改配置，不改源码，就能接入自己的模型、业务服务器和监控系统。
+目标是让使用者仅需修改基础配置，无需改动源码，即可在本地或服务器上一键拉起**智能求职 Agent 平台**与**大模型评测中心**。
+
+---
 
 ## 1. 准备配置
+
+复制示例环境变量与服务器配置：
 
 ```bash
 cp .env.example .env
 cp config/servers.example.yml config/servers.yml
-cp config/monitoring.example.yml config/monitoring.yml
 ```
 
-如果直接运行启动脚本，脚本会在这些文件缺失时自动从示例生成。
+主要修改项：
+- `.env` 中的 `OPENAI_API_KEY`、`OPENAI_API_BASE`、`CHAT_MODEL`（支持通义千问、DeepSeek、OpenAI、SiliconFlow 等兼容接口）。
+- `.env` 中的 `JWT_SECRET`、`DEFAULT_ADMIN_PASSWORD`。
+- （可选）若需体验评测体系外部打分与追踪，配置 `OPENAI_EVALS_API_KEY` 或 `LANGCHAIN_API_KEY`。
 
-必须修改：
+---
 
-- `.env` 中的 `OPENAI_API_KEY`、`OPENAI_API_BASE`、`CHAT_MODEL`
-- `.env` 中的 `JWT_SECRET`、`DEFAULT_ADMIN_PASSWORD`
-- `config/servers.yml` 中的业务服务器地址
-- `config/monitoring.yml` 中的 Prometheus / Alertmanager 地址
+## 2. 一键启动 (Docker Compose)
 
-## 2. 启动
-
-Windows：
-
+### Windows 用户：
 ```powershell
-scripts\start-project.bat monitoring -Build
+# 启动全栈服务（前后端 + 数据库 + 向量库 + Redis + 对象存储）
+scripts\start-project.bat
+
+# 修改代码后强制重新构建启动
+scripts\start-project.bat -Build
 ```
 
-Linux / macOS：
-
+### Linux / macOS 用户：
 ```bash
-bash scripts/start-project.sh monitoring --build
+# 启动全栈服务
+bash scripts/start-project.sh full
+
+# 仅启动后端与存储底座（前端通过本地 npm run dev 调试）
+bash scripts/start-project.sh backend
 ```
 
-最小后端模式：
+---
 
+## 3. 本地独立启动 (开发者模式)
+
+如果不使用 Docker，可以在本地直接运行：
+
+### 后端环境 (Python 3.10+)：
 ```bash
-bash scripts/start-project.sh monitoring-backend --build
+# 1. 创建并激活虚拟环境
+python -m venv venv
+source venv/bin/activate  # Windows: .\venv\Scripts\activate
+
+# 2. 安装核心依赖
+pip install -r requirements.txt
+
+# 3. 启动 FastAPI 服务
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-## 3. 接入业务服务器
-
-在 `config/servers.yml` 中添加业务服务：
-
-```yaml
-servers:
-  - id: order-service
-    name: 订单服务
-    env: prod
-    enabled: true
-    base_url: http://order-service:8080
-    health_url: http://order-service:8080/health
-    metrics_url: http://order-service:8080/metrics
-    owner: 交易团队
-    tags:
-      - order
-      - core
-```
-
-保存后重启 `ragent-api`，后台“运维监控”会把该服务作为 HTTP 探测目标展示。
-
+### 前端环境 (Node 18+)：
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.ops.yml -f docker-compose.monitoring.yml restart ragent-api
+cd frontend
+npm install
+npm run dev
 ```
 
-也可以通过后台配置 API 读写配置，供初始化向导或前端页面使用：
+---
 
-```text
-GET /api/admin/project-config/status
-GET /api/admin/project-config/servers
-PUT /api/admin/project-config/servers
-GET /api/admin/project-config/monitoring
-PUT /api/admin/project-config/monitoring
-POST /api/admin/project-config/probe-test
-```
+## 4. 核心功能与页面入口
 
-这些接口都会写入 `config/*.yml`，不改源码。
-
-## 4. 接入 Prometheus 指标
-
-如果业务应用已经暴露 `/metrics`，可以把 scrape 目标写入 `monitoring/prometheus/prometheus.yml`。第一版保持显式配置，避免后台自动改写用户监控文件。
-
-```yaml
-scrape_configs:
-  - job_name: order-service
-    metrics_path: /metrics
-    static_configs:
-      - targets:
-          - order-service:8080
-```
-
-## 5. 常见地址
-
-- 前端后台：http://localhost/
-- 后端文档：http://localhost:8000/docs
-- Prometheus：http://localhost:9090/
-- Alertmanager：http://localhost:9093/
-- Grafana：http://localhost:3001/，默认账号 `admin/admin`
+- 🏠 **前端主页**：`http://localhost/` 或 `http://localhost:5173/`
+- 💬 **智能求职工作台**：`http://localhost/chat`（支持求职意图自动识别与 ReAct 6 大求职工具调度）
+- 📄 **智能简历中枢**：`http://localhost/admin/resumes`（多维结构化解析、STAR 法则深度润色、多版本管理）
+- 🎯 **岗位与人岗匹配**：`http://localhost/admin/job-matching`（0-100 全维度打分、破冰打招呼与求职信生成）
+- 📋 **求职投递看板**：`http://localhost/admin/job-kanban`（流水线看板、面试日程与复盘笔记）
+- 🎤 **AI 模拟面试厅**：`http://localhost/admin/mock-interviews`（4 类大厂面试官、多轮沉浸式出题、五维雷达图报告）
+- ⚡ **网申自动填表**：`http://localhost/admin/job-autofill`（NowClaw Bridge 映射与自动填充 Payload 生成）
+- 📊 **智能体评测中心**：`http://localhost/admin/evaluations`（评测集管理、批次对比、BLEU/ROUGE 统计与回归门禁）
+- 📖 **API 文档 (Swagger)**：`http://localhost:8000/docs`

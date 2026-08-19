@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -13,7 +15,6 @@ from app.core.database import get_db
 from app.domain.models import SecurityAuditLog, User
 from app.services.common import success
 from app.services.dependencies import require_admin
-from app.services.monitoring_service import MonitoringService
 from app.services.project_config_service import ProjectConfigService
 
 router = APIRouter(prefix="/admin/project-config", tags=["project-config"])
@@ -37,13 +38,6 @@ class ServersPayload(BaseModel):
     """业务服务器配置保存请求。"""
 
     servers: list[ServerConfigPayload] = Field(default_factory=list)
-
-
-class MonitoringPayload(BaseModel):
-    """监控配置保存请求。"""
-
-    monitoring: dict[str, Any] = Field(default_factory=dict)
-    probes: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class ProbeTestPayload(BaseModel):
@@ -93,40 +87,6 @@ def save_servers(payload: ServersPayload, db: Session = Depends(get_db), user: U
     return success(result, message="servers config saved")
 
 
-@router.get("/monitoring")
-def get_monitoring(_: User = Depends(require_admin)):
-    """读取监控配置和额外探测目标。"""
-
-    service = ProjectConfigService()
-    return success({"monitoring": service.monitoring(), "status": service.status()})
-
-
-@router.put("/monitoring")
-def save_monitoring(payload: MonitoringPayload, db: Session = Depends(get_db), user: User = Depends(require_admin)):
-    """保存监控配置到 config/monitoring.yml。"""
-
-    service = ProjectConfigService()
-    try:
-        result = service.save_monitoring(payload.monitoring, payload.probes)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _record_project_config_audit(
-        db,
-        user,
-        "update_monitoring_config",
-        "monitoring",
-        {
-            "enabled": bool(payload.monitoring.get("enabled", False)),
-            "prometheusConfigured": bool(payload.monitoring.get("prometheus_url")),
-            "alertmanagerConfigured": bool(payload.monitoring.get("alertmanager_url")),
-            "timeoutSeconds": payload.monitoring.get("timeout_seconds"),
-            "probeCount": len(payload.probes),
-            "enabledProbeCount": sum(1 for item in payload.probes if item.get("enabled", True)),
-        },
-    )
-    return success(result, message="monitoring config saved")
-
-
 @router.post("/probe-test")
 async def probe_test(payload: ProbeTestPayload, db: Session = Depends(get_db), user: User = Depends(require_admin)):
     """按用户输入的 URL 执行一次 HTTP 探测，不写入配置文件。"""
@@ -135,7 +95,30 @@ async def probe_test(payload: ProbeTestPayload, db: Session = Depends(get_db), u
         url = ProjectConfigService().validate_probe_url(payload.url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    result = await MonitoringService().http_probe("manual", payload.name, url, {"source": "manual"})
+
+    start_time = time.time()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(url)
+            duration_ms = int((time.time() - start_time) * 1000)
+            result = {
+                "status": "up" if resp.status_code < 400 else "down",
+                "statusCode": resp.status_code,
+                "durationMs": duration_ms,
+                "url": url,
+                "name": payload.name,
+            }
+    except Exception as exc:
+        duration_ms = int((time.time() - start_time) * 1000)
+        result = {
+            "status": "down",
+            "statusCode": None,
+            "error": str(exc),
+            "durationMs": duration_ms,
+            "url": url,
+            "name": payload.name,
+        }
+
     _record_project_config_audit(
         db,
         user,
