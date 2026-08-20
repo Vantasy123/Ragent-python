@@ -54,7 +54,7 @@ def test_mcp_api_health(client_with_db):
     assert data["status"] == "healthy"
     assert data["service"] == "ragent-mcp-api"
     assert data["port"] == 8001
-    assert data["tools_count"] == 4
+    assert data["tools_count"] == 6
 
 
 def test_mcp_api_list_tools(client_with_db):
@@ -63,8 +63,9 @@ def test_mcp_api_list_tools(client_with_db):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "success"
-    assert data["total"] == 4
+    assert data["total"] == 6
     names = [t["name"] for t in data["tools"]]
+    assert "ragent_discover_capabilities" in names
     assert "ragent_sync_and_search_jobs" in names
     assert "ragent_export_autofill_payload" in names
 

@@ -39,9 +39,11 @@ def mock_db_session(monkeypatch):
 
 
 def test_mcp_tools_definitions():
-    """测试 MCP 工具列表定义完整性。"""
-    assert len(MCP_TOOLS_DEFINITIONS) == 4
+    """测试 MCP 工具列表定义完整性（包含 2 个渐进式发现工具与 4 个专有执行工具）。"""
+    assert len(MCP_TOOLS_DEFINITIONS) == 6
     tool_names = [t["name"] for t in MCP_TOOLS_DEFINITIONS]
+    assert "ragent_discover_capabilities" in tool_names
+    assert "ragent_inspect_capability" in tool_names
     assert "ragent_sync_and_search_jobs" in tool_names
     assert "ragent_query_interview_rag" in tool_names
     assert "ragent_manage_resume_profile" in tool_names

@@ -1,11 +1,13 @@
 """Ragent 独立 MCP (Model Context Protocol) API 服务。
 
 独立运行在 8001 端口，与 8000 端口的主业务 API 解耦。
-支持：
+全面支持「渐进式发现 (Progressive Discovery)」架构：
 1. 标准 SSE (Server-Sent Events) 远程 MCP 协议 (`GET /mcp/sse`, `POST /mcp/messages`)；
 2. HTTP JSON-RPC 2.0 协议 (`POST /mcp/jsonrpc`)；
-3. RESTful 工具调用接口 (`GET /mcp/tools`, `POST /mcp/tools/{tool_name}/invoke`)；
-4. 健康检查与状态监控 (`GET /health`)。
+3. 渐进式能力发现 REST 端点 (`GET /mcp/capabilities`, `GET /mcp/capabilities/{name}`)；
+4. RESTful 工具调用接口 (`GET /mcp/tools`, `POST /mcp/tools/{tool_name}/invoke`)；
+5. 资源与 Prompt 模板端点 (`GET /mcp/resources`, `GET /mcp/prompts`)；
+6. 健康检查与状态监控 (`GET /health`)。
 """
 
 from __future__ import annotations
@@ -19,7 +21,13 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from app.mcp_server import MCP_TOOLS_DEFINITIONS, RagentMcpServer
+from app.mcp_server import (
+    MCP_TOOLS_DEFINITIONS,
+    MCP_RESOURCES_DEFINITIONS,
+    MCP_PROMPTS_DEFINITIONS,
+    RAGENT_CAPABILITIES_CATALOG,
+    RagentMcpServer,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -29,8 +37,8 @@ logger = logging.getLogger("ragent-mcp-api")
 
 app = FastAPI(
     title="Ragent Standalone MCP API Service",
-    description="Ragent 专属求职与岗位数据 MCP 微服务（端口 8001），提供 SSE 与 RESTful 接口供外部 Agent 调用",
-    version="1.0.0"
+    description="Ragent 专属求职与岗位数据 MCP 微服务（端口 8001），提供 Progressive Discovery 渐进式发现、SSE 与 RESTful 接口供外部 Agent 调用",
+    version="1.1.0"
 )
 
 app.add_middleware(
@@ -52,9 +60,73 @@ def health_check():
     return {
         "status": "healthy",
         "service": "ragent-mcp-api",
-        "version": "1.0.0",
+        "version": "1.1.0",
+        "protocol": "Progressive-Discovery-v1",
         "port": 8001,
+        "capabilities_count": len(RAGENT_CAPABILITIES_CATALOG),
         "tools_count": len(MCP_TOOLS_DEFINITIONS)
+    }
+
+
+# =====================================================================
+# 渐进式发现 REST 接口 (Progressive Discovery REST API)
+# =====================================================================
+
+@app.get("/mcp/capabilities")
+def list_capabilities(category: str = "all"):
+    """【渐进式发现-Layer 1】全景列出系统拥有的能力域、推荐流程与资源清单。"""
+    if category == "all":
+        caps = list(RAGENT_CAPABILITIES_CATALOG.values())
+    else:
+        target = RAGENT_CAPABILITIES_CATALOG.get(category)
+        caps = [target] if target else []
+
+    return {
+        "status": "success",
+        "protocol": "Progressive-Discovery-v1",
+        "total": len(caps),
+        "capabilities": caps,
+        "resources": [r["uri"] for r in MCP_RESOURCES_DEFINITIONS],
+        "prompts": [p["name"] for p in MCP_PROMPTS_DEFINITIONS]
+    }
+
+
+@app.get("/mcp/capabilities/{capability_name}")
+def inspect_capability(capability_name: str):
+    """【渐进式发现-Layer 2】按需获取指定能力域的完整 Schema、参数说明与调用示例。"""
+    if capability_name not in RAGENT_CAPABILITIES_CATALOG:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Capability '{capability_name}' not found. Available: {list(RAGENT_CAPABILITIES_CATALOG.keys())}"
+        )
+
+    cap_info = RAGENT_CAPABILITIES_CATALOG[capability_name]
+    tool_def = next((t for t in MCP_TOOLS_DEFINITIONS if t["name"] == cap_info["tool_name"]), None)
+
+    return {
+        "status": "success",
+        "capability": cap_info,
+        "underlying_tool": tool_def
+    }
+
+
+@app.get("/mcp/resources")
+def list_resources():
+    """列出当前 MCP 服务暴露的所有动态资源。"""
+    return {
+        "status": "success",
+        "total": len(MCP_RESOURCES_DEFINITIONS),
+        "resources": MCP_RESOURCES_DEFINITIONS
+    }
+
+
+@app.get("/mcp/prompts")
+def list_prompts():
+    """列出当前 MCP 服务暴露的 Prompt 模板。"""
+    return {
+        "status": "success",
+        "total": len(MCP_PROMPTS_DEFINITIONS),
+        "prompts": MCP_PROMPTS_DEFINITIONS
     }
 
 
@@ -100,8 +172,12 @@ async def handle_jsonrpc(request: Request):
             "id": req_id,
             "result": {
                 "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "ragent-mcp-server", "version": "1.0.0"}
+                "capabilities": {
+                    "tools": {},
+                    "resources": {},
+                    "prompts": {}
+                },
+                "serverInfo": {"name": "ragent-mcp-server", "version": "1.1.0"}
             }
         }
     elif method == "tools/list":
@@ -122,6 +198,26 @@ async def handle_jsonrpc(request: Request):
                 "isError": res.get("status") == "error"
             }
         }
+    elif method == "resources/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"resources": MCP_RESOURCES_DEFINITIONS}
+        }
+    elif method == "resources/read":
+        uri = params.get("uri", "")
+        content = _server_instance.handle_resource_read(uri)
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"contents": [content]}
+        }
+    elif method == "prompts/list":
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"prompts": MCP_PROMPTS_DEFINITIONS}
+        }
     elif method == "ping":
         return {"jsonrpc": "2.0", "id": req_id, "result": {}}
     else:
@@ -131,6 +227,10 @@ async def handle_jsonrpc(request: Request):
             "error": {"code": -32601, "message": f"Method '{method}' not found"}
         }
 
+
+# =====================================================================
+# Server-Sent Events (SSE) 协议端点
+# =====================================================================
 
 @app.get("/mcp/sse")
 async def mcp_sse_endpoint(request: Request):
@@ -142,7 +242,6 @@ async def mcp_sse_endpoint(request: Request):
     logger.info(f"New MCP SSE client connected. Session ID: {session_id}")
 
     async def event_generator():
-        # 1. 建立连接并告知客户端消息回传端点
         endpoint_event = f"event: endpoint\ndata: /mcp/messages?sessionId={session_id}\n\n"
         yield endpoint_event
 
@@ -151,11 +250,9 @@ async def mcp_sse_endpoint(request: Request):
                 if await request.is_disconnected():
                     break
                 try:
-                    # 等待队列中的消息
                     msg = await asyncio.wait_for(queue.get(), timeout=15.0)
                     yield f"event: message\ndata: {json.dumps(msg, ensure_ascii=False)}\n\n"
                 except asyncio.TimeoutError:
-                    # 心跳 ping 保持连接活跃
                     yield ": ping\n\n"
         finally:
             _active_sse_clients.pop(session_id, None)
@@ -197,40 +294,65 @@ async def mcp_messages_endpoint(request: Request, sessionId: Optional[str] = Non
             "id": req_id,
             "result": {
                 "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "serverInfo": {"name": "ragent-mcp-server", "version": "1.0.0"}
+                "capabilities": {
+                    "tools": {},
+                    "resources": {},
+                    "prompts": {}
+                },
+                "serverInfo": {"name": "ragent-mcp-server", "version": "1.1.0"}
             }
         }
-        await queue.put(res)
-    elif method == "notifications/initialized":
-        pass
     elif method == "tools/list":
         res = {
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {"tools": MCP_TOOLS_DEFINITIONS}
         }
-        await queue.put(res)
     elif method == "tools/call":
         tool_name = params.get("name")
         tool_args = params.get("arguments", {})
-        tool_res = _server_instance.handle_tool_call(tool_name, tool_args)
+        output = _server_instance.handle_tool_call(tool_name, tool_args)
         res = {
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {
-                "content": [{"type": "text", "text": json.dumps(tool_res, ensure_ascii=False, indent=2)}],
-                "isError": tool_res.get("status") == "error"
+                "content": [{"type": "text", "text": json.dumps(output, ensure_ascii=False, indent=2)}],
+                "isError": output.get("status") == "error"
             }
         }
-        await queue.put(res)
+    elif method == "resources/list":
+        res = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"resources": MCP_RESOURCES_DEFINITIONS}
+        }
+    elif method == "resources/read":
+        uri = params.get("uri", "")
+        content = _server_instance.handle_resource_read(uri)
+        res = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"contents": [content]}
+        }
+    elif method == "prompts/list":
+        res = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {"prompts": MCP_PROMPTS_DEFINITIONS}
+        }
     elif method == "ping":
-        await queue.put({"jsonrpc": "2.0", "id": req_id, "result": {}})
+        res = {"jsonrpc": "2.0", "id": req_id, "result": {}}
     else:
-        await queue.put({
+        res = {
             "jsonrpc": "2.0",
             "id": req_id,
             "error": {"code": -32601, "message": f"Method '{method}' not found"}
-        })
+        }
 
-    return Response(status_code=status.HTTP_202_ACCEPTED)
+    await queue.put(res)
+    return JSONResponse(content={"status": "accepted"})
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8001)
