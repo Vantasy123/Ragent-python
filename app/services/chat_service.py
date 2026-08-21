@@ -331,7 +331,7 @@ async def _prepare_rag_context(service: ConversationService, conversation_id: st
     return rewritten, final_chunks, _build_prompt(message, final_chunks, memory_block)
 
 
-async def generate_answer(prompt: str, deep_thinking: bool = False) -> AsyncIterator[str]:
+async def generate_answer(prompt: str, deep_thinking: bool = False, model: str | None = None) -> AsyncIterator[str]:
     """generate_answer 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
     try:
         from app.rag.workflow import build_primary_llm
@@ -341,7 +341,7 @@ async def generate_answer(prompt: str, deep_thinking: bool = False) -> AsyncIter
 
     final_prompt = prompt if not deep_thinking else f"请更深入推理后回答：{prompt}"
     try:
-        llm = build_primary_llm()
+        llm = build_primary_llm(model=model)
         async for chunk in llm.astream([HumanMessage(content=final_prompt)]):
             content = getattr(chunk, "content", "")
             if content:
@@ -358,13 +358,15 @@ async def stream_chat(
     deep_thinking: bool = False,
     display_message: str | None = None,
     attachments_meta: list[dict] | None = None,
+    model: str | None = None,
 ) -> AsyncIterator[dict]:
     """stream_chat 函数：封装一个可复用的业务步骤，让调用方只关心输入和输出。"""
+    selected_model = model or getattr(settings, "CHAT_MODEL", "Qwen/Qwen2.5-14B-Instruct")
     trace_service = TraceService(db)
     trace = trace_service.start_run(session_id=conversation_id, task_id=task_id)
     service = ConversationService(db)
     user_display = display_message or message
-    msg_metadata: dict[str, Any] = {"taskId": task_id, "traceId": trace.id}
+    msg_metadata: dict[str, Any] = {"taskId": task_id, "traceId": trace.id, "model": selected_model}
     if attachments_meta:
         msg_metadata["attachments"] = attachments_meta
     user_message = service.add_message(conversation_id, "user", user_display, msg_metadata)
@@ -381,18 +383,19 @@ async def stream_chat(
     intent_span = trace_service.create_span(
         trace.id,
         "intent_analysis",
-        input_data={"question": message},
-        metadata={"remembered": len(remembered), "memoryUsed": bool(memory_block)},
+        input_data={"question": message, "model": selected_model},
+        metadata={"remembered": len(remembered), "memoryUsed": bool(memory_block), "model": selected_model},
     )
     answer = ""
 
-    trace_service.complete_span(intent_span, output_data={"mode": "rag", "agentMode": "react"})
-    react_span = trace_service.create_span(trace.id, "react_loop", input_data={"question": message, "history": history_for_agent})
+    trace_service.complete_span(intent_span, output_data={"mode": "rag", "agentMode": "react", "model": selected_model})
+    react_span = trace_service.create_span(trace.id, "react_loop", input_data={"question": message, "history": history_for_agent, "model": selected_model})
     react_events: list[dict] = []
     try:
-        async for event in ConversationReactAgent().run(message, history_for_agent):
+        async for event in ConversationReactAgent(model=selected_model).run(message, history_for_agent):
             event["taskId"] = task_id
             event["traceId"] = trace.id
+            event["model"] = selected_model
             react_events.append(event)
 
             if event.get("type") == "observation":
@@ -404,8 +407,9 @@ async def stream_chat(
                         "stepIndex": event.get("stepIndex"),
                         "tool": event.get("tool"),
                         "args": event.get("args") or {},
+                        "model": selected_model,
                     },
-                    metadata={"agent": "conversation"},
+                    metadata={"agent": "conversation", "model": selected_model},
                 )
                 trace_service.complete_span(
                     tool_span,
@@ -416,25 +420,25 @@ async def stream_chat(
 
             if event.get("type") == "final_answer":
                 answer = event.get("content") or ""
-                yield {"type": "final_answer", "content": answer, "taskId": task_id, "traceId": trace.id}
-                yield {"type": "token", "content": answer, "taskId": task_id, "traceId": trace.id}
+                yield {"type": "final_answer", "content": answer, "taskId": task_id, "traceId": trace.id, "model": selected_model}
+                yield {"type": "token", "content": answer, "taskId": task_id, "traceId": trace.id, "model": selected_model}
             elif not str(event.get("type", "")).startswith("_"):
                 yield event
 
         if answer:
-            service.add_message(conversation_id, "assistant", answer, {"taskId": task_id, "traceId": trace.id, "agentMode": "react"})
-            trace_service.complete_span(react_span, output_data={"events": react_events, "responseLength": len(answer)})
+            service.add_message(conversation_id, "assistant", answer, {"taskId": task_id, "traceId": trace.id, "agentMode": "react", "model": selected_model})
+            trace_service.complete_span(react_span, output_data={"events": react_events, "responseLength": len(answer), "model": selected_model})
             trace_service.complete_run(trace.id, "success")
-            yield {"type": "done", "taskId": task_id, "traceId": trace.id}
+            yield {"type": "done", "taskId": task_id, "traceId": trace.id, "model": selected_model}
             return
-        trace_service.complete_span(react_span, status="error", error_message="ReAct 未产出最终回答", output_data={"events": react_events})
+        trace_service.complete_span(react_span, status="error", error_message="ReAct 未产出最终回答", output_data={"events": react_events, "model": selected_model})
     except Exception as exc:
         # ReAct 是增强路径，失败时保留 Trace 后回退到原 RAG 链路。
-        trace_service.complete_span(react_span, status="error", error_message=str(exc), output_data={"events": react_events})
+        trace_service.complete_span(react_span, status="error", error_message=str(exc), output_data={"events": react_events, "model": selected_model})
 
-    rewrite_span = trace_service.create_span(trace.id, "query_rewrite", input_data={"question": message, "history": history_for_agent})
+    rewrite_span = trace_service.create_span(trace.id, "query_rewrite", input_data={"question": message, "history": history_for_agent, "model": selected_model})
     retrieval_span = trace_service.create_span(trace.id, "retrieval")
-    generation_span = trace_service.create_span(trace.id, "generation")
+    generation_span = trace_service.create_span(trace.id, "generation", input_data={"model": selected_model}, metadata={"model": selected_model})
 
     try:
         rewritten, chunks, prompt = await _prepare_rag_context(service, conversation_id, message)
@@ -446,8 +450,9 @@ async def stream_chat(
             "rewritten": rewritten,
             "promptPreview": prompt[:500],
             "sources": sources,
+            "model": selected_model,
         }
-        trace_service.complete_span(rewrite_span, output_data={"rewritten": rewritten})
+        trace_service.complete_span(rewrite_span, output_data={"rewritten": rewritten, "model": selected_model})
         trace_service.complete_span(
             retrieval_span,
             output_data={
@@ -460,24 +465,24 @@ async def stream_chat(
                 "chunkPreview": [_chunk_content(chunk)[:160] for chunk in chunks[:3]],
             },
         )
-        async for token in generate_answer(prompt, deep_thinking):
+        async for token in generate_answer(prompt, deep_thinking, model=selected_model):
             answer += token
-            yield {"type": "token", "content": token, "taskId": task_id, "traceId": trace.id}
+            yield {"type": "token", "content": token, "taskId": task_id, "traceId": trace.id, "model": selected_model}
         sources_block = _format_sources_block(sources)
         if sources_block:
             answer += sources_block
-            yield {"type": "token", "content": sources_block, "taskId": task_id, "traceId": trace.id}
+            yield {"type": "token", "content": sources_block, "taskId": task_id, "traceId": trace.id, "model": selected_model}
         if sources:
-            yield {"type": "sources", "sources": sources, "taskId": task_id, "traceId": trace.id}
+            yield {"type": "sources", "sources": sources, "taskId": task_id, "traceId": trace.id, "model": selected_model}
     except ChatGenerationError as exc:
         diagnostic = f"聊天链路失败：[{exc.stage}] {exc.detail}"
-        service.add_message(conversation_id, "assistant", diagnostic, {"taskId": task_id, "traceId": trace.id, "errorStage": exc.stage})
-        trace_service.complete_span(generation_span, status="error", error_message=diagnostic, output_data={"stage": exc.stage})
+        service.add_message(conversation_id, "assistant", diagnostic, {"taskId": task_id, "traceId": trace.id, "errorStage": exc.stage, "model": selected_model})
+        trace_service.complete_span(generation_span, status="error", error_message=diagnostic, output_data={"stage": exc.stage, "model": selected_model})
         trace_service.complete_run(trace.id, "error")
-        yield {"type": "error", "content": diagnostic, "taskId": task_id, "traceId": trace.id, "stage": exc.stage}
+        yield {"type": "error", "content": diagnostic, "taskId": task_id, "traceId": trace.id, "stage": exc.stage, "model": selected_model}
         return
 
-    service.add_message(conversation_id, "assistant", answer, {"taskId": task_id, "traceId": trace.id, "sources": sources})
-    trace_service.complete_span(generation_span, output_data={"responseLength": len(answer), "answerPreview": answer[:500], "sources": sources})
+    service.add_message(conversation_id, "assistant", answer, {"taskId": task_id, "traceId": trace.id, "sources": sources, "model": selected_model})
+    trace_service.complete_span(generation_span, output_data={"responseLength": len(answer), "answerPreview": answer[:500], "sources": sources, "model": selected_model})
     trace_service.complete_run(trace.id, "success")
-    yield {"type": "done", "taskId": task_id, "traceId": trace.id}
+    yield {"type": "done", "taskId": task_id, "traceId": trace.id, "model": selected_model}

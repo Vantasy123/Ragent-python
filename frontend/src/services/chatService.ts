@@ -27,12 +27,32 @@ export interface ChatAttachment {
   summary: string
 }
 
+export interface ModelOption {
+  id: string
+  name: string
+  provider: string
+  category: string
+  tag: string
+  description: string
+  pricingTag: string
+  inputPrice: number
+  outputPrice: number
+  isRecommended?: boolean
+  isDefault?: boolean
+}
+
 export interface UnifiedChatPayload {
   message: string
   mode: ChatMode
   conversationId?: string
   deepThinking?: boolean
   attachments?: ChatAttachment[]
+  model?: string
+}
+
+export async function listAvailableModels(): Promise<{ currentDefault: string; models: ModelOption[] }> {
+  const response = await apiClient.get('/agent/models')
+  return response.data?.data || response.data
 }
 
 export async function uploadChatFile(file: File): Promise<ChatAttachment> {

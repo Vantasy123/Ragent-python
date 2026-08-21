@@ -19,13 +19,6 @@ class TraceSpanHandle:
     """Trace span 的临时句柄，完成时再写入数据库。"""
 
     trace_id: str
-
-
-@dataclass
-class TraceSpanHandle:
-    """Trace span 的临时句柄，完成时再写入数据库。"""
-
-    trace_id: str
     operation: str
     started_at: float = field(default_factory=time.time)
     input_data: dict[str, Any] = field(default_factory=dict)
@@ -36,10 +29,29 @@ class CostEstimator:
     """估算大模型和 Embedding 的 Token 消费成本（人民币/元）。"""
 
     PRICES = {
-        # 阿里云千问 compatible 定价 (元 / 1k tokens)
+        # 阿里云千问 / 通义系列 (元 / 1k tokens)
         "qwen-plus": {"input": 0.004 / 1000, "output": 0.012 / 1000},
         "qwen-turbo": {"input": 0.002 / 1000, "output": 0.006 / 1000},
         "qwen-max": {"input": 0.02 / 1000, "output": 0.06 / 1000},
+        "qwen/qwen2.5-72b-instruct": {"input": 0.004 / 1000, "output": 0.012 / 1000},
+        "qwen/qwen2.5-32b-instruct": {"input": 0.0025 / 1000, "output": 0.005 / 1000},
+        "qwen/qwen2.5-14b-instruct": {"input": 0.002 / 1000, "output": 0.004 / 1000},
+        "qwen/qwen2.5-7b-instruct": {"input": 0.001 / 1000, "output": 0.002 / 1000},
+        "qwen/qwen3-32b": {"input": 0.003 / 1000, "output": 0.006 / 1000},
+        "qwen/qwen3-8b": {"input": 0.0015 / 1000, "output": 0.003 / 1000},
+        # DeepSeek 系列
+        "deepseek-ai/deepseek-r1": {"input": 0.004 / 1000, "output": 0.016 / 1000},
+        "deepseek-ai/deepseek-v3": {"input": 0.002 / 1000, "output": 0.008 / 1000},
+        "deepseek-ai/deepseek-v3.2": {"input": 0.002 / 1000, "output": 0.008 / 1000},
+        "deepseek-ai/deepseek-r1-0528-qwen3-8b": {"input": 0.002 / 1000, "output": 0.004 / 1000},
+        # 智谱与 Kimi 系列
+        "zai-org/glm-5.2": {"input": 0.003 / 1000, "output": 0.008 / 1000},
+        "zai-org/glm-4.5-air": {"input": 0.001 / 1000, "output": 0.002 / 1000},
+        "thudm/glm-4-32b-0414": {"input": 0.002 / 1000, "output": 0.005 / 1000},
+        "moonshotai/kimi-k2.7-code": {"input": 0.003 / 1000, "output": 0.008 / 1000},
+        "pro/moonshotai/kimi-k2.6": {"input": 0.003 / 1000, "output": 0.008 / 1000},
+        # 向量嵌入与多模态
+        "baai/bge-m3": {"input": 0.0005 / 1000, "output": 0.0},
         "text-embedding-v3": {"input": 0.0007 / 1000, "output": 0.0},
         # OpenAI 模型
         "gpt-4o": {"input": 0.035 / 1000, "output": 0.105 / 1000},
@@ -50,19 +62,29 @@ class CostEstimator:
 
     @classmethod
     def estimate_cost(cls, model_name: str, prompt_tokens: int, completion_tokens: int) -> float:
-        model_name = str(model_name or "").lower()
+        model_name = str(model_name or "").strip().lower()
         price = cls.PRICES.get(model_name)
         if not price:
             # 模糊匹配
-            if "embedding" in model_name:
-                price = {"input": 0.0007 / 1000, "output": 0.0}
-            elif "max" in model_name:
-                price = {"input": 0.02 / 1000, "output": 0.06 / 1000}
-            elif "turbo" in model_name:
-                price = {"input": 0.002 / 1000, "output": 0.006 / 1000}
-            else:
-                # 默认降级为 qwen-plus 定价
+            if "embedding" in model_name or "bge" in model_name:
+                price = {"input": 0.0005 / 1000, "output": 0.0}
+            elif "deepseek-r1" in model_name or "r1" in model_name:
+                price = {"input": 0.004 / 1000, "output": 0.016 / 1000}
+            elif "deepseek" in model_name or "v3" in model_name:
+                price = {"input": 0.002 / 1000, "output": 0.008 / 1000}
+            elif "72b" in model_name or "max" in model_name:
                 price = {"input": 0.004 / 1000, "output": 0.012 / 1000}
+            elif "32b" in model_name or "plus" in model_name:
+                price = {"input": 0.0025 / 1000, "output": 0.005 / 1000}
+            elif "14b" in model_name:
+                price = {"input": 0.002 / 1000, "output": 0.004 / 1000}
+            elif "7b" in model_name or "8b" in model_name or "turbo" in model_name:
+                price = {"input": 0.001 / 1000, "output": 0.002 / 1000}
+            elif "glm" in model_name or "kimi" in model_name:
+                price = {"input": 0.003 / 1000, "output": 0.008 / 1000}
+            else:
+                # 默认降级为 14B / qwen-plus 定价
+                price = {"input": 0.002 / 1000, "output": 0.004 / 1000}
 
         cost = (prompt_tokens * price["input"]) + (completion_tokens * price["output"])
         return round(cost, 6)

@@ -4,9 +4,11 @@ import {
   clearConversationMessages,
   listConversations,
   listMessages,
+  listAvailableModels,
   sendUnifiedChatMessage,
   type ChatMode,
   type ChatAttachment,
+  type ModelOption,
 } from '@/services/chatService'
 
 export interface UIMessage {
@@ -28,6 +30,7 @@ export interface StreamEvent {
   message?: string
   sources?: any[]
   traceId?: string
+  model?: string
 }
 
 export const useChatStore = defineStore('chat', () => {
@@ -42,8 +45,34 @@ export const useChatStore = defineStore('chat', () => {
   const isLoading = ref(false)
   const errorMessage = ref('')
 
+  // 多模型自主选择与持久化
+  const selectedModel = ref<string>(localStorage.getItem('ragent_selected_model') || '')
+  const availableModels = ref<ModelOption[]>([])
+  const defaultModel = ref<string>('')
+
   function setMode(nextMode: ChatMode) {
     mode.value = nextMode
+  }
+
+  function setModel(modelId: string) {
+    selectedModel.value = modelId
+    localStorage.setItem('ragent_selected_model', modelId)
+  }
+
+  async function loadModels() {
+    try {
+      const data = await listAvailableModels()
+      if (data && data.models) {
+        availableModels.value = data.models
+        defaultModel.value = data.currentDefault || ''
+        if (!selectedModel.value) {
+          selectedModel.value = defaultModel.value
+          localStorage.setItem('ragent_selected_model', selectedModel.value)
+        }
+      }
+    } catch {
+      // ignore
+    }
   }
 
   async function loadConversations() {
@@ -125,6 +154,7 @@ export const useChatStore = defineStore('chat', () => {
           mode: mode.value,
           conversationId: currentConversationId.value || undefined,
           attachments,
+          model: selectedModel.value || undefined,
         },
         (event: any) => {
           if (event.type !== 'token') streamEvents.value.push(event as StreamEvent)
@@ -176,12 +206,17 @@ export const useChatStore = defineStore('chat', () => {
     currentConversationId,
     currentTraceId,
     mode,
+    selectedModel,
+    availableModels,
+    defaultModel,
     streamEvents,
     currentStage,
     finalOutput,
     isLoading,
     errorMessage,
     setMode,
+    setModel,
+    loadModels,
     loadConversations,
     selectConversation,
     clearConversation,
