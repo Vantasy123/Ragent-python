@@ -9,6 +9,7 @@ from typing import Any, AsyncIterator
 from langchain_core.messages import HumanMessage
 
 from app.agents.tool_registry import ToolCallRequest, UnifiedToolRegistry
+from app.agents.job_intent_router import route_job_intent
 from app.rag.workflow import build_primary_llm
 
 
@@ -75,7 +76,19 @@ class ConversationReactAgent:
 
             tool_name = str(decision.get("tool") or "")
             tool_args = decision.get("args") if isinstance(decision.get("args"), dict) else {}
-            yield {"type": "tool_call", "agent": "conversation", "stepIndex": step_index, "tool": tool_name, "args": tool_args}
+            route_metadata = {
+                key: decision[key]
+                for key in ("intent", "routing_reason", "routing_confidence")
+                if key in decision
+            }
+            yield {
+                "type": "tool_call",
+                "agent": "conversation",
+                "stepIndex": step_index,
+                "tool": tool_name,
+                "args": tool_args,
+                **route_metadata,
+            }
             result = await self.registry.call(ToolCallRequest(name=tool_name, args=tool_args))
             result_data = result.to_dict()
             state.observations.append({"tool": tool_name, "args": tool_args, "result": result_data})
@@ -120,7 +133,20 @@ class ConversationReactAgent:
         }
 
     async def _decide(self, state: ReactState, step_index: int) -> dict[str, Any] | None:
-        """调用主模型生成下一步动作，失败时返回 None 触发回退。"""
+        """调用主模型生成下一步动作，岗位意图优先经过确定性路由。"""
+
+        if step_index == 0 and not state.observations:
+            route = route_job_intent(state.question)
+            if route is not None and route.tool:
+                return {
+                    "thought": route.reason,
+                    "action": "tool_call",
+                    "tool": route.tool,
+                    "args": route.args,
+                    "intent": route.intent,
+                    "routing_reason": route.reason,
+                    "routing_confidence": route.confidence,
+                }
 
         prompt = self._build_prompt(state, step_index)
         try:

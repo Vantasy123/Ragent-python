@@ -32,11 +32,14 @@ def analyze_match(
     current_user: User = Depends(get_current_user)
 ):
     service = JobMatchingService(db)
-    analysis = service.analyze_job_match(
-        user_id=current_user.id,
-        resume_id=req.resume_id,
-        job_id=req.job_id
-    )
+    try:
+        analysis = service.analyze_job_match(
+            user_id=current_user.id,
+            resume_id=req.resume_id,
+            job_id=req.job_id
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {
         "id": analysis.id,
         "resumeId": analysis.resume_id,

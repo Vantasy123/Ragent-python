@@ -26,6 +26,7 @@ logger = logging.getLogger("ragent-mcp")
 
 from app.core.database import SessionLocal
 from app.domain.models import JobOpportunity, ResumeProfile, ResumeVersion, KnowledgeChunk, ApplicationFormMapping, KnowledgeBase
+from app.services.crawlers.cdp_browser_driver import CDPBrowserDriver
 from app.services.job_crawler_service import JobCrawlerService
 from app.services.job_resume_service import JobResumeService
 from app.services.job_matching_service import JobMatchingService
@@ -42,11 +43,13 @@ RAGENT_CAPABILITIES_CATALOG: Dict[str, Dict[str, Any]] = {
         "use_cases": ["发现最新在招岗位", "跨平台岗位聚合比对", "提取目标 JD 技能要求"],
         "recommended_flow": "1. discover_capabilities -> 2. inspect_capability('job_market') -> 3. ragent_sync_and_search_jobs",
         "parameters_summary": {
-            "action": "sync(实时多源抓取) | search(数据库检索)",
+            "action": "sync(实时多源抓取并入库) | live_search(实时平台直搜不入库) | search(数据库检索)",
             "keyword": "职位关键词 (如: 'Java后端', 'Python大模型')",
             "city": "目标工作城市 (如: '全国', '北京', '上海')",
             "platform": "all | boss | liepin | 51job | nowcoder",
-            "limit": "返回数量上限 (默认 5)"
+            "limit": "返回数量上限 (默认 5)",
+            "page": "起始页码 (默认 1)",
+            "max_pages": "最多连续采集页数 (默认 1，最大 20)"
         },
         "example_payload": {
             "action": "sync",
@@ -198,8 +201,8 @@ MCP_TOOLS_DEFINITIONS = [
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["sync", "search"],
-                    "description": "sync 为从招聘平台实时采集增量入库；search 为检索已存入数据库的岗位机会。",
+                    "enum": ["sync", "live_search", "search"],
+                    "description": "live_search 直接从招聘平台返回最新岗位且不入库；sync 从招聘平台实时采集并增量入库；search 检索本地岗位库。",
                     "default": "sync"
                 },
                 "platform": {
@@ -222,6 +225,35 @@ MCP_TOOLS_DEFINITIONS = [
                     "type": "integer",
                     "description": "返回或采集的岗位数量上限",
                     "default": 5
+                },
+                "page": {
+                    "type": "integer",
+                    "description": "起始页码，从 1 开始",
+                    "minimum": 1,
+                    "default": 1
+                },
+                "max_pages": {
+                    "type": "integer",
+                    "description": "最多连续采集页数，最大 20；默认只采集当前页",
+                    "minimum": 1,
+                    "maximum": 20,
+                    "default": 1
+                },
+                "enrich_details": {
+                    "type": "boolean",
+                    "description": "同步后访问真实详情页补全 JD、技能、职责和福利；失败不丢失列表岗位",
+                    "default": False
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["auto", "cdp", "playwright"],
+                    "description": "采集驱动模式：auto 优先使用本地已登录 Chrome CDP (9223)，cdp 强制使用 CDP，playwright 使用独立浏览器",
+                    "default": "auto"
+                },
+                "cdp_url": {
+                    "type": "string",
+                    "description": "Chrome DevTools Protocol 地址，默认 http://127.0.0.1:9223",
+                    "default": "http://127.0.0.1:9223"
                 }
             },
             "required": ["keyword"]
@@ -320,74 +352,104 @@ class RagentMcpServer:
 
     def handle_tool_call(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """分发并执行工具调用，支持渐进式发现与原子执行。"""
+        # Layer 1/2 仅读取静态注册表，不应创建数据库 Session。
+        if name == "ragent_discover_capabilities":
+            cat = args.get("category", "all")
+            if cat == "all":
+                caps = [
+                    {
+                        "name": c["name"],
+                        "title": c["title"],
+                        "description": c["description"],
+                        "tool_name": c["tool_name"],
+                        "recommended_flow": c["recommended_flow"],
+                    }
+                    for c in RAGENT_CAPABILITIES_CATALOG.values()
+                ]
+            else:
+                target = RAGENT_CAPABILITIES_CATALOG.get(cat)
+                caps = [target] if target else []
+            return {
+                "status": "success",
+                "protocol": "Progressive-Discovery-v1",
+                "total_capabilities": len(caps),
+                "capabilities": caps,
+                "available_resources": [r["uri"] for r in MCP_RESOURCES_DEFINITIONS],
+                "available_prompts": [p["name"] for p in MCP_PROMPTS_DEFINITIONS],
+                "hint": "如需深入查看某个能力域的完整参数与调用契约，请调用 `ragent_inspect_capability(capability_name='...')`",
+            }
+        if name == "ragent_inspect_capability":
+            cap_name = args.get("capability_name", "")
+            if cap_name not in RAGENT_CAPABILITIES_CATALOG:
+                return {
+                    "status": "error",
+                    "message": f"未知的能力域: {cap_name}。可选: {list(RAGENT_CAPABILITIES_CATALOG.keys())}",
+                }
+            cap_info = RAGENT_CAPABILITIES_CATALOG[cap_name]
+            tool_def = next((t for t in MCP_TOOLS_DEFINITIONS if t["name"] == cap_info["tool_name"]), None)
+            return {
+                "status": "success",
+                "capability": cap_info,
+                "underlying_tool": tool_def,
+                "next_step": f"可直接使用此参数格式调用工具 `{cap_info['tool_name']}` 执行业务。",
+            }
+
         db: Session = SessionLocal()
         try:
-            # 1. 渐进式发现 Layer 1: 全景发现
-            if name == "ragent_discover_capabilities":
-                cat = args.get("category", "all")
-                if cat == "all":
-                    caps = [
-                        {
-                            "name": c["name"],
-                            "title": c["title"],
-                            "description": c["description"],
-                            "tool_name": c["tool_name"],
-                            "recommended_flow": c["recommended_flow"]
-                        }
-                        for c in RAGENT_CAPABILITIES_CATALOG.values()
-                    ]
-                else:
-                    target = RAGENT_CAPABILITIES_CATALOG.get(cat)
-                    caps = [target] if target else []
-
-                return {
-                    "status": "success",
-                    "protocol": "Progressive-Discovery-v1",
-                    "total_capabilities": len(caps),
-                    "capabilities": caps,
-                    "available_resources": [r["uri"] for r in MCP_RESOURCES_DEFINITIONS],
-                    "available_prompts": [p["name"] for p in MCP_PROMPTS_DEFINITIONS],
-                    "hint": "如需深入查看某个能力域的完整参数与调用契约，请调用 `ragent_inspect_capability(capability_name='...')`"
-                }
-
-            # 2. 渐进式发现 Layer 2: 按需深挖
-            elif name == "ragent_inspect_capability":
-                cap_name = args.get("capability_name", "")
-                if cap_name not in RAGENT_CAPABILITIES_CATALOG:
-                    return {
-                        "status": "error",
-                        "message": f"未知的能力域: {cap_name}。可选: {list(RAGENT_CAPABILITIES_CATALOG.keys())}"
-                    }
-
-                cap_info = RAGENT_CAPABILITIES_CATALOG[cap_name]
-                tool_def = next((t for t in MCP_TOOLS_DEFINITIONS if t["name"] == cap_info["tool_name"]), None)
-
-                return {
-                    "status": "success",
-                    "capability": cap_info,
-                    "underlying_tool": tool_def,
-                    "next_step": f"可直接使用此参数格式调用工具 `{cap_info['tool_name']}` 执行业务。"
-                }
-
             # 3. 执行工具 Layer 3: 岗位采集与搜索
-            elif name == "ragent_sync_and_search_jobs":
+            if name == "ragent_sync_and_search_jobs":
                 action = args.get("action", "sync")
                 keyword = args.get("keyword", "后端开发")
                 city = args.get("city", "全国")
                 platform = args.get("platform", "all")
                 limit = int(args.get("limit", 5))
+                page = int(args.get("page", 1))
+                max_pages = int(args.get("max_pages", 1))
+                enrich_details = bool(args.get("enrich_details", False))
+
+                if action == "live_search":
+                    mode = args.get("mode", "auto")
+                    crawler = JobCrawlerService(db)
+                    live_res = crawler.live_search_platform_jobs(
+                        platform=platform,
+                        keyword=keyword,
+                        city=city,
+                        limit_per_platform=limit,
+                        mode=mode,
+                        cdp_url=args.get("cdp_url", CDPBrowserDriver.DEFAULT_CDP_URL),
+                        page=page,
+                        max_pages=max_pages,
+                    )
+                    return {
+                        "status": live_res.get("status", "empty"),
+                        "summary": f"实时平台搜索完成（{live_res.get('status', 'empty')}，返回 {live_res['total']} 条岗位，不写入本地岗位库）",
+                        **live_res,
+                    }
 
                 if action == "sync":
+                    mode = args.get("mode", "auto")
                     crawler = JobCrawlerService(db)
                     sync_res = crawler.sync_platform_jobs(
                         platform=platform,
                         keyword=keyword,
                         city=city,
-                        limit_per_platform=limit
+                        limit_per_platform=limit,
+                        mode=mode,
+                        cdp_url=args.get("cdp_url", CDPBrowserDriver.DEFAULT_CDP_URL),
+                        page=page,
+                        max_pages=max_pages,
+                        enrich_details=enrich_details,
+                    )
+                    sync_status = sync_res["stats"].get("status", "empty")
+                    detail_summary = (
+                        f"，详情成功 {sync_res['stats'].get('detail_succeeded', 0)} 条，"
+                        f"失败 {sync_res['stats'].get('detail_failed', 0)} 条，"
+                        f"跳过 {sync_res['stats'].get('detail_skipped', 0)} 条"
+                        if enrich_details else ""
                     )
                     return {
-                        "status": "success",
-                        "summary": f"已成功从招聘平台同步最新岗位（总抓取 {sync_res['stats']['total_fetched']} 条，新增入库 {sync_res['stats']['created']} 条）",
+                        "status": sync_status,
+                        "summary": f"招聘平台同步完成（{sync_status}，总抓取 {sync_res['stats']['total_fetched']} 条，新增入库 {sync_res['stats']['created']} 条，更新 {sync_res['stats']['updated']} 条{detail_summary}）",
                         "stats": sync_res["stats"],
                         "jobs": sync_res["jobs"][:limit * 2]
                     }
@@ -400,7 +462,7 @@ class RagentMcpServer:
                         limit=limit
                     )
                     return {
-                        "status": "success",
+                        "status": "success" if total > 0 else "empty",
                         "total": total,
                         "jobs": [
                             {
@@ -408,7 +470,12 @@ class RagentMcpServer:
                                 "title": j.title,
                                 "company": j.company,
                                 "city": j.city,
-                                "salary": f"{j.salary_min}k-{j.salary_max}k",
+                                "salary": (
+                                    "面议" if j.salary_status == "negotiable"
+                                    else "薪资未知" if j.salary_status == "unknown"
+                                    else f"{j.salary_min}k-{j.salary_max}k"
+                                ),
+                                "salary_status": j.salary_status,
                                 "source_platform": j.source_platform,
                                 "required_skills": j.required_skills,
                                 "source_url": j.source_url
@@ -578,8 +645,14 @@ class RagentMcpServer:
                         "target_role": resume.target_role if resume else "",
                         "parsed_data": resume.parsed_data if resume else {}
                     }
-                except Exception:
-                    data = {"name": "默认求职简历", "target_role": "后端开发", "parsed_data": {}}
+                except Exception as exc:
+                    logger.error("读取默认简历资源失败: %s", exc, exc_info=True)
+                    return {
+                        "uri": uri,
+                        "status": "failed",
+                        "error_code": "RESOURCE_READ_FAILED",
+                        "error": str(exc),
+                    }
                 return {"uri": uri, "mimeType": "application/json", "text": json.dumps(data, ensure_ascii=False)}
 
             elif uri == "ragent://jobs/summary":
@@ -590,8 +663,14 @@ class RagentMcpServer:
                         "total_jobs": count,
                         "recent_jobs": [{"title": j.title, "company": j.company, "city": j.city} for j in recent_jobs]
                     }
-                except Exception:
-                    data = {"total_jobs": 0, "recent_jobs": []}
+                except Exception as exc:
+                    logger.error("读取岗位摘要资源失败: %s", exc, exc_info=True)
+                    return {
+                        "uri": uri,
+                        "status": "failed",
+                        "error_code": "RESOURCE_READ_FAILED",
+                        "error": str(exc),
+                    }
                 return {"uri": uri, "mimeType": "application/json", "text": json.dumps(data, ensure_ascii=False)}
 
             elif uri == "ragent://knowledge/summary":
@@ -602,12 +681,18 @@ class RagentMcpServer:
                         "knowledge_bases": [{"id": k.id, "name": k.name, "category": getattr(k, "category", "career")} for k in kbs],
                         "total_chunks": chunk_count
                     }
-                except Exception:
-                    data = {"knowledge_bases": [], "total_chunks": 0}
+                except Exception as exc:
+                    logger.error("读取知识库摘要资源失败: %s", exc, exc_info=True)
+                    return {
+                        "uri": uri,
+                        "status": "failed",
+                        "error_code": "RESOURCE_READ_FAILED",
+                        "error": str(exc),
+                    }
                 return {"uri": uri, "mimeType": "application/json", "text": json.dumps(data, ensure_ascii=False)}
 
             else:
-                return {"uri": uri, "error": f"Resource not found: {uri}"}
+                return {"uri": uri, "status": "error", "error": f"Resource not found: {uri}"}
         finally:
             db.close()
 
@@ -710,6 +795,48 @@ class RagentMcpServer:
                         }
                     }
                     self._send_response(res)
+
+                elif method == "prompts/get":
+                    prompt_name = params.get("name")
+                    prompt_args = params.get("arguments", {})
+                    prompt = next((item for item in MCP_PROMPTS_DEFINITIONS if item["name"] == prompt_name), None)
+                    if not prompt:
+                        self._send_response({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {"code": -32602, "message": f"Prompt '{prompt_name}' not found"},
+                        })
+                        continue
+                    if not isinstance(prompt_args, dict):
+                        self._send_response({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {"code": -32602, "message": "Prompt arguments must be an object"},
+                        })
+                        continue
+                    missing = [
+                        arg["name"] for arg in prompt.get("arguments", [])
+                        if arg.get("required") and not prompt_args.get(arg["name"])
+                    ]
+                    if missing:
+                        self._send_response({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "error": {"code": -32602, "message": f"Missing required prompt arguments: {', '.join(missing)}"},
+                        })
+                        continue
+                    supplied = "\n".join(f"{key}: {value}" for key, value in prompt_args.items())
+                    self._send_response({
+                        "jsonrpc": "2.0",
+                        "id": req_id,
+                        "result": {
+                            "description": prompt["description"],
+                            "messages": [{
+                                "role": "user",
+                                "content": {"type": "text", "text": f"{prompt['description']}\n{supplied}".strip()},
+                            }],
+                        },
+                    })
 
                 elif method == "ping":
                     res = {"jsonrpc": "2.0", "id": req_id, "result": {}}

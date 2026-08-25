@@ -1,32 +1,33 @@
 # Core dependencies
 fastapi==0.109.0
 uvicorn[standard]==0.27.0
-pydantic==2.5.3
-pydantic-settings==2.1.0
+pydantic>=2.7.4,<3.0.0
+pydantic-settings>=2.10.1,<3.0.0
 sqlalchemy==2.0.25
 # psycopg2-binary 保留用于一次性 PostgreSQL -> MySQL 迁移脚本
 psycopg2-binary>=2.9.9
 pymysql>=1.1.0
 
-# LangChain & AI (移除严格版本锁定，让pip自动解决依赖冲突)
-langchain>=0.1.0,<0.2.0
-langchain-community>=0.0.10,<0.1.0
-langchain-openai>=0.0.5,<0.1.0
-langgraph>=0.0.51,<0.1.0
+# LangChain & AI（统一 Pydantic V2 生态，避免在 Python 3.14 上退回 V1 兼容层）
+langchain==0.3.30
+langchain-core==0.3.86
+langchain-community==0.3.31
+langchain-openai==0.2.14
+langgraph==0.2.76
 pymilvus>=2.5.0,<2.6.0
 
 # Document processing
 markitdown[pdf,docx,xlsx,pptx]>=0.1.5,<0.2.0
 PyPDF2==3.0.1
 python-docx==1.1.0
-pandas==2.2.0
+pandas>=2.2.0,<3.0.0
 openpyxl==3.1.2
 
 # Reranking (optional)
 FlagEmbedding>=1.2.10,<2.0.0
 
 # HTTP client
-requests==2.31.0
+requests>=2.32.5,<3.0.0
 httpx==0.26.0
 redis>=5.0.0,<6.0.0
 rank-bm25>=0.2.2,<0.3.0

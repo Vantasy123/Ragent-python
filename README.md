@@ -4,9 +4,22 @@
 
 平台集成了 **智能简历中枢、岗位检索与人岗精准匹配、求职投递看板、AI 沉浸式模拟面试厅、网申自动填表 Bridge 协议、大模型/智能体评测中心 (Evaluations) 与八股面经知识库 RAG**，全流程赋能求职者高效拿 Offer，同时为智能体研发提供完整的评估基准与回归门禁。
 
----
+## 🔐 真实招聘平台验收边界
 
-## 🎯 智能求职核心体系 (NowClaw 体系对齐)
+Ragent 不保存 BOSS直聘、猎聘、51job 或牛客网的用户名和密码。真实平台能力依赖用户手动启动并登录本地 Chrome CDP Profile：
+
+```powershell
+& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9223 --user-data-dir="C:\ragent-chrome"
+```
+
+可使用以下脚本检查 CDP 是否可访问及平台标签页是否存在：
+
+```powershell
+.\scripts\verify-real-platforms.ps1
+```
+
+只有 `scripts/verify-real-platforms.py` 对四个平台都返回 `status: "verified"` 时，才可以宣称真实搜索、详情采集、登录态及无风控验收完成。没有 CDP 会话时脚本必须失败，并且不能使用静态岗位替代。
+
 
 1. **智能简历中枢 (Resume Intelligence & STAR Polishing)**
    - 简历多格式智能解析（PDF/Word/Markdown/文本），大模型多维度结构化提取（基本信息、教育经历、工作经历、项目经历、专业技能、荣誉证书）。

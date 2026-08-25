@@ -47,11 +47,18 @@ class JobMatchingService:
             query = query.filter(JobOpportunity.source_platform == source_platform)
 
         total = query.count()
-        jobs = query.order_by(desc(JobOpportunity.created_at)).offset(offset).limit(limit).all()
+        jobs = query.order_by(desc(JobOpportunity.created_at), JobOpportunity.id).offset(offset).limit(limit).all()
         return jobs, total
 
     def get_job_by_id(self, job_id: str) -> Optional[JobOpportunity]:
-        return self.db.query(JobOpportunity).filter(JobOpportunity.id == job_id).first()
+        return (
+            self.db.query(JobOpportunity)
+            .filter(
+                JobOpportunity.id == job_id,
+                JobOpportunity.status == "active",
+            )
+            .first()
+        )
 
     def create_or_import_job(
         self,
@@ -96,18 +103,16 @@ class JobMatchingService:
         """提取岗位 JD 的核心结构（职责、必备技能、加分技能、经验要求、薪资福利）。"""
         if not jd_text or not jd_text.strip():
             return {
-                "title": title or "开发工程师",
-                "company": "科技公司",
-                "city": "全国",
-                "salary_min": 15,
-                "salary_max": 30,
-                "education_req": "本科及以上",
-                "experience_req": "1-3年",
-                "required_skills": ["Java/Python", "MySQL", "Redis", "微服务架构"],
-                "preferred_skills": ["高并发架构经验", "Kubernetes", "大模型落地经验"],
-                "responsibilities": ["负责核心业务模块的设计与研发", "保障系统高可用与高性能架构演进"],
-                "benefits": ["五险一金", "年终奖", "弹性工作", "免费健身房"],
-                "company_tags": ["高成长", "技术氛围浓厚"]
+                "success": False,
+                "status": "failed",
+                "error_code": "JD_TEXT_REQUIRED",
+                "error": "JD 文本不能为空",
+                "title": title,
+                "required_skills": [],
+                "preferred_skills": [],
+                "responsibilities": [],
+                "benefits": [],
+                "company_tags": [],
             }
 
         prompt = f"""你是一个资深技术猎头与招聘专家。请分析以下岗位招聘 JD，提取结构化数据：
@@ -148,24 +153,18 @@ JD 文本如下：
                 content = content[:-3]
             return json.loads(content.strip())
         except Exception as e:
-            logger.warning(f"JD 解析模型调用失败，使用默认提取: {e}")
-            skills = []
-            for kw in ["Java", "Python", "Go", "C++", "Vue", "React", "MySQL", "Redis", "Kafka", "Docker", "K8s", "Spring Boot", "FastAPI", "Milvus", "RAG", "LLM"]:
-                if re.search(rf"\b{kw}\b", jd_text, re.IGNORECASE):
-                    skills.append(kw)
+            logger.warning(f"JD 解析模型调用失败: {e}")
             return {
-                "title": title or "开发工程师",
-                "company": "科技公司",
-                "city": "北京",
-                "salary_min": 15,
-                "salary_max": 30,
-                "education_req": "本科及以上",
-                "experience_req": "1-3年",
-                "required_skills": skills[:6] or ["Python/Java", "MySQL", "Redis"],
-                "preferred_skills": skills[6:] or ["分布式架构", "高并发实战"],
-                "responsibilities": ["参与系统核心业务功能研发与性能调优"],
-                "benefits": ["定期体检", "弹性打卡", "节日福利"],
-                "company_tags": ["技术驱动", "前沿业务"]
+                "success": False,
+                "status": "failed",
+                "error_code": "JD_PARSE_FAILED",
+                "error": str(e),
+                "title": title,
+                "required_skills": [],
+                "preferred_skills": [],
+                "responsibilities": [],
+                "benefits": [],
+                "company_tags": [],
             }
 
     def analyze_job_match(
@@ -175,8 +174,15 @@ JD 文本如下：
         job_id: str
     ) -> JobMatchAnalysis:
         """执行候选人简历与目标岗位 JD 的深度全维度人岗匹配计算。"""
-        resume = self.db.query(ResumeProfile).filter(ResumeProfile.id == resume_id).first()
-        job = self.db.query(JobOpportunity).filter(JobOpportunity.id == job_id).first()
+        resume = (
+            self.db.query(ResumeProfile)
+            .filter(
+                ResumeProfile.id == resume_id,
+                ResumeProfile.user_id == user_id,
+            )
+            .first()
+        )
+        job = self.get_job_by_id(job_id)
         if not resume or not job:
             raise ValueError("Resume or Job Opportunity not found")
 

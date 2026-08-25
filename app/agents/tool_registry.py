@@ -256,6 +256,28 @@ class UnifiedToolRegistry:
         job_tools = [
             (
                 ToolSpec(
+                    name="job_live_search_postings",
+                    description="直接从 BOSS直聘、猎聘、前程无忧或牛客网实时搜索最新岗位，不写入本地岗位库。",
+                    args_schema={"platform": "string", "keyword": "string", "city": "string", "job_type": "string", "limit": "integer", "page": "integer", "mode": "string", "cdp_url": "string"},
+                    risk_level="read",
+                    requires_approval=False,
+                    source="job_agent",
+                    category="job",
+                    enabled_for=["user", "admin"],
+                ),
+                lambda **kwargs: JobToolkit.live_search_jobs(
+                    platform=kwargs.get("platform", "all"),
+                    keyword=kwargs.get("keyword", "后端开发"),
+                    city=kwargs.get("city", "全国"),
+                    job_type=kwargs.get("job_type", "social"),
+                    limit=kwargs.get("limit", 5),
+                    mode=kwargs.get("mode", "auto"),
+                    cdp_url=kwargs.get("cdp_url", "http://127.0.0.1:9223"),
+                    page=kwargs.get("page", 1),
+                )
+            ),
+            (
+                ToolSpec(
                     name="job_parse_resume",
                     description="将候选人简历原始文本解析为多维结构化数据（基本信息、教育、工作、项目、技能）并进行质量诊断。",
                     args_schema={"raw_text": "string"},
@@ -288,7 +310,7 @@ class UnifiedToolRegistry:
             (
                 ToolSpec(
                     name="job_search_postings",
-                    description="检索牛客、BOSS直聘等多渠道岗位库中的职位机会。",
+                    description="检索本地岗位库中的职位机会；如需最新平台职位，调用 job_live_search_postings。",
                     args_schema={"keyword": "string", "city": "string", "job_type": "string", "limit": "integer"},
                     risk_level="read",
                     requires_approval=False,
@@ -359,8 +381,8 @@ class UnifiedToolRegistry:
             (
                 ToolSpec(
                     name="job_sync_platforms",
-                    description="从 BOSS直聘、猎聘、前程无忧 51job、牛客网实时采集和增量同步最新招聘岗位入库。",
-                    args_schema={"platform": "string", "keyword": "string", "city": "string", "limit": "integer"},
+                    description="从 BOSS直聘、猎聘、前程无忧 51job、牛客网通过真实浏览器 CDP 实时采集和增量同步最新招聘岗位入库。",
+                    args_schema={"platform": "string", "keyword": "string", "city": "string", "limit": "integer", "mode": "string", "cdp_url": "string"},
                     risk_level="read",
                     requires_approval=False,
                     source="job_agent",
@@ -371,7 +393,9 @@ class UnifiedToolRegistry:
                     platform=kwargs.get("platform", "all"),
                     keyword=kwargs.get("keyword", "后端开发"),
                     city=kwargs.get("city", "全国"),
-                    limit=kwargs.get("limit", 5)
+                    limit=kwargs.get("limit", 5),
+                    mode=kwargs.get("mode", "auto"),
+                    cdp_url=kwargs.get("cdp_url", "http://127.0.0.1:9223")
                 )
             ),
         ]

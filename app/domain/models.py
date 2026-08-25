@@ -831,26 +831,41 @@ class ResumeVersion(Base, TimestampMixin):
 class JobOpportunity(Base, TimestampMixin):
     """招聘岗位机会库：聚合牛客、BOSS直聘、猎聘等多源岗位信息及结构化 JD。"""
     __tablename__ = "job_opportunity"
+    __table_args__ = (
+        UniqueConstraint("source_platform", "external_job_id", name="uq_job_platform_external_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=uuid_str)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     company: Mapped[str] = mapped_column(String(255), nullable=False)
     company_logo: Mapped[str] = mapped_column(String(512), default="")
     city: Mapped[str] = mapped_column(String(64), default="全国")
-    salary_min: Mapped[int] = mapped_column(Integer, default=0)
-    salary_max: Mapped[int] = mapped_column(Integer, default=0)
+    salary_min: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    salary_max: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
     salary_unit: Mapped[str] = mapped_column(String(32), default="K/月")
+    salary_status: Mapped[str] = mapped_column(String(32), default="unknown")  # known/negotiable/unknown
     education_req: Mapped[str] = mapped_column(String(64), default="本科及以上")
     experience_req: Mapped[str] = mapped_column(String(64), default="不限")
     job_type: Mapped[str] = mapped_column(String(32), default="campus")  # campus/social/intern
     source_platform: Mapped[str] = mapped_column(String(64), default="nowcoder")  # nowcoder/boss/liepin/zhilian/other
     source_url: Mapped[str] = mapped_column(String(512), default="")
+    external_job_id: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    source_url_canonical: Mapped[str] = mapped_column(String(512), default="")
+    jd_hash: Mapped[str] = mapped_column(String(64), default="")
+    # 最近一次完整同步的查询指纹与批次 ID；stale 下架只能作用于同一查询范围。
+    sync_query_fingerprint: Mapped[str] = mapped_column(String(64), default="")
+    last_sync_run_id: Mapped[str] = mapped_column(String(64), default="")
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     company_tags: Mapped[list] = mapped_column(JSON, default=list)
     jd_text: Mapped[str] = mapped_column(Text, default="")
     required_skills: Mapped[list] = mapped_column(JSON, default=list)
     preferred_skills: Mapped[list] = mapped_column(JSON, default=list)
     responsibilities: Mapped[list] = mapped_column(JSON, default=list)
     benefits: Mapped[list] = mapped_column(JSON, default=list)
+    # 详情页二阶段采集状态：pending/success/failed/skipped。
+    detail_status: Mapped[str] = mapped_column(String(32), default="pending")
+    detail_error: Mapped[str] = mapped_column(Text, default="")
+    detail_attempted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active")  # active/closed
 
 
