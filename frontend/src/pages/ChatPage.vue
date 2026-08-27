@@ -14,7 +14,49 @@
       </div>
 
       <SurfaceCard compact>
-        <label class="meta-label mb-2 block !text-slate-500">对话模式</label>
+        <div class="flex items-center justify-between mb-2">
+          <label class="meta-label block !text-slate-500">大语言模型</label>
+          <span v-if="currentModelInfo" class="text-[11px] font-medium text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+            {{ currentModelInfo.pricingTag || '计费透明' }}
+          </span>
+        </div>
+        
+        <div class="relative">
+          <select
+            :value="chat.selectedModel"
+            class="w-full text-xs font-medium text-slate-800 bg-slate-50 border border-slate-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all cursor-pointer"
+            @change="(e: any) => chat.setModel(e.target.value)"
+          >
+            <optgroup label="🔥 推荐核心模型">
+              <option 
+                v-for="m in recommendedModels" 
+                :key="m.id" 
+                :value="m.id"
+              >
+                {{ m.name }} ({{ m.provider }}) - {{ m.pricingTag }}
+              </option>
+            </optgroup>
+            <optgroup label="⚡ 更多大模型">
+              <option 
+                v-for="m in otherModels" 
+                :key="m.id" 
+                :value="m.id"
+              >
+                {{ m.name }} ({{ m.provider }}) - {{ m.pricingTag }}
+              </option>
+            </optgroup>
+          </select>
+        </div>
+
+        <div v-if="currentModelInfo" class="mt-2 text-[11px] text-slate-500 bg-slate-100/70 p-2 rounded-md border border-slate-200/80 leading-relaxed">
+          <div class="flex items-center justify-between mb-1">
+            <span class="font-semibold text-slate-700">{{ currentModelInfo.name }}</span>
+            <span class="text-[10px] px-1.5 py-0.2 bg-blue-100 text-blue-700 rounded font-medium">{{ currentModelInfo.tag || currentModelInfo.provider }}</span>
+          </div>
+          <div>{{ currentModelInfo.description }}</div>
+        </div>
+
+        <label class="meta-label mb-2 mt-4 block !text-slate-500">对话模式</label>
         <div class="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 p-1 border border-slate-200">
           <button 
             v-for="opt in [{value: 'auto', label: '自动'}, {value: 'job', label: '求职'}, {value: 'rag', label: '面经'}]" 
@@ -30,6 +72,7 @@
           class="mt-4"
           :columns="1"
           :items="[
+            { label: '当前模型', value: currentModelInfo?.name || chat.selectedModel || '默认模型' },
             { label: '当前会话', value: chat.currentConversationId || '未创建' },
             { label: '最新 Trace', value: chat.currentTraceId || '等待生成' },
           ]"
@@ -259,6 +302,25 @@
         <p v-if="uploadError" class="mb-2 text-xs text-red-600">{{ uploadError }}</p>
         <p v-if="chat.errorMessage" class="mb-2 text-sm text-red-600">{{ chat.errorMessage }}</p>
 
+        <!-- 选定大模型与实时计费提示条 -->
+        <div class="flex items-center justify-between mb-2 px-1 max-w-[920px] mx-auto text-xs">
+          <div class="flex items-center gap-2 text-slate-600">
+            <span class="inline-flex items-center gap-1 font-medium text-slate-700 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md">
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5 text-blue-600" viewBox="0 0 20 20" fill="currentColor">
+                <path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd" />
+              </svg>
+              <span>{{ currentModelInfo?.name || '大语言模型' }}</span>
+              <span class="text-[10px] text-slate-400 font-normal">({{ currentModelInfo?.provider }})</span>
+            </span>
+            <span v-if="currentModelInfo?.pricingTag" class="text-[11px] text-emerald-700 font-medium bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+              💰 {{ currentModelInfo.pricingTag }}
+            </span>
+          </div>
+          <div class="text-[11px] text-slate-400">
+            可在左侧随时切换推理/通用模型
+          </div>
+        </div>
+
         <!-- Form & Toolbar -->
         <form class="!flex items-center gap-2 w-full max-w-[920px] mx-auto border border-slate-300 bg-white/95 shadow-md rounded-2xl p-2" @submit.prevent="submit">
           <!-- 隐藏的文件选择 Input -->
@@ -326,6 +388,18 @@ const messages = computed(() => chat.messages)
 const conversations = computed(() => chat.conversations)
 const isLoading = computed(() => chat.isLoading)
 const showDetails = ref(false)
+
+const currentModelInfo = computed(() => {
+  return chat.availableModels.find((m) => m.id === chat.selectedModel) || chat.availableModels[0]
+})
+
+const recommendedModels = computed(() => {
+  return chat.availableModels.filter((m) => m.isRecommended)
+})
+
+const otherModels = computed(() => {
+  return chat.availableModels.filter((m) => !m.isRecommended)
+})
 
 // 附件上传与拖拽状态
 const fileInputRef = ref<HTMLInputElement | null>(null)
@@ -441,5 +515,8 @@ function formatDate(value?: string) {
   return formatShanghaiDateTime(value)
 }
 
-onMounted(refresh)
+onMounted(() => {
+  refresh()
+  chat.loadModels()
+})
 </script>

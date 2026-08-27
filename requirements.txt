@@ -23,8 +23,8 @@ python-docx==1.1.0
 pandas>=2.2.0,<3.0.0
 openpyxl==3.1.2
 
-# Reranking (optional)
-FlagEmbedding>=1.2.10,<2.0.0
+# Reranking (optional) - 使用 SiliconFlow API Rerank，本地 FlagEmbedding 需 PyTorch 427MB，不适合 Docker 构建
+# FlagEmbedding>=1.2.10,<2.0.0
 
 # HTTP client
 requests>=2.32.5,<3.0.0

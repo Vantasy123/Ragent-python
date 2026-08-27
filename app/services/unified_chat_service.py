@@ -32,6 +32,7 @@ class UnifiedChatService:
         conversation_id: str | None = None,
         deep_thinking: bool = False,
         attachments: list[dict] | None = None,
+        model: str | None = None,
     ) -> AsyncIterator[dict]:
         """输出统一 SSE 聊天事件。"""
 
@@ -69,6 +70,7 @@ class UnifiedChatService:
                 deep_thinking=deep_thinking,
                 display_message=message,
                 attachments_meta=attachments,
+                model=model,
             ):
                 event["channel"] = channel
                 event.setdefault("conversationId", conversation.id)

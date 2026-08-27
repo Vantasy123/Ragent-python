@@ -42,7 +42,9 @@ ARGS=("${COMPOSE_FILES[@]}" "${PROFILE_ARGS[@]}" up -d)
 if [[ "${BUILD_FLAG}" == "--build" || "${BUILD_FLAG}" == "-Build" ]]; then
   ARGS+=(--build)
 fi
-ARGS+=("${SERVICES[@]}")
+if ((${#SERVICES[@]} > 0)); then
+  ARGS+=("${SERVICES[@]}")
+fi
 
 docker compose "${ARGS[@]}"
 

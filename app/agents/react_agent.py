@@ -26,10 +26,11 @@ class ReactState:
 class ConversationReactAgent:
     """普通对话 Agent，按思考、工具、观察、回答的 ReAct 流程运行。"""
 
-    def __init__(self, registry: UnifiedToolRegistry | None = None, max_steps: int = 3) -> None:
+    def __init__(self, registry: UnifiedToolRegistry | None = None, max_steps: int = 3, model: str | None = None) -> None:
         """构造函数：接收外部依赖并保存到实例中，后续方法会复用这些依赖完成业务处理。"""
         self.registry = registry or UnifiedToolRegistry(include_ops=False)
         self.max_steps = max(1, max_steps)
+        self.model = model
 
     async def run(self, question: str, history: list[dict[str, str]] | None = None) -> AsyncIterator[dict[str, Any]]:
         """运行 ReAct 循环；模型失败或无法产出合法动作时由调用方执行 RAG 回退。"""
@@ -150,7 +151,7 @@ class ConversationReactAgent:
 
         prompt = self._build_prompt(state, step_index)
         try:
-            llm = build_primary_llm(streaming=False)
+            llm = build_primary_llm(streaming=False, model=self.model)
             response = await llm.ainvoke([HumanMessage(content=prompt)])
             return self._parse_json(getattr(response, "content", ""))
         except Exception:
