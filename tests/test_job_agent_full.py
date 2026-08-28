@@ -101,6 +101,39 @@ def test_resume_service(db_session):
     assert len(profile.versions) == 2
 
 
+def test_closed_job_is_not_available_for_matching(db_session):
+    """关闭岗位不应进入岗位详情或人岗匹配流程。"""
+    job = JobOpportunity(
+        title="已下架岗位",
+        company="测试公司",
+        city="北京",
+        job_type="social",
+        source_platform="boss",
+        status="closed",
+        jd_text="负责服务端开发",
+        required_skills=["Python"],
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    service = JobMatchingService(db_session)
+    assert service.get_job_by_id(job.id) is None
+
+    resume_service = JobResumeService(db_session)
+    profile = resume_service.create_or_update_resume(
+        user_id="test_user_job_1",
+        name="测试简历",
+        raw_text="熟练掌握 Python",
+    )
+    with pytest.raises(ValueError, match="Resume or Job Opportunity not found"):
+        service.analyze_job_match(
+            user_id="test_user_job_1",
+            resume_id=profile.id,
+            job_id=job.id,
+        )
+
+
+
 def test_job_matching_service(db_session):
     ensure_default_job_samples(db_session)
     service = JobMatchingService(db_session)

@@ -1,0 +1,41 @@
+{
+  "version": 2,
+  "description": "离线岗位搜索质量评测固定 catalog；测试禁止访问外部招聘平台。retrieved_jobs 是候选版本输入的原始采集顺序。",
+  "cases": [
+    {
+      "id": "java-beijing-boss",
+      "keyword": "Java 后端",
+      "city": "北京",
+      "platform": "boss",
+      "job_type": "social",
+      "hard_filters": {"city": "北京", "platform": "boss", "job_type": "social"},
+      "gold_jobs": {"boss-java-001": 3, "boss-java-002": 2, "boss-java-003": 1},
+      "gold_ranking": ["boss-java-001", "boss-java-002", "boss-java-003"],
+      "excluded_ids": ["boss-java-campus-001", "liepin-java-001"],
+      "retrieved_jobs": [
+        {"id": "boss-java-campus-001", "source_platform": "boss", "city": "北京", "job_type": "campus", "search_terms": ["Java", "后端"]},
+        {"id": "boss-java-002", "source_platform": "boss", "city": "北京", "job_type": "social", "search_terms": ["Java", "后端"]},
+        {"id": "boss-java-001", "source_platform": "boss", "city": "北京", "job_type": "social", "search_terms": ["Java", "后端", "微服务"]},
+        {"id": "liepin-java-001", "source_platform": "liepin", "city": "北京", "job_type": "social", "search_terms": ["Java", "后端"]},
+        {"id": "boss-java-003", "source_platform": "boss", "city": "北京", "job_type": "social", "search_terms": ["Java", "后端"]}
+      ]
+    },
+    {
+      "id": "python-shanghai-all",
+      "keyword": "Python 大模型",
+      "city": "上海",
+      "platform": "all",
+      "job_type": "social",
+      "hard_filters": {"city": "上海", "job_type": "social"},
+      "gold_jobs": {"boss-python-001": 3, "liepin-python-001": 2, "51job-python-001": 1},
+      "gold_ranking": ["boss-python-001", "liepin-python-001", "51job-python-001"],
+      "excluded_ids": ["nowcoder-python-campus-001"],
+      "retrieved_jobs": [
+        {"id": "nowcoder-python-campus-001", "source_platform": "nowcoder", "city": "上海", "job_type": "campus", "search_terms": ["Python", "大模型"]},
+        {"id": "51job-python-001", "source_platform": "51job", "city": "上海", "job_type": "social", "search_terms": ["Python", "大模型"]},
+        {"id": "liepin-python-001", "source_platform": "liepin", "city": "上海", "job_type": "social", "search_terms": ["Python", "大模型"]},
+        {"id": "boss-python-001", "source_platform": "boss", "city": "上海", "job_type": "social", "search_terms": ["Python", "大模型"]}
+      ]
+    }
+  ]
+}

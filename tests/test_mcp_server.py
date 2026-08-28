@@ -75,8 +75,55 @@ def test_mcp_handle_tool_call_autofill_payload(mock_db_session):
     assert res["autofill_payload"]["form_fields"]["phone"] == "13800138000"
 
 
-def test_mcp_handle_tool_call_sync_jobs(mock_db_session):
-    """测试 MCP 实时多招聘平台岗位同步。"""
+def test_mcp_handle_tool_call_live_search_does_not_persist(mock_db_session, monkeypatch):
+    """测试 MCP 实时直搜返回真实契约数据且不写入岗位库。"""
+    fixture_jobs = [
+        {
+            "id": "live-1",
+            "title": "实时 Java 后端工程师",
+            "company": "实时测试公司",
+            "city": "北京",
+            "source_platform": "boss",
+            "source_url": "https://www.zhipin.com/job_detail/live-1",
+        }
+    ]
+    monkeypatch.setattr(
+        "app.services.job_crawler_service.JobCrawlerService._fetch_jobs_from_platform",
+        lambda self, platform, keyword, city, job_type, limit=10, mode="auto", cdp_url=None: fixture_jobs[:limit],
+    )
+
+    server = RagentMcpServer()
+    res = server.handle_tool_call(
+        "ragent_sync_and_search_jobs",
+        {"action": "live_search", "platform": "boss", "keyword": "Java", "limit": 1},
+    )
+    assert res["status"] == "success"
+    assert res["persisted"] is False
+    assert res["total"] == 1
+    assert len(mock_db_session().query(JobOpportunity).all()) == 0
+
+
+
+    """测试 MCP 实时多招聘平台岗位同步，隔离外部平台网络依赖。"""
+    fixture_jobs = [
+        {
+            "title": f"Java 后端工程师 {index}",
+            "company": f"测试公司 {index}",
+            "city": "全国",
+            "salary_str": "20-35K",
+            "jd_text": "负责 Java、Spring Boot、MySQL 开发",
+            "source_platform": "boss",
+            "source_url": f"https://www.zhipin.com/job_detail/mcp-{index}",
+            "required_skills": ["Java", "Spring Boot", "MySQL"],
+        }
+        for index in range(2)
+    ]
+
+    monkeypatch.setattr(
+        "app.services.job_crawler_service.JobCrawlerService._fetch_jobs_from_platform",
+        lambda self, platform, keyword, city, job_type, limit=10, mode="auto", cdp_url=None: fixture_jobs[:limit],
+    )
+
     server = RagentMcpServer()
     res = server.handle_tool_call(
         "ragent_sync_and_search_jobs",

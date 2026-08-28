@@ -17,7 +17,7 @@ import json
 import logging
 import uuid
 from typing import Any, Dict, Optional
-from fastapi import FastAPI, HTTPException, Request, Response, status
+from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -52,6 +52,92 @@ app.add_middleware(
 # 活跃的 SSE 客户端会话队列字典
 _active_sse_clients: Dict[str, asyncio.Queue] = {}
 _server_instance = RagentMcpServer()
+MCP_SERVER_VERSION = "1.1.0"
+
+
+def _jsonrpc_error(request_id: Any, code: int, message: str) -> Dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
+
+
+def _prompt_message(name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
+    prompts = {prompt["name"]: prompt for prompt in MCP_PROMPTS_DEFINITIONS}
+    prompt = prompts.get(name)
+    if not prompt:
+        raise ValueError(f"Prompt '{name}' not found")
+    missing = [arg["name"] for arg in prompt.get("arguments", []) if arg.get("required") and not arguments.get(arg["name"])]
+    if missing:
+        raise ValueError(f"Missing required prompt arguments: {', '.join(missing)}")
+    supplied = "\n".join(f"{key}: {value}" for key, value in arguments.items())
+    return {
+        "description": prompt["description"],
+        "messages": [{
+            "role": "user",
+            "content": {"type": "text", "text": f"{prompt['description']}\n{supplied}".strip()},
+        }],
+    }
+
+
+def _dispatch_jsonrpc(body: Any) -> Optional[Dict[str, Any]]:
+    """统一分发 HTTP 与 SSE 的 JSON-RPC 请求；通知不生成响应。"""
+    if not isinstance(body, dict):
+        return _jsonrpc_error(None, -32600, "Invalid Request")
+    request_id = body.get("id")
+    is_notification = "id" not in body
+    method = body.get("method")
+    params = body.get("params", {})
+    if not isinstance(method, str) or not isinstance(params, dict):
+        return None if is_notification else _jsonrpc_error(request_id, -32600, "Invalid Request")
+
+    try:
+        if method == "initialize":
+            result = {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}, "resources": {}, "prompts": {}},
+                "serverInfo": {"name": "ragent-mcp-server", "version": MCP_SERVER_VERSION},
+            }
+        elif method == "tools/list":
+            result = {"tools": MCP_TOOLS_DEFINITIONS}
+        elif method == "tools/call":
+            tool_name = params.get("name")
+            tool_args = params.get("arguments", {})
+            if not isinstance(tool_name, str) or not isinstance(tool_args, dict):
+                return None if is_notification else _jsonrpc_error(request_id, -32602, "Invalid tool parameters")
+            output = _server_instance.handle_tool_call(tool_name, tool_args)
+            result = {
+                "content": [{"type": "text", "text": json.dumps(output, ensure_ascii=False, indent=2)}],
+                "isError": output.get("status") in {"error", "failed"},
+            }
+        elif method == "resources/list":
+            result = {"resources": MCP_RESOURCES_DEFINITIONS}
+        elif method == "resources/read":
+            uri = params.get("uri")
+            if not isinstance(uri, str):
+                return None if is_notification else _jsonrpc_error(request_id, -32602, "Resource URI is required")
+            content = _server_instance.handle_resource_read(uri)
+            if content.get("status") in {"error", "failed"} or content.get("error"):
+                return None if is_notification else _jsonrpc_error(request_id, -32002, content.get("error", "Resource not found"))
+            result = {"contents": [content]}
+        elif method == "prompts/list":
+            result = {"prompts": MCP_PROMPTS_DEFINITIONS}
+        elif method == "prompts/get":
+            name = params.get("name")
+            arguments = params.get("arguments", {})
+            if not isinstance(name, str) or not isinstance(arguments, dict):
+                return None if is_notification else _jsonrpc_error(request_id, -32602, "Invalid prompt parameters")
+            result = _prompt_message(name, arguments)
+        elif method == "ping":
+            result = {}
+        elif method == "notifications/initialized":
+            return None
+        else:
+            return None if is_notification else _jsonrpc_error(request_id, -32601, f"Method '{method}' not found")
+    except ValueError as exc:
+        return None if is_notification else _jsonrpc_error(request_id, -32602, str(exc))
+    except Exception as exc:
+        logger.exception("MCP JSON-RPC dispatch failed: %s", exc)
+        return None if is_notification else _jsonrpc_error(request_id, -32603, "Internal error")
+
+    return None if is_notification else {"jsonrpc": "2.0", "id": request_id, "result": result}
 
 
 @app.get("/health")
@@ -160,72 +246,12 @@ async def handle_jsonrpc(request: Request):
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON")
+        return JSONResponse(content=_jsonrpc_error(None, -32700, "Parse error"), status_code=status.HTTP_400_BAD_REQUEST)
 
-    req_id = body.get("id")
-    method = body.get("method")
-    params = body.get("params", {})
-
-    if method == "initialize":
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "tools": {},
-                    "resources": {},
-                    "prompts": {}
-                },
-                "serverInfo": {"name": "ragent-mcp-server", "version": "1.1.0"}
-            }
-        }
-    elif method == "tools/list":
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {"tools": MCP_TOOLS_DEFINITIONS}
-        }
-    elif method == "tools/call":
-        tool_name = params.get("name")
-        tool_args = params.get("arguments", {})
-        res = _server_instance.handle_tool_call(tool_name, tool_args)
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {
-                "content": [{"type": "text", "text": json.dumps(res, ensure_ascii=False, indent=2)}],
-                "isError": res.get("status") == "error"
-            }
-        }
-    elif method == "resources/list":
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {"resources": MCP_RESOURCES_DEFINITIONS}
-        }
-    elif method == "resources/read":
-        uri = params.get("uri", "")
-        content = _server_instance.handle_resource_read(uri)
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {"contents": [content]}
-        }
-    elif method == "prompts/list":
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {"prompts": MCP_PROMPTS_DEFINITIONS}
-        }
-    elif method == "ping":
-        return {"jsonrpc": "2.0", "id": req_id, "result": {}}
-    else:
-        return {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "error": {"code": -32601, "message": f"Method '{method}' not found"}
-        }
+    response = _dispatch_jsonrpc(body)
+    if response is None:
+        return JSONResponse(status_code=status.HTTP_204_NO_CONTENT, content=None)
+    return JSONResponse(content=response)
 
 
 # =====================================================================
@@ -236,7 +262,7 @@ async def handle_jsonrpc(request: Request):
 async def mcp_sse_endpoint(request: Request):
     """标准 MCP Server-Sent Events (SSE) 协议端点。"""
     session_id = str(uuid.uuid4())
-    queue: asyncio.Queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=100)
     _active_sse_clients[session_id] = queue
 
     logger.info(f"New MCP SSE client connected. Session ID: {session_id}")
@@ -281,75 +307,16 @@ async def mcp_messages_endpoint(request: Request, sessionId: Optional[str] = Non
     try:
         body = await request.json()
     except Exception:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid JSON")
+        return JSONResponse(content=_jsonrpc_error(None, -32700, "Parse error"), status_code=status.HTTP_400_BAD_REQUEST)
 
-    req_id = body.get("id")
-    method = body.get("method")
-    params = body.get("params", {})
-    queue = _active_sse_clients[sessionId]
-
-    if method == "initialize":
-        res = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {
-                    "tools": {},
-                    "resources": {},
-                    "prompts": {}
-                },
-                "serverInfo": {"name": "ragent-mcp-server", "version": "1.1.0"}
-            }
-        }
-    elif method == "tools/list":
-        res = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {"tools": MCP_TOOLS_DEFINITIONS}
-        }
-    elif method == "tools/call":
-        tool_name = params.get("name")
-        tool_args = params.get("arguments", {})
-        output = _server_instance.handle_tool_call(tool_name, tool_args)
-        res = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {
-                "content": [{"type": "text", "text": json.dumps(output, ensure_ascii=False, indent=2)}],
-                "isError": output.get("status") == "error"
-            }
-        }
-    elif method == "resources/list":
-        res = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {"resources": MCP_RESOURCES_DEFINITIONS}
-        }
-    elif method == "resources/read":
-        uri = params.get("uri", "")
-        content = _server_instance.handle_resource_read(uri)
-        res = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {"contents": [content]}
-        }
-    elif method == "prompts/list":
-        res = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "result": {"prompts": MCP_PROMPTS_DEFINITIONS}
-        }
-    elif method == "ping":
-        res = {"jsonrpc": "2.0", "id": req_id, "result": {}}
-    else:
-        res = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "error": {"code": -32601, "message": f"Method '{method}' not found"}
-        }
-
-    await queue.put(res)
+    response = _dispatch_jsonrpc(body)
+    if response is not None:
+        queue = _active_sse_clients[sessionId]
+        try:
+            queue.put_nowait(response)
+        except asyncio.QueueFull:
+            logger.warning("MCP SSE client queue full; dropping response for session %s", sessionId)
+            return JSONResponse(content={"status": "backpressure"}, status_code=status.HTTP_429_TOO_MANY_REQUESTS)
     return JSONResponse(content={"status": "accepted"})
 
 

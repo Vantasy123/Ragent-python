@@ -141,5 +141,5 @@ Write-Host ''
 Write-Host 'Useful commands:'
 Write-Host "  Status: docker compose -f $composeYml ps"
 Write-Host "  Logs: docker compose -f $composeYml logs -f ragent-api"
-Write-Host "  Stop: docker compose -f $composeYml down"
-Write-Host "  Rebuild: .\scripts\start-project.bat -Build"
+Write-Host "  Chrome CDP: chrome.exe --remote-debugging-port=9223 --user-data-dir=`"C:\ragent-chrome`""
+Write-Host '  CDP note: login to BOSS/Liepin/51job/Nowcoder in that profile; Ragent never stores platform passwords.'

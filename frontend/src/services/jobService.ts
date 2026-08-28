@@ -44,14 +44,22 @@ export interface JobOpportunity {
   company: string
   companyLogo?: string
   city: string
-  salaryMin: number
-  salaryMax: number
+  salaryMin: number | null
+  salaryMax: number | null
   salaryUnit: string
+  salaryStatus: 'known' | 'negotiable' | 'unknown' | string
   educationReq: string
   experienceReq: string
   jobType: string
   sourcePlatform: string
   sourceUrl?: string
+  externalJobId?: string | null
+  sourceUrlCanonical?: string
+  lastSeenAt?: string
+  detailStatus?: 'pending' | 'success' | 'failed' | 'skipped' | string
+  detailError?: string
+  detailAttemptedAt?: string
+  jdText?: string
   companyTags?: string[]
   jdText?: string
   requiredSkills?: string[]
@@ -174,7 +182,7 @@ export const jobService = {
   },
 
   // 岗位机会库
-  async listPostings(params?: { keyword?: string; city?: string; job_type?: string; source_platform?: string; limit?: number; offset?: number }): Promise<{ items: JobOpportunity[]; total: number }> {
+  async listPostings(params?: { keyword?: string; city?: string; job_type?: string; source_platform?: string; limit?: number; offset?: number }): Promise<{ items: JobOpportunity[]; total: number; offset: number; limit: number; hasMore: boolean }> {
     return apiClient.get('/jobs/postings', { params })
   },
   async getPosting(jobId: string): Promise<JobOpportunity> {
@@ -189,8 +197,14 @@ export const jobService = {
   async getPlatforms(): Promise<{ platforms: Array<{ id: string; name: string; mode: string; icon: string; status: string }> }> {
     return apiClient.get('/jobs/postings/platforms')
   },
-  async syncJobs(data: { platform?: string; keyword?: string; city?: string; job_type?: string; limit_per_platform?: number }): Promise<any> {
+  async getCdpStatus(cdpUrl?: string): Promise<{ data: any }> {
+    return apiClient.get('/jobs/postings/crawlers/cdp-status', { params: { cdp_url: cdpUrl } })
+  },
+  async syncJobs(data: { platform?: string; keyword?: string; city?: string; job_type?: string; limit_per_platform?: number; page?: number; max_pages?: number; enrich_details?: boolean; mode?: string; cdp_url?: string }): Promise<any> {
     return apiClient.post('/jobs/postings/sync', data)
+  },
+  async liveSearchJobs(data: { platform?: string; keyword?: string; city?: string; job_type?: string; limit_per_platform?: number; page?: number; max_pages?: number; mode?: string; cdp_url?: string }): Promise<{ code: number; message: string; data: { status: string; success?: boolean; jobs: JobOpportunity[]; total: number; page: number; has_more: boolean; next_page: number | null; persisted: false; platform_errors?: Record<string, string> } }> {
+    return apiClient.post('/jobs/postings/live-search', data)
   },
 
   // 人岗匹配

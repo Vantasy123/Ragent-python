@@ -6,6 +6,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.pool import StaticPool
 from sqlalchemy.orm import sessionmaker
 
 from app.domain.models import Base, ResumeProfile, JobOpportunity, KnowledgeBase, KnowledgeChunk
@@ -15,7 +16,11 @@ from app.mcp_main import app
 
 @pytest.fixture
 def mock_db_session(monkeypatch):
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine)
     TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -51,6 +56,7 @@ def mock_db_session(monkeypatch):
     init_session.close()
 
     monkeypatch.setattr("app.mcp_server.SessionLocal", TestingSessionLocal)
+    monkeypatch.setattr("app.mcp_main._server_instance", RagentMcpServer())
     return TestingSessionLocal
 
 

@@ -12,6 +12,7 @@ from app.services.job_resume_service import JobResumeService
 from app.services.job_matching_service import JobMatchingService
 from app.services.mock_interview_service import MockInterviewService
 from app.services.job_auto_fill_service import JobAutoFillService
+from app.services.schema_migrations import run_compatible_migrations
 
 logger = logging.getLogger(__name__)
 
@@ -35,15 +36,12 @@ class JobToolkit:
                 "score_details": score_details
             }
         except Exception as e:
-            logger.warning(f"parse_resume fallback: {e}")
-            service = JobResumeService(None)  # type: ignore
-            parsed = service.parse_resume_text(raw_text)
-            score, score_details = service.calculate_resume_score(parsed)
+            logger.warning(f"parse_resume failed: {e}")
             return {
-                "success": True,
-                "parsed_data": parsed,
-                "score": score,
-                "score_details": score_details
+                "success": False,
+                "status": "failed",
+                "error_code": "RESUME_PARSE_FAILED",
+                "error": str(e),
             }
 
     @classmethod
@@ -63,23 +61,34 @@ class JobToolkit:
                 "star_optimized": res
             }
         except Exception as e:
-            logger.warning(f"optimize_project_star fallback: {e}")
-            service = JobResumeService(None)  # type: ignore
-            res = service.optimize_project_star({
-                "project_name": project_name,
-                "tech_stack": tech_stack,
-                "background": background
-            }, target_jd=target_jd)
+            logger.warning(f"optimize_project_star failed: {e}")
             return {
-                "success": True,
-                "star_optimized": res
+                "success": False,
+                "status": "failed",
+                "error_code": "PROJECT_OPTIMIZATION_FAILED",
+                "error": str(e),
             }
 
+    @staticmethod
+    def _salary_text(job: Any) -> str:
+        if getattr(job, "salary_status", "unknown") == "negotiable":
+            return "面议"
+        if getattr(job, "salary_status", "unknown") == "unknown":
+            return "薪资未知"
+        return f"{job.salary_min}k-{job.salary_max}k"
+
     @classmethod
-    def search_jobs(cls, keyword: str = "", city: str = "全国", job_type: str = "all", limit: int = 10) -> Dict[str, Any]:
-        """多渠道检索岗位机会。"""
+    def search_jobs(
+        cls,
+        keyword: str = "",
+        city: str = "全国",
+        job_type: str = "all",
+        limit: int = 10,
+    ) -> Dict[str, Any]:
+        """检索本地岗位库，不访问外部招聘平台。"""
         try:
             Base.metadata.create_all(bind=engine)
+            run_compatible_migrations(engine)
             db: Session = SessionLocal()
             service = JobMatchingService(db)
             jobs, total = service.get_job_postings(keyword=keyword, city=city, job_type=job_type, limit=limit)
@@ -87,6 +96,7 @@ class JobToolkit:
             if total > 0:
                 return {
                     "success": True,
+                    "status": "success",
                     "total": total,
                     "jobs": [
                         {
@@ -94,48 +104,66 @@ class JobToolkit:
                             "title": j.title,
                             "company": j.company,
                             "city": j.city,
-                            "salary": f"{j.salary_min}k-{j.salary_max}k",
+                            "salary": cls._salary_text(j),
                             "education_req": j.education_req,
                             "experience_req": j.experience_req,
                             "required_skills": j.required_skills,
-                            "source_platform": j.source_platform
+                            "source_platform": j.source_platform,
                         }
                         for j in jobs
-                    ]
+                    ],
                 }
         except Exception as e:
-            logger.warning(f"search_jobs db query fallback: {e}")
-
-        # Fallback sample jobs
-        sample_jobs = [
-            {
-                "id": "job_sample_1",
-                "title": f"{keyword or '后端'}开发工程师",
-                "company": "字节跳动",
-                "city": city if city != "全国" else "北京",
-                "salary": "25k-45k",
-                "education_req": "本科及以上",
-                "experience_req": "1-3年",
-                "required_skills": ["Go", "Python", "MySQL", "Redis", "高并发"],
-                "source_platform": "nowcoder"
-            },
-            {
-                "id": "job_sample_2",
-                "title": f"Java 核心研发工程师",
-                "company": "阿里巴巴",
-                "city": city if city != "全国" else "杭州",
-                "salary": "20k-35k",
-                "education_req": "本科及以上",
-                "experience_req": "应届生/1-3年",
-                "required_skills": ["Java", "Spring Boot", "MySQL", "Redis"],
-                "source_platform": "nowcoder"
+            logger.warning(f"search_jobs db query failed: {e}")
+            return {
+                "success": False,
+                "status": "failed",
+                "error_code": "DB_QUERY_FAILED",
+                "error": str(e),
+                "total": 0,
+                "jobs": [],
             }
-        ]
+
         return {
             "success": True,
-            "total": len(sample_jobs),
-            "jobs": sample_jobs[:limit]
+            "status": "empty",
+            "total": 0,
+            "jobs": [],
+            "message": "岗位库中暂无匹配岗位；如需搜索最新平台职位，请调用 job_live_search_postings，并确保真实浏览器已连接。",
         }
+
+    @classmethod
+    def live_search_jobs(
+        cls,
+        platform: str = "all",
+        keyword: str = "后端开发",
+        city: str = "全国",
+        job_type: str = "social",
+        limit: int = 5,
+        mode: str = "auto",
+        cdp_url: str = "http://127.0.0.1:9223",
+        page: int = 1,
+    ) -> Dict[str, Any]:
+        """直接搜索真实招聘平台，不将结果写入本地岗位库。"""
+        from app.services.job_crawler_service import JobCrawlerService
+        db: Session = SessionLocal()
+        try:
+            result = JobCrawlerService(db).live_search_platform_jobs(
+                platform=platform,
+                keyword=keyword,
+                city=city,
+                job_type=job_type,
+                limit_per_platform=limit,
+                mode=mode,
+                cdp_url=cdp_url,
+                **({"page": page} if page != 1 else {}),
+            )
+            return {"success": result.get("status") in {"success", "partial_success"}, **result}
+        except Exception as exc:
+            logger.warning("live_search_jobs error: %s", exc)
+            return {"success": False, "error": str(exc), "persisted": False, "jobs": [], "total": 0}
+        finally:
+            db.close()
 
     @classmethod
     def match_resume_with_job(cls, resume_text: str, jd_text: str, target_title: str = "开发工程师") -> Dict[str, Any]:
@@ -170,20 +198,18 @@ class JobToolkit:
             if content.startswith("```"): content = content[3:]
             if content.endswith("```"): content = content[:-3]
             result = json.loads(content.strip())
-        except Exception:
-            result = {
-                "overall_score": 85,
-                "match_level": "high",
-                "matched_skills": parsed_jd.get("required_skills", [])[:3],
-                "missing_skills": ["特定生产故障调优案例"],
-                "strong_points": ["核心开发语言熟练", "具备系统设计能力"],
-                "weak_points": ["建议增加量化业务成果"],
-                "customized_greeting": f"您好！看到贵司正在招聘【{target_title}】，我的技术背景和项目经验与此岗位非常契合，期待能与您交流！",
-                "customized_cover_letter": f"尊敬的面试官：您好！我对贵司【{target_title}】非常感兴趣，具备相关技术栈的实战经验，希望能有机会进一步沟通！"
+        except Exception as exc:
+            logger.warning("match_resume_with_job failed: %s", exc)
+            return {
+                "success": False,
+                "status": "failed",
+                "error_code": "MATCH_ANALYSIS_FAILED",
+                "error": str(exc),
             }
 
         return {
             "success": True,
+            "status": "success",
             "match_report": result
         }
 
@@ -210,15 +236,17 @@ JD: {jd_text[:1000] if jd_text else '标准要求'}
             if content.endswith("```"): content = content[:-3]
             questions = json.loads(content.strip())
             db.close()
-        except Exception:
-            service = MockInterviewService(None)  # type: ignore
-            questions = [
-                service._fallback_question(1, "technical", target_role),
-                service._fallback_question(2, "project_deep_dive", target_role),
-                service._fallback_question(3, "system_design", target_role)
-            ]
+        except Exception as exc:
+            logger.warning("generate_interview_questions failed: %s", exc)
+            return {
+                "success": False,
+                "status": "failed",
+                "error_code": "INTERVIEW_GENERATION_FAILED",
+                "error": str(exc),
+            }
         return {
             "success": True,
+            "status": "success",
             "questions": questions
         }
 
@@ -243,8 +271,19 @@ JD: {jd_text[:1000] if jd_text else '标准要求'}
         }
 
     @classmethod
-    def sync_jobs_from_platforms(cls, platform: str = "all", keyword: str = "后端开发", city: str = "全国", limit: int = 5) -> Dict[str, Any]:
-        """多招聘平台（BOSS直聘/猎聘/51job/牛客网）实时岗位采集与同步工具。"""
+    def sync_jobs_from_platforms(
+        cls,
+        platform: str = "all",
+        keyword: str = "后端开发",
+        city: str = "全国",
+        limit: int = 5,
+        mode: str = "auto",
+        cdp_url: str = "http://127.0.0.1:9223",
+        page: int = 1,
+        max_pages: int = 1,
+        enrich_details: bool = False,
+    ) -> Dict[str, Any]:
+        """多招聘平台（BOSS直聘/猎聘/51job/牛客网）真实浏览器 CDP 岗位采集与同步工具。"""
         try:
             from app.services.job_crawler_service import JobCrawlerService
             db: Session = SessionLocal()
@@ -253,7 +292,12 @@ JD: {jd_text[:1000] if jd_text else '标准要求'}
                 platform=platform,
                 keyword=keyword,
                 city=city,
-                limit_per_platform=limit
+                limit_per_platform=limit,
+                mode=mode,
+                cdp_url=cdp_url,
+                page=page,
+                max_pages=max_pages,
+                enrich_details=enrich_details,
             )
             db.close()
             return {

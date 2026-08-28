@@ -103,12 +103,15 @@ services:
     restart: unless-stopped
 
   ragent-api:
+    image: ragent-python-ragent-api:latest
     build:
       context: .
       dockerfile: Dockerfile
     env_file:
       - ./.env
     environment:
+      RAGENT_RUNNING_IN_DOCKER: "true"
+      RAGENT_CDP_URL: ${RAGENT_CDP_URL:-http://host.docker.internal:9223}
       DATABASE_URL: mysql+pymysql://root:root@mysql:3306/ragent?charset=utf8mb4
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_API_BASE: ${OPENAI_API_BASE}
@@ -144,6 +147,9 @@ services:
       STORAGE_TYPE: local
       STORAGE_BASE_DIR: /app/uploads
       ALLOWED_ORIGINS: '["http://localhost:5173","http://localhost:3000","http://localhost:8000","http://frontend:80"]'
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,host.docker.internal,mysql,redis,milvus,rustfs,etcd,frontend,ragent-api,ragent-mcp-api}
     ports:
       - "8010:8000"
     depends_on:
@@ -153,6 +159,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "api.siliconflow.cn:47.102.215.139"
+      - "api.deepseek.com:101.71.73.135"
     dns:
       - 223.5.5.5
       - 119.29.29.29
@@ -167,6 +177,7 @@ services:
     restart: unless-stopped
 
   ragent-mcp-api:
+    image: ragent-python-ragent-api:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -185,6 +196,9 @@ services:
       MILVUS_URI: http://milvus:19530
       REDIS_ENABLED: ${REDIS_ENABLED:-true}
       REDIS_URL: redis://redis:6379/0
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,host.docker.internal,mysql,redis,milvus,rustfs,etcd,frontend,ragent-api,ragent-mcp-api}
     ports:
       - "8002:8001"
     depends_on:
@@ -194,15 +208,25 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    dns:
-      - 223.5.5.5
-      - 119.29.29.29
-      - 8.8.8.8
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8001/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: 10s
+      retries: 3
     volumes:
       - ./app:/app/app
       - ./logs:/app/logs
       - ./uploads:/app/uploads
       - ./config:/app/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+      - "api.siliconflow.cn:47.102.215.139"
+      - "api.deepseek.com:101.71.73.135"
+    dns:
+      - 223.5.5.5
+      - 119.29.29.29
+      - 8.8.8.8
     networks:
       - ragent-network
     restart: unless-stopped

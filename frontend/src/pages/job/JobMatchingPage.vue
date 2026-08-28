@@ -190,6 +190,24 @@
               </span>
             </div>
 
+            <div class="flex flex-wrap items-center gap-2 text-xs">
+              <span :class="[
+                'px-2 py-1 rounded-lg border font-medium',
+                selectedJob.detailStatus === 'success'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : selectedJob.detailStatus === 'failed'
+                    ? 'bg-rose-50 text-rose-700 border-rose-200'
+                    : selectedJob.detailStatus === 'skipped'
+                      ? 'bg-slate-50 text-slate-600 border-slate-200'
+                      : 'bg-amber-50 text-amber-700 border-amber-200'
+              ]">
+                {{ selectedJob.detailStatus === 'success' ? '真实详情已采集' : selectedJob.detailStatus === 'failed' ? '详情采集失败，已保留列表岗位' : selectedJob.detailStatus === 'skipped' ? '详情采集已跳过' : '详情尚未采集' }}
+              </span>
+              <span v-if="selectedJob.detailError" class="text-slate-500 truncate max-w-full" :title="selectedJob.detailError">
+                {{ selectedJob.detailError }}
+              </span>
+            </div>
+
             <!-- Action Buttons -->
             <div class="flex items-center justify-between pt-2 border-t border-slate-100">
               <div class="flex items-center gap-2">
@@ -323,9 +341,35 @@
           </button>
         </div>
 
-        <p class="text-xs text-slate-500">
-          借鉴 <code class="bg-slate-100 px-1 py-0.5 rounded text-indigo-600">zhicheng-local</code> 的采集机制，支持从各大招聘平台实时检索岗位、解析薪资并由大模型结构化抽取入库。
-        </p>
+        <!-- CDP 浏览器连接状态与指引卡片 -->
+        <div :class="['p-3.5 rounded-xl border text-xs leading-relaxed space-y-2', cdpConnected ? 'bg-emerald-50/70 border-emerald-200 text-emerald-900' : 'bg-amber-50/80 border-amber-200 text-amber-900']">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2 font-bold">
+              <span class="flex h-2.5 w-2.5 rounded-full" :class="cdpConnected ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'"></span>
+              <span>{{ cdpConnected ? 'Chrome CDP 真实浏览器：已连接 (端口 9223)' : 'Chrome CDP 调试端口未连接' }}</span>
+            </div>
+            <button class="text-xs text-blue-600 hover:underline font-medium" @click="detectCdpStatus">
+              🔄 重新探测
+            </button>
+          </div>
+
+          <div v-if="cdpConnected" class="text-[11px] text-emerald-700">
+            已连接本地 Chrome 调试端口，活动标签页 {{ cdpTabsCount }} 个。登录态和平台页面可用性会在实际采集时进一步校验。
+          </div>
+          <div v-else-if="cdpError" class="text-[11px] text-amber-800">
+            {{ cdpError }}
+          </div>
+          <div v-else class="space-y-1.5 text-[11px] text-amber-800">
+            <p>为 100% 绕过反爬与风控，请在 PowerShell 中运行以下命令启动 Chrome：</p>
+            <div class="bg-white/80 p-1.5 rounded border border-amber-300 font-mono text-[10px] text-slate-800 flex items-center justify-between gap-2">
+              <span class="truncate select-all">& "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9223 --user-data-dir="C:\ragent-chrome"</span>
+              <button class="text-blue-600 font-bold shrink-0 hover:underline" @click="copyText('& \x22C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe\x22 --remote-debugging-port=9223 --user-data-dir=\x22C:\\ragent-chrome\x22')">
+                复制
+              </button>
+            </div>
+            <p class="text-amber-600">未启动时将自动尝试使用后台 Playwright 独立浏览器驱动进行页面抓取。</p>
+          </div>
+        </div>
 
         <div class="space-y-4">
           <!-- 目标渠道选择 -->
@@ -409,6 +453,24 @@
             </div>
           </div>
 
+          <div class="flex items-center justify-between text-xs text-slate-600 pt-2 border-t border-slate-100">
+            <span>分页采集页数:</span>
+            <select v-model.number="syncMaxPages" class="select text-xs py-1 h-8 w-24">
+              <option :value="1">1 页</option>
+              <option :value="2">2 页</option>
+              <option :value="5">5 页</option>
+              <option :value="10">10 页</option>
+            </select>
+          </div>
+
+          <label class="flex items-start gap-2.5 rounded-xl border border-slate-200 bg-slate-50/70 p-3 text-xs text-slate-700 cursor-pointer">
+            <input v-model="enrichDetails" type="checkbox" class="mt-0.5 accent-blue-600" />
+            <span>
+              <span class="font-bold text-slate-800">同步后采集真实详情页</span>
+              <span class="block mt-0.5 text-[11px] text-slate-500">补全完整 JD、技能、职责和福利；详情失败时仍保留列表岗位。</span>
+            </span>
+          </label>
+
           <!-- 同步状态提示 -->
           <div v-if="syncMessage" :class="['p-3 rounded-xl text-xs leading-relaxed', syncError ? 'bg-rose-50 text-rose-700 border border-rose-200' : 'bg-emerald-50 text-emerald-800 border border-emerald-200']">
             {{ syncMessage }}
@@ -416,16 +478,24 @@
         </div>
 
         <div class="flex items-center justify-end gap-3 pt-3 border-t border-slate-100">
-          <button class="btn btn-secondary text-sm" :disabled="syncing" @click="showSyncModal = false">
+          <button class="btn btn-secondary text-sm" :disabled="syncing || liveSearching" @click="showSyncModal = false">
             取消
           </button>
           <button
+            class="btn btn-secondary text-sm flex items-center gap-2"
+            :disabled="syncing || liveSearching || !syncKeyword.trim()"
+            @click="handleLiveSearch"
+          >
+            <span v-if="liveSearching" class="animate-spin">⚡</span>
+            <span>{{ liveSearching ? '正在实时直搜...' : '实时直搜（不入库）' }}</span>
+          </button>
+          <button
             class="btn btn-primary text-sm flex items-center gap-2"
-            :disabled="syncing || !syncKeyword.trim()"
+            :disabled="syncing || liveSearching || !syncKeyword.trim()"
             @click="handleStartSync"
           >
             <span v-if="syncing" class="animate-spin">⚡</span>
-            <span>{{ syncing ? '正在多源采集同步中...' : '开始采集同步' }}</span>
+            <span>{{ syncing ? '正在真实浏览器采集同步中...' : '开始真实采集' }}</span>
           </button>
         </div>
       </div>
@@ -515,6 +585,7 @@ const selectedPlatform = ref('all')
 
 const matchReport = ref<JobMatchReport | null>(null)
 const analyzingMatch = ref(false)
+let matchRequestToken = 0
 
 const showImportModal = ref(false)
 const importing = ref(false)
@@ -528,20 +599,44 @@ const formJobJdText = ref('')
 // 多平台实时采集同步状态
 const showSyncModal = ref(false)
 const syncing = ref(false)
+const liveSearching = ref(false)
 const syncTargetPlatform = ref('all')
 const syncKeyword = ref('后端开发')
 const syncCity = ref('全国')
 const syncLimit = ref(10)
+const syncMaxPages = ref(1)
+const enrichDetails = ref(false)
 const syncMessage = ref('')
 const syncError = ref(false)
+const cdpConnected = ref(false)
+const cdpTabsCount = ref(0)
+const cdpError = ref('')
 
 const syncPlatforms = [
-  { id: 'all', name: '全部平台聚合', mode: '多源并发采集', icon: '🌐' },
-  { id: 'boss', name: 'BOSS 直聘', mode: 'CDP-DOM 仿真', icon: '💼' },
-  { id: 'liepin', name: '猎聘网', mode: '页面数据抽取', icon: '🎯' },
-  { id: '51job', name: '前程无忧', mode: 'OpenCLI 仿真', icon: '🏢' },
-  { id: 'nowcoder', name: '牛客招聘', mode: '校招实习聚合', icon: '🎓' },
+  { id: 'all', name: '全部平台聚合', mode: '多源真实并发采集', icon: '🌐' },
+  { id: 'boss', name: 'BOSS 直聘', mode: 'Chrome CDP 真实驱动', icon: '💼' },
+  { id: 'liepin', name: '猎聘网', mode: 'Chrome CDP 真实驱动', icon: '🎯' },
+  { id: '51job', name: '前程无忧', mode: 'Chrome CDP 真实驱动', icon: '🏢' },
+  { id: 'nowcoder', name: '牛客招聘', mode: 'Chrome CDP 真实驱动', icon: '🎓' },
 ]
+
+async function detectCdpStatus() {
+  try {
+    const res = await jobService.getCdpStatus()
+    const data = res?.data || {}
+    cdpConnected.value = Boolean(data.connected)
+    cdpTabsCount.value = Number(data.tabs_count || 0)
+    const detectedPlatforms = data.logged_in_platforms || []
+    const unresolved = syncPlatforms
+      .filter((platform) => platform.id !== 'all' && !detectedPlatforms.includes(platform.id))
+      .map((platform) => platform.name)
+    cdpError.value = data.error || (unresolved.length ? `未检测到平台标签页：${unresolved.join('、')}；标签页存在也不等于已登录。` : '')
+  } catch (err: any) {
+    cdpConnected.value = false
+    cdpTabsCount.value = 0
+    cdpError.value = err?.detail || err?.message || 'CDP 状态探测失败，请先登录应用后重试。'
+  }
+}
 
 function getPlatformLabel(plat: string) {
   switch (plat) {
@@ -574,7 +669,11 @@ async function fetchJobs() {
       limit: 50
     })
     jobs.value = res.items || []
-    if (jobs.value.length && (!selectedJob.value || !jobs.value.some(j => j.id === selectedJob.value?.id))) {
+    if (!jobs.value.length) {
+      selectedJob.value = null
+      matchReport.value = null
+      matchRequestToken += 1
+    } else if (!selectedJob.value || !jobs.value.some(j => j.id === selectedJob.value?.id)) {
       selectJob(jobs.value[0])
     }
   } catch (err) {
@@ -607,20 +706,65 @@ function selectJob(job: JobOpportunity) {
 
 async function runMatchAnalysis() {
   if (!selectedJob.value || !targetResumeId.value) return
+  const token = ++matchRequestToken
+  const jobId = selectedJob.value.id
+  const resumeId = targetResumeId.value
   analyzingMatch.value = true
   try {
-    matchReport.value = await jobService.analyzeMatch(targetResumeId.value, selectedJob.value.id)
+    const report = await jobService.analyzeMatch(resumeId, jobId)
+    if (token === matchRequestToken && selectedJob.value?.id === jobId && targetResumeId.value === resumeId) {
+      matchReport.value = report
+    }
   } catch (err) {
-    console.error(err)
+    if (token === matchRequestToken) console.error(err)
   } finally {
-    analyzingMatch.value = false
+    if (token === matchRequestToken) analyzingMatch.value = false
   }
 }
 
-function openSyncModal() {
+async function openSyncModal() {
   syncMessage.value = ''
   syncError.value = false
   showSyncModal.value = true
+  await detectCdpStatus()
+}
+
+async function handleLiveSearch() {
+  liveSearching.value = true
+  syncMessage.value = ''
+  syncError.value = false
+  try {
+    const res = await jobService.liveSearchJobs({
+      platform: syncTargetPlatform.value,
+      keyword: syncKeyword.value.trim(),
+      city: syncCity.value,
+      limit_per_platform: syncLimit.value,
+      mode: 'auto'
+    })
+    const data = res?.data || { jobs: [], total: 0, persisted: false }
+    if (data.persisted !== false) {
+      throw new Error('实时直搜接口返回了异常的持久化状态')
+    }
+    jobs.value = data.jobs || []
+    selectedJob.value = jobs.value[0] || null
+    matchReport.value = null
+    matchRequestToken += 1
+    if (jobs.value.length) {
+      syncMessage.value = `🔎 已返回 ${data.total || jobs.value.length} 条实时岗位，未写入本地岗位库。`
+      if (selectedJob.value && targetResumeId.value) runMatchAnalysis()
+    } else {
+      const errors = Object.entries(data.platform_errors || {})
+        .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
+        .join('; ')
+      syncError.value = Boolean(errors)
+      syncMessage.value = errors ? `⚠️ 实时直搜未完成：${errors}` : '未抓取到符合条件的真实在招岗位。'
+    }
+  } catch (err: any) {
+    syncError.value = true
+    syncMessage.value = `实时直搜失败: ${err?.detail || err?.message || '网络或接口超时'}`
+  } finally {
+    liveSearching.value = false
+  }
 }
 
 async function handleStartSync() {
@@ -633,11 +777,28 @@ async function handleStartSync() {
       platform: syncTargetPlatform.value,
       keyword: syncKeyword.value.trim(),
       city: syncCity.value,
-      limit_per_platform: syncLimit.value
+      limit_per_platform: syncLimit.value,
+      max_pages: syncMaxPages.value,
+      enrich_details: enrichDetails.value,
+      mode: 'auto'
     })
 
     const stats = res?.data?.stats || {}
-    syncMessage.value = `🎉 ${res?.message || '同步完成！'} (总抓取 ${stats.total_fetched || 0} 条，新增入库 ${stats.created || 0} 条，更新 ${stats.updated || 0} 条)`
+    const detailSummary = enrichDetails.value
+      ? `，详情成功 ${stats.detail_succeeded || 0}、失败 ${stats.detail_failed || 0}、跳过 ${stats.detail_skipped || 0}`
+      : ''
+    if (stats.total_fetched > 0) {
+      syncMessage.value = `🎉 ${res?.message || '真实采集同步完成！'} (总抓取 ${stats.total_fetched || 0} 条真实岗位，新增入库 ${stats.created || 0} 条，更新 ${stats.updated || 0} 条${detailSummary})`
+    } else {
+      const errors = stats.platform_errors || {}
+      const errList = Object.entries(errors).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join('; ')
+      if (errList) {
+        syncError.value = true
+        syncMessage.value = `⚠️ 采集未获取到数据：${errList}。请确认 Chrome 9223 端口、平台登录态和页面验证码状态。`
+      } else {
+        syncMessage.value = '未抓取到符合条件的真实在招岗位。'
+      }
+    }
 
     // 重新拉取岗位并选中最新一条
     await fetchJobs()

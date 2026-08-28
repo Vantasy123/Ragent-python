@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     run_compatible_migrations(engine)
 
-    # 默认管理员与求职初始数据、评测基线
+    # 迁移必须先于所有 ORM 查询执行；旧 MySQL 库缺列时避免默认数据初始化触发启动失败。
     db = SessionLocal()
     try:
         ensure_default_admin(db)
