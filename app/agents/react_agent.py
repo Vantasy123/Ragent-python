@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, TypedDict
 
 from langchain_core.messages import HumanMessage
+from langgraph.graph import END, START, StateGraph
 
 from app.agents.tool_registry import ToolCallRequest, UnifiedToolRegistry
 from app.agents.job_intent_router import route_job_intent
@@ -23,6 +24,18 @@ class ReactState:
     final_answer: str = ""
 
 
+class GraphState(TypedDict, total=False):
+    """LangGraph 节点间传递的最小状态。"""
+
+    question: str
+    history: list[dict[str, str]]
+    observations: list[dict[str, Any]]
+    final_answer: str
+    step_index: int
+    decision: dict[str, Any] | None
+    _events: list[dict[str, Any]]
+
+
 class ConversationReactAgent:
     """普通对话 Agent，按思考、工具、观察、回答的 ReAct 流程运行。"""
 
@@ -33,7 +46,100 @@ class ConversationReactAgent:
         self.model = model
 
     async def run(self, question: str, history: list[dict[str, str]] | None = None) -> AsyncIterator[dict[str, Any]]:
-        """运行 ReAct 循环；模型失败或无法产出合法动作时由调用方执行 RAG 回退。"""
+        """通过 LangGraph 执行 ReAct 节点；节点内部仍以流式事件保持现有 SSE 契约。"""
+
+        state = ReactState(question=question, history=history or [])
+        graph = self._build_graph(state)
+        graph_state: GraphState = {
+            "question": state.question,
+            "history": state.history,
+            "observations": state.observations,
+            "final_answer": state.final_answer,
+            "step_index": 0,
+            "decision": None,
+        }
+        for step_index in range(self.max_steps):
+            graph_state["step_index"] = step_index
+            graph_state = await graph.ainvoke(
+                graph_state,
+                config={
+                    "run_name": "conversation_react_agent",
+                    "tags": ["ragent", "agent", "react", "langgraph"],
+                    "metadata": {"model": self.model or "default", "step_index": step_index},
+                },
+            )
+            decision = graph_state.get("decision")
+            events = graph_state.pop("_events", []) if isinstance(graph_state, dict) else []
+            for event in events:
+                yield event
+            if not decision:
+                yield {"type": "react_step", "stepIndex": step_index, "status": "fallback", "reason": "模型未返回可解析动作，准备回退到 RAG 链路"}
+                return
+            if decision.get("action") == "final_answer":
+                return
+            if decision.get("action") != "tool_call":
+                yield {"type": "react_step", "stepIndex": step_index, "status": "fallback", "reason": f"未知动作：{decision.get('action')}"}
+                return
+
+        state.observations = graph_state.get("observations", [])
+        if state.observations:
+            obs_json = json.dumps(state.observations, ensure_ascii=False)
+            synth_prompt = (
+                "你是一个资深大厂求职总监与智能面试专家。请基于以下用户问题与已调用的工具执行结果，输出一份详尽、结构清晰、专业多维度的最终诊断与建议报告（使用 Markdown 标题、分段与列表渲染）：\n\n"
+                f"【用户问题与需求】：\n{state.question}\n\n【工具执行数据】：\n{obs_json[:6000]}\n\n请给出最终完整回复："
+            )
+            try:
+                llm = build_primary_llm(streaming=True)
+                full_synthesized = ""
+                async for chunk in llm.astream([HumanMessage(content=synth_prompt)]):
+                    tok = getattr(chunk, "content", "")
+                    if tok:
+                        full_synthesized += tok
+                        yield {"type": "token", "content": tok}
+                if full_synthesized:
+                    yield {"type": "final_answer", "content": full_synthesized}
+                    return
+            except Exception:
+                pass
+        yield {"type": "react_step", "stepIndex": self.max_steps, "status": "fallback", "reason": "达到最大 ReAct 轮数，准备回退到 RAG 链路"}
+
+    def _build_graph(self, state: ReactState):
+        """构建 LangGraph ReAct 图，每次 run 使用独立状态避免跨请求污染。"""
+        async def decide_node(data: GraphState) -> GraphState:
+            decision = await self._decide(
+                ReactState(
+                    question=data["question"],
+                    history=data.get("history", []),
+                    observations=data.get("observations", []),
+                ),
+                data.get("step_index", 0),
+            )
+            data["decision"] = decision
+            if decision and decision.get("action") == "tool_call":
+                thought = str(decision.get("thought") or "")
+                data["_events"] = [{"type": "react_step", "stepIndex": data.get("step_index", 0), "thought": thought, "action": "tool_call"}]
+                tool_name = str(decision.get("tool") or "")
+                tool_args = decision.get("args") if isinstance(decision.get("args"), dict) else {}
+                result = await self.registry.call(ToolCallRequest(name=tool_name, args=tool_args))
+                result_data = result.to_dict()
+                data.setdefault("observations", []).append({"tool": tool_name, "args": tool_args, "result": result_data})
+                data["_events"].extend([
+                    {"type": "tool_call", "agent": "conversation", "stepIndex": data.get("step_index", 0), "tool": tool_name, "args": tool_args, **{key: decision[key] for key in ("intent", "routing_reason", "routing_confidence") if key in decision}},
+                    {"type": "observation", "agent": "conversation", "stepIndex": data.get("step_index", 0), "tool": tool_name, "args": tool_args, "result": result_data},
+                ])
+            elif decision and decision.get("action") == "final_answer":
+                answer = str(decision.get("final_answer") or decision.get("answer") or decision.get("content") or "已完成分析处理。")
+                data["final_answer"] = answer
+                data["_events"] = [{"type": "final_answer", "content": answer}]
+            return data
+
+        graph = StateGraph(GraphState)
+        graph.add_node("decide_and_act", decide_node)
+        graph.add_edge(START, "decide_and_act")
+        graph.add_edge("decide_and_act", END)
+        return graph.compile()
+
+    async def _legacy_run(self, question: str, history: list[dict[str, str]] | None = None) -> AsyncIterator[dict[str, Any]]:
 
         state = ReactState(question=question, history=history or [])
         for step_index in range(self.max_steps):

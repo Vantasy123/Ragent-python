@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import os
+
 from langchain_openai import ChatOpenAI
 
 from app.core.config import settings
@@ -25,6 +27,11 @@ def build_primary_llm(streaming: bool = True, model: str | None = None) -> ChatO
     runtime = get_runtime_settings()
     api_key = settings.OPENAI_API_KEY or settings.SILICONFLOW_API_KEY
     selected_model = model or settings.CHAT_MODEL
+    if settings.LANGCHAIN_TRACING_V2 and settings.LANGCHAIN_API_KEY:
+        os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+        os.environ.setdefault("LANGCHAIN_API_KEY", settings.LANGCHAIN_API_KEY)
+        os.environ.setdefault("LANGCHAIN_PROJECT", settings.LANGCHAIN_PROJECT)
+        os.environ.setdefault("LANGCHAIN_ENDPOINT", settings.LANGCHAIN_ENDPOINT)
     return ChatOpenAI(
         model=selected_model,
         api_key=api_key,
