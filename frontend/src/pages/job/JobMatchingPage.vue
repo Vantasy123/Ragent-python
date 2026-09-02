@@ -729,6 +729,31 @@ async function openSyncModal() {
   await detectCdpStatus()
 }
 
+function formatPlatformErrors(errors: Record<string, any>) {
+  const entries = Object.entries(errors || {})
+  if (!entries.length) return ''
+
+  return entries.map(([platform, value]) => {
+    const detail = typeof value === 'string' ? { message: value } : (value || {})
+    const label = getPlatformLabel(platform)
+    switch (detail.reason_code) {
+      case 'auth_required':
+      case 'auth_unverified':
+        return `${label}：请在 Ragent 专用 Chrome 窗口完成登录后重新抓取，系统不会保存平台密码。`
+      case 'anti_bot':
+        return `${label}：页面触发安全验证，请在 Ragent 专用 Chrome 窗口完成人工验证后重新抓取。`
+      case 'cdp_unavailable':
+        return `${label}：未连接 Ragent Chrome CDP，请启动 9223 调试端口后重试。`
+      case 'navigation_blocked':
+        return `${label}：页面导航被拦截，请先在 Ragent Chrome 窗口打开并完成平台页面验证后重试。`
+      case 'dom_missing':
+        return `${label}：未识别到岗位列表，请刷新平台页面后重试。`
+      default:
+        return `${label}：${detail.message || '真实页面采集失败，请在浏览器中检查登录和页面状态。'}`
+    }
+  }).join('；')
+}
+
 async function handleLiveSearch() {
   liveSearching.value = true
   syncMessage.value = ''
@@ -753,9 +778,7 @@ async function handleLiveSearch() {
       syncMessage.value = `🔎 已返回 ${data.total || jobs.value.length} 条实时岗位，未写入本地岗位库。`
       if (selectedJob.value && targetResumeId.value) runMatchAnalysis()
     } else {
-      const errors = Object.entries(data.platform_errors || {})
-        .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
-        .join('; ')
+      const errors = formatPlatformErrors(data.platform_errors || {})
       syncError.value = Boolean(errors)
       syncMessage.value = errors ? `⚠️ 实时直搜未完成：${errors}` : '未抓取到符合条件的真实在招岗位。'
     }
@@ -791,7 +814,7 @@ async function handleStartSync() {
       syncMessage.value = `🎉 ${res?.message || '真实采集同步完成！'} (总抓取 ${stats.total_fetched || 0} 条真实岗位，新增入库 ${stats.created || 0} 条，更新 ${stats.updated || 0} 条${detailSummary})`
     } else {
       const errors = stats.platform_errors || {}
-      const errList = Object.entries(errors).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join('; ')
+      const errList = formatPlatformErrors(stats.platform_errors || {})
       if (errList) {
         syncError.value = true
         syncMessage.value = `⚠️ 采集未获取到数据：${errList}。请确认 Chrome 9223 端口、平台登录态和页面验证码状态。`
