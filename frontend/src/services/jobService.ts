@@ -164,6 +164,11 @@ export const jobService = {
   async getResume(id: string): Promise<ResumeProfile> {
     return apiClient.get(`/jobs/resumes/${id}`)
   },
+  async uploadResume(file: File): Promise<{ filename: string; fileType: string; fileSize: number; charCount: number; rawText: string }> {
+    const form = new FormData()
+    form.append('file', file)
+    return apiClient.post('/jobs/resumes/upload', form)
+  },
   async parseResume(rawText: string): Promise<{ parsedData: any; score: number; scoreDetails: any }> {
     return apiClient.post('/jobs/resumes/parse', { raw_text: rawText })
   },

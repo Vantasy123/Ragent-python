@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -108,6 +108,27 @@ def get_resume_detail(
             }
             for v in resume.versions
         ]
+    }
+
+
+@router.post("/upload")
+async def upload_resume_file(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """上传 PDF/Word/TXT 简历，提取文本后返回预览；确认保存仍由前端显式提交。"""
+    from app.services.chat_file_service import ChatFileService
+
+    try:
+        parsed = await ChatFileService.process_upload(file)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "filename": parsed["filename"],
+        "fileType": parsed["file_type"],
+        "fileSize": parsed["file_size"],
+        "charCount": parsed["char_count"],
+        "rawText": parsed["text"],
     }
 
 

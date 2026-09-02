@@ -270,12 +270,18 @@
           </div>
 
           <div>
-            <label class="block text-xs font-bold text-slate-700 mb-1">简历全文内容 (支持粘贴 Markdown / 文本 / 复制 PDF 文本)</label>
+            <label class="block text-xs font-bold text-slate-700 mb-1">上传简历文件</label>
+            <input type="file" accept=".pdf,.doc,.docx,.txt,.md,.markdown" class="input w-full text-sm" @change="handleResumeFile" />
+            <p class="text-[11px] text-slate-400 mt-1">支持 PDF、Word、TXT、Markdown，文件会先提取为文本供你确认。</p>
+          </div>
+
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">简历全文内容（也可直接粘贴）</label>
             <textarea
               v-model="formRawText"
               rows="10"
               class="textarea w-full font-mono text-xs"
-              placeholder="请粘贴简历文本内容，大模型将自动提取基本信息、教育、工作、项目与技能并进行 STAR 诊断..."
+              placeholder="文件提取文本会显示在这里；也可以直接粘贴简历内容，确认后进行结构化解析..."
             ></textarea>
           </div>
         </div>
@@ -401,6 +407,25 @@ function openCreateModal() {
 - 编程语言：Go, Java, Python, SQL, C++
 - 框架与中间件：Spring Boot, FastAPI, MySQL, Redis, Kafka, Docker, Kubernetes, Milvus`
   showCreateModal.value = true
+}
+
+async function handleResumeFile(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  parsing.value = true
+  try {
+    const result = await jobService.uploadResume(file)
+    formRawText.value = result.rawText
+    if (formResumeName.value === '我的技术求职简历') {
+      formResumeName.value = file.name.replace(/\.[^.]+$/, '')
+    }
+  } catch (err: any) {
+    alert(err?.detail || '简历文件解析失败')
+    input.value = ''
+  } finally {
+    parsing.value = false
+  }
 }
 
 async function handleParseAndSave() {
