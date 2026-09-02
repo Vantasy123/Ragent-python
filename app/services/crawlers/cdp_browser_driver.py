@@ -294,23 +294,12 @@ class CDPBrowserDriver:
                     details={"error": str(conn_err)}
                 )
 
-            # 优先复用已打开的目标平台标签页，避免关闭用户原有登录页。
+            # 始终新建采集标签页，避免导航搜索页覆盖用户正在登录或人工验证的原始标签页。
+            # 新标签页仍复用同一个 BrowserContext，因此继续共享用户 Cookie/登录态。
             contexts = browser.contexts
             context = contexts[0] if contexts else await browser.new_context()
-            platform_domains = {
-                "boss": "zhipin.com",
-                "liepin": "liepin.com",
-                "51job": "51job.com",
-                "nowcoder": "nowcoder.com",
-            }
-            domain = platform_domains.get(platform, "")
-            browser_page = next(
-                (candidate for candidate in context.pages if domain and domain in candidate.url),
-                None,
-            )
-            owns_page = browser_page is None
-            if browser_page is None:
-                browser_page = await context.new_page()
+            browser_page = await context.new_page()
+            owns_page = True
 
             try:
                 logger.info(f"CDP 打开目标岗位页面: {target_url}")
