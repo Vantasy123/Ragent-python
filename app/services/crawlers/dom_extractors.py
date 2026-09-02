@@ -148,13 +148,7 @@ JOB51_DOM_EXTRACTOR_JS = """
             const title = titleEl ? titleEl.textContent.trim() : '';
             const salary_str = salaryEl ? salaryEl.textContent.trim() : '';
             const company = companyEl ? companyEl.textContent.trim() : '';
-            let href = '';
-            const detailLink = Array.from(card.querySelectorAll('a')).find(anchor => {
-                const candidate = anchor.getAttribute('href') || '';
-                return candidate.includes('jobs.51job.com/') && /[0-9]+[.]html/.test(candidate);
-            });
-            const linkEl = detailLink || primaryLink;
-            href = linkEl ? linkEl.getAttribute('href') : '';
+            let href = primaryLink ? (primaryLink.getAttribute('href') || primaryLink.href || '') : '';
 
             const city = cityEl ? cityEl.textContent.trim().split('·')[0].split('-')[0] : '';
             const tags = Array.from(tagEls).map(el => el.textContent.trim()).filter(Boolean);
@@ -182,6 +176,33 @@ JOB51_DOM_EXTRACTOR_JS = """
             }
         } catch (e) {
             console.error('Extract 51job card error:', e);
+        }
+    }
+
+    // 51job 当前页面可能把职位详情链接放在卡片外层；从真实职位 URL 反查最近容器。
+    if (!results.length) {
+        const detailLinks = Array.from(document.querySelectorAll('a[href*="jobs.51job.com"]'))
+            .filter(anchor => /jobs\.51job\.com\/[^/]+\/[0-9]+[.]html/.test(anchor.href));
+        for (const link of detailLinks) {
+            const container = link.closest('li, .joblist-item, .job-item, [class*="job"], div') || link;
+            const lines = (container.innerText || '').split(/\\n/).map(x => x.trim()).filter(Boolean);
+            const title = (link.innerText || lines[0] || '').trim();
+            const salary = lines.find(x => /\\d+.*(?:千|万|k|K|元\\/天|面议)/.test(x)) || '';
+            const company = lines.find(x => x !== title && x !== salary && !/北京|上海|广州|深圳|杭州|成都|武汉|南京|西安|苏州/.test(x) && x.length > 1) || '';
+            if (title && company) {
+                results.push({
+                    title,
+                    company,
+                    city: lines.find(x => /北京|上海|广州|深圳|杭州|成都|武汉|南京|西安|苏州/.test(x)) || '',
+                    salary_str: salary,
+                    experience_req: '经验不限',
+                    education_req: '学历不限',
+                    source_url: link.href,
+                    tags: [],
+                    company_tags: [],
+                    jd_text: `${company} 发布岗位 ${title}，薪资：${salary}`,
+                });
+            }
         }
     }
     return results;
