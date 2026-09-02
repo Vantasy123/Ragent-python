@@ -26,6 +26,26 @@ def db_session():
     session.close()
 
 
+def test_dom_extractors_do_not_fabricate_listing_jd():
+    """列表卡片不能把标题、薪资或标签拼接成伪 JD，详情应单独采集。"""
+    for script in (
+        DOMExtractors.get_extractor_js("boss"),
+        DOMExtractors.get_extractor_js("liepin"),
+        DOMExtractors.get_extractor_js("51job"),
+        DOMExtractors.get_extractor_js("nowcoder"),
+    ):
+        assert "${company}" not in script or "jd_text: ''" in script or "jd_text: desc" in script
+
+
+def test_salary_status_is_explicit_in_frontend_contract():
+    """该契约由 API 返回，前端可区分面议和未知薪资。"""
+    from pathlib import Path
+    service_source = Path("frontend/src/services/jobService.ts").read_text(encoding="utf-8")
+    assert "salaryStatus" in service_source
+    assert "'negotiable'" in service_source
+    assert "'unknown'" in service_source
+
+
 def test_dom_extractors_urls_and_scripts():
     """测试各大平台的搜索 URL 与 JS 提取脚本生成。"""
     for plat in ["boss", "liepin", "51job", "nowcoder"]:

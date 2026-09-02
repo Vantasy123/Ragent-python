@@ -126,7 +126,7 @@
                 </div>
                 <div class="text-right shrink-0">
                   <span class="text-sm font-bold text-rose-600">
-                    {{ j.salaryMin }}-{{ j.salaryMax }} {{ j.salaryUnit }}
+                    {{ formatSalary(j) }}
                   </span>
                 </div>
               </div>
@@ -177,7 +177,7 @@
               </div>
               <div class="text-right">
                 <div class="text-xl font-extrabold text-rose-600">
-                  {{ selectedJob.salaryMin }}-{{ selectedJob.salaryMax }} {{ selectedJob.salaryUnit }}
+                  {{ formatSalary(selectedJob) }}
                 </div>
                 <span class="text-xs text-slate-400 capitalize">{{ selectedJob.jobType === 'campus' ? '校园招聘' : '社会招聘' }}</span>
               </div>
@@ -224,6 +224,7 @@
                   v-if="selectedJob.sourceUrl"
                   :href="selectedJob.sourceUrl"
                   target="_blank"
+                  rel="noopener noreferrer"
                   class="btn btn-secondary text-xs"
                 >
                   🔗 打开原招聘页
@@ -636,6 +637,12 @@ async function detectCdpStatus() {
     cdpTabsCount.value = 0
     cdpError.value = err?.detail || err?.message || 'CDP 状态探测失败，请先登录应用后重试。'
   }
+}
+
+function formatSalary(job: JobOpportunity) {
+  if (job.salaryStatus === 'negotiable') return '面议'
+  if (job.salaryStatus === 'unknown' || job.salaryMin == null || job.salaryMax == null) return '薪资未知'
+  return `${job.salaryMin}-${job.salaryMax} ${job.salaryUnit || 'k'}`
 }
 
 function getPlatformLabel(plat: string) {

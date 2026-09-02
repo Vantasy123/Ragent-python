@@ -64,7 +64,7 @@ BOSS_DOM_EXTRACTOR_JS = """
                     source_url: href,
                     tags: tags,
                     company_tags: company_tags,
-                    jd_text: desc || `${company}招聘${title}，薪资${salary_str}，要求：${exp}、${edu}`
+                    jd_text: ''
                 });
             }
         } catch (e) {
@@ -120,7 +120,7 @@ LIEPIN_DOM_EXTRACTOR_JS = """
                     source_url: href,
                     tags: tags,
                     company_tags: comp_tags,
-                    jd_text: `${company} 诚聘 ${title}，薪资待遇：${salary_str}。任职条件：${tags.join(' / ')}`
+                    jd_text: ''
                 });
             }
         } catch (e) {
@@ -142,7 +142,10 @@ JOB51_DOM_EXTRACTOR_JS = """
             const salaryEl = card.querySelector('.sal, .salary, .info .sal, [class*="salary"]');
             const companyEl = card.querySelector('.cname, .company-name, .c_name, [class*="company-name"], [class*="company"]');
             const cityEl = card.querySelector('.d.area, .area, .location, [class*="location"], [class*="city"]');
-            const primaryLink = card.querySelector('a[href*="jobs.51job.com"]') || card.querySelector('a');
+            const primaryLink = card.querySelector('a[href*="jobs.51job.com"][href$=".html"]')
+                || card.querySelector('a[href*="jobs.51job.com"][href*="/"][href*=".html"]')
+                || card.querySelector('a[href*="jobs.51job.com"]')
+                || card.querySelector('a');
             const tagEls = card.querySelectorAll('.tags span, .d.tags span, .d.tags');
 
             const title = titleEl ? titleEl.textContent.trim() : '';
@@ -171,7 +174,7 @@ JOB51_DOM_EXTRACTOR_JS = """
                     source_url: href,
                     tags: tags,
                     company_tags: ['51job名企'],
-                    jd_text: `${company} 发布岗位 ${title}，薪资：${salary_str}，要求：${tags.join(' / ')}`
+                    jd_text: ''
                 });
             }
         } catch (e) {
@@ -200,7 +203,7 @@ JOB51_DOM_EXTRACTOR_JS = """
                     source_url: link.href,
                     tags: [],
                     company_tags: [],
-                    jd_text: `${company} 发布岗位 ${title}，薪资：${salary}`,
+                    jd_text: '',
                 });
             }
         }
@@ -246,7 +249,7 @@ NOWCODER_DOM_EXTRACTOR_JS = """
                     source_url: href,
                     tags: tags,
                     company_tags: ['牛客校招', '应届生直招'],
-                    jd_text: `${company} 2026/2027 校园招聘：${title}，薪资：${salary_str}。标签：${tags.join(' / ')}`
+                    jd_text: ''
                 });
             }
         } catch (e) {

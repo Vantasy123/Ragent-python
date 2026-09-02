@@ -399,7 +399,7 @@ class JobCrawlerService:
             else [platform]
         )
         jobs: List[Dict[str, Any]] = []
-        errors: Dict[str, str] = {}
+        errors: Dict[str, Any] = {}
         has_more = False
         next_page: Optional[int] = None
         self._wait_cooldown()
@@ -746,13 +746,16 @@ class JobCrawlerService:
                 existing.source_url = source_url
             existing.external_job_id = external_job_id or existing.external_job_id
             existing.source_url_canonical = canonical_url or existing.source_url_canonical
-            existing.jd_hash = jd_hash
+            existing.jd_hash = jd_hash if jd_text else existing.jd_hash
             existing.sync_query_fingerprint = sync_query_fingerprint or existing.sync_query_fingerprint
             existing.last_sync_run_id = sync_run_id or existing.last_sync_run_id
             existing.last_seen_at = utc_now_naive()
-            existing.detail_status = detail_status
-            existing.detail_error = detail_error
-            existing.detail_attempted_at = utc_now_naive() if detail_status in {"success", "failed"} else existing.detail_attempted_at
+            # 列表页通常只有摘要或没有 JD；不能因后续普通同步把已成功采集的详情降级为 pending。
+            has_detail_update = bool(jd_text) or detail_status in {"success", "failed", "skipped"}
+            if has_detail_update:
+                existing.detail_status = detail_status
+                existing.detail_error = detail_error
+                existing.detail_attempted_at = utc_now_naive() if detail_status in {"success", "failed"} else existing.detail_attempted_at
             existing.status = "active"
             if persist:
                 self.db.commit()

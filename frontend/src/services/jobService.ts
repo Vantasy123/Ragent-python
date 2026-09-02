@@ -61,7 +61,6 @@ export interface JobOpportunity {
   detailAttemptedAt?: string
   jdText?: string
   companyTags?: string[]
-  jdText?: string
   requiredSkills?: string[]
   preferredSkills?: string[]
   responsibilities?: string[]
@@ -203,7 +202,7 @@ export const jobService = {
   async syncJobs(data: { platform?: string; keyword?: string; city?: string; job_type?: string; limit_per_platform?: number; page?: number; max_pages?: number; enrich_details?: boolean; mode?: string; cdp_url?: string }): Promise<any> {
     return apiClient.post('/jobs/postings/sync', data)
   },
-  async liveSearchJobs(data: { platform?: string; keyword?: string; city?: string; job_type?: string; limit_per_platform?: number; page?: number; max_pages?: number; mode?: string; cdp_url?: string }): Promise<{ code: number; message: string; data: { status: string; success?: boolean; jobs: JobOpportunity[]; total: number; page: number; has_more: boolean; next_page: number | null; persisted: false; platform_errors?: Record<string, string> } }> {
+  async liveSearchJobs(data: { platform?: string; keyword?: string; city?: string; job_type?: string; limit_per_platform?: number; page?: number; max_pages?: number; mode?: string; cdp_url?: string }): Promise<{ code: number; message: string; data: { status: string; success?: boolean; jobs: JobOpportunity[]; total: number; page: number; has_more: boolean; next_page: number | null; persisted: false; platform_errors?: Record<string, { reason_code?: string; message?: string } | string> } }> {
     return apiClient.post('/jobs/postings/live-search', data)
   },
 

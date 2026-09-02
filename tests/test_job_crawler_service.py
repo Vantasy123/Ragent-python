@@ -97,6 +97,32 @@ def test_job_identity_upsert_tracks_external_id_url_hash_and_last_seen(db_sessio
     assert updated.salary_status == "known"
 
 
+def test_listing_sync_does_not_downgrade_existing_detail(db_session):
+    """普通列表同步没有 JD 时，应保留此前成功采集的详情状态和内容。"""
+    crawler = JobCrawlerService(db_session)
+    _, job = crawler._upsert_job({
+        "title": "后端工程师",
+        "company": "公司",
+        "city": "北京",
+        "source_platform": "boss",
+        "source_url": "https://example.com/jobs/1",
+        "jd_text": "完整 JD：负责服务端开发与系统性能优化。",
+        "detail_status": "success",
+    })
+    assert job.detail_status == "success"
+
+    _, updated = crawler._upsert_job({
+        "title": "后端工程师",
+        "company": "公司",
+        "city": "北京",
+        "source_platform": "boss",
+        "source_url": "https://example.com/jobs/1",
+        "jd_text": "",
+    })
+    assert updated.detail_status == "success"
+    assert updated.jd_text == "完整 JD：负责服务端开发与系统性能优化。"
+
+
 def test_job_external_id_is_scoped_by_platform(db_session):
     """不同平台可以使用相同外部职位 ID。"""
     crawler = JobCrawlerService(db_session)
@@ -115,6 +141,8 @@ def test_job_external_id_is_scoped_by_platform(db_session):
         created.append(job)
     assert created[0].id != created[1].id
     assert db_session.query(JobOpportunity).count() == 2
+
+
 def test_stale_jobs_are_closed_only_after_successful_nonempty_platform_sync(db_session, monkeypatch):
     """成功采集时关闭长期未见岗位，采集失败时保持 active。"""
     crawler = JobCrawlerService(db_session)

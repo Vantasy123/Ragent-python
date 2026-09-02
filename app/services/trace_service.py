@@ -83,8 +83,8 @@ class CostEstimator:
             elif "glm" in model_name or "kimi" in model_name:
                 price = {"input": 0.003 / 1000, "output": 0.008 / 1000}
             else:
-                # 默认降级为 14B / qwen-plus 定价
-                price = {"input": 0.002 / 1000, "output": 0.004 / 1000}
+                # 未知模型采用 qwen-plus 的保守估算，避免低估成本。
+                price = cls.PRICES["qwen-plus"]
 
         cost = (prompt_tokens * price["input"]) + (completion_tokens * price["output"])
         return round(cost, 6)
