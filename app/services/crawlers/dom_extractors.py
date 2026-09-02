@@ -182,7 +182,7 @@ JOB51_DOM_EXTRACTOR_JS = """
     // 51job 当前页面可能把职位详情链接放在卡片外层；从真实职位 URL 反查最近容器。
     if (!results.length) {
         const detailLinks = Array.from(document.querySelectorAll('a[href*="jobs.51job.com"]'))
-            .filter(anchor => /jobs\.51job\.com\/[^/]+\/[0-9]+[.]html/.test(anchor.href));
+            .filter(anchor => anchor.href.includes('jobs.51job.com/') && /[0-9]+[.]html/.test(anchor.href));
         for (const link of detailLinks) {
             const container = link.closest('li, .joblist-item, .job-item, [class*="job"], div') || link;
             const lines = (container.innerText || '').split(/\\n/).map(x => x.trim()).filter(Boolean);
