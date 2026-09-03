@@ -12,9 +12,9 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.time_utils import to_shanghai_iso
-from app.domain.models import TraceRun, User
+from app.domain.models import Conversation, TraceRun, User
 from app.services.common import MAX_PAGE_SIZE, page, success
-from app.services.dependencies import require_admin
+from app.services.dependencies import require_admin, get_current_user
 from app.services.evaluation_service import EvaluationService
 
 router = APIRouter(tags=["trace"])
@@ -124,10 +124,13 @@ def get_run(trace_id: str, db: Session = Depends(get_db), _: User = Depends(requ
 
 
 @router.get("/rag/traces/runs/{trace_id}/nodes")
-def get_nodes(trace_id: str, db: Session = Depends(get_db), _: User = Depends(require_admin)):
-    """get_nodes 函数：根据标识查询单条数据，找不到时由调用方或本函数返回空值/错误。"""
+def get_nodes(trace_id: str, db: Session = Depends(get_db), user: User = Depends(get_current_user)):
+    """读取当前用户会话的执行节点，供聊天页恢复历史 Agent 链路。"""
     row = db.query(TraceRun).filter(TraceRun.id == trace_id).first()
     if not row:
+        raise HTTPException(status_code=404, detail="Trace 不存在")
+    conversation = db.query(Conversation).filter(Conversation.id == row.session_id, Conversation.user_id == user.id).first()
+    if not conversation:
         raise HTTPException(status_code=404, detail="Trace 不存在")
 
     nodes = []

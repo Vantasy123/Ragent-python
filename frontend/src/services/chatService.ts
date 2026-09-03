@@ -85,6 +85,10 @@ export async function listMessages(conversationId: string): Promise<ChatMessageD
   return toArrayResult<ChatMessageDTO>(response)
 }
 
+export async function getTraceNodes(traceId: string): Promise<any[]> {
+  const response = await apiClient.get(`/rag/traces/runs/${traceId}/nodes`)
+  return toArrayResult<any>(response)
+}
 export async function clearConversationMessages(conversationId: string): Promise<void> {
   await apiClient.delete(`/conversations/${conversationId}/messages`)
 }

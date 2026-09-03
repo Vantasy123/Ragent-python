@@ -4,7 +4,7 @@ import {
   clearConversationMessages,
   listConversations,
   listMessages,
-  listAvailableModels,
+  getTraceNodes,
   sendUnifiedChatMessage,
   type ChatMode,
   type ChatAttachment,
@@ -90,6 +90,27 @@ export const useChatStore = defineStore('chat', () => {
 
   let conversationSelectionVersion = 0
 
+  async function hydrateAgentEvents(loaded: UIMessage[]): Promise<UIMessage[]> {
+    return Promise.all(loaded.map(async (message) => {
+      const traceId = typeof message.metadata?.traceId === 'string' ? message.metadata.traceId : ''
+      if (message.role !== 'assistant' || message.agentEvents?.length || !traceId) return message
+      try {
+        const nodes = await getTraceNodes(traceId)
+        const agentEvents = nodes.map((node: any) => ({
+          type: node.operation === 'tool_call' ? 'tool_call' : node.operation === 'react_loop' ? 'react_step' : node.status === 'error' ? 'error' : 'observation',
+          tool: node.input?.tool || node.output?.tool,
+          thought: node.input?.question || node.output?.rewritten,
+          reason: node.errorMessage,
+          result: node.output,
+          traceId,
+        }))
+        return { ...message, agentEvents }
+      } catch {
+        return message
+      }
+    }))
+  }
+
   async function selectConversation(id: string) {
     errorMessage.value = ''
     const selectionVersion = ++conversationSelectionVersion
@@ -97,11 +118,12 @@ export const useChatStore = defineStore('chat', () => {
     try {
       const loadedMessages = await listMessages(id)
       if (selectionVersion === conversationSelectionVersion && currentConversationId.value === id) {
-        messages.value = loadedMessages.map((message) => ({
+        const restored = loadedMessages.map((message) => ({
           ...message,
           attachments: Array.isArray(message.metadata?.attachments) ? message.metadata.attachments as ChatAttachment[] : undefined,
           agentEvents: Array.isArray(message.metadata?.agentEvents) ? message.metadata.agentEvents as StreamEvent[] : undefined,
         }))
+        messages.value = await hydrateAgentEvents(restored)
       }
     } catch (error: any) {
       if (selectionVersion === conversationSelectionVersion) {
