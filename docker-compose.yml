@@ -147,8 +147,8 @@ services:
       STORAGE_TYPE: local
       STORAGE_BASE_DIR: /app/uploads
       ALLOWED_ORIGINS: '["http://localhost:5173","http://localhost:3000","http://localhost:8000","http://frontend:80"]'
-      HTTP_PROXY: ${HTTP_PROXY:-}
-      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7897}
+      HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7897}
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,host.docker.internal,mysql,redis,milvus,rustfs,etcd,frontend,ragent-api,ragent-mcp-api}
     ports:
       - "8010:8000"
@@ -161,8 +161,6 @@ services:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
-      - "api.siliconflow.cn:47.102.215.139"
-      - "api.deepseek.com:101.71.73.135"
     dns:
       - 223.5.5.5
       - 119.29.29.29
@@ -196,8 +194,8 @@ services:
       MILVUS_URI: http://milvus:19530
       REDIS_ENABLED: ${REDIS_ENABLED:-true}
       REDIS_URL: redis://redis:6379/0
-      HTTP_PROXY: ${HTTP_PROXY:-}
-      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      HTTP_PROXY: ${HTTP_PROXY:-http://host.docker.internal:7897}
+      HTTPS_PROXY: ${HTTPS_PROXY:-http://host.docker.internal:7897}
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,host.docker.internal,mysql,redis,milvus,rustfs,etcd,frontend,ragent-api,ragent-mcp-api}
     ports:
       - "8002:8001"
@@ -221,8 +219,6 @@ services:
       - ./config:/app/config
     extra_hosts:
       - "host.docker.internal:host-gateway"
-      - "api.siliconflow.cn:47.102.215.139"
-      - "api.deepseek.com:101.71.73.135"
     dns:
       - 223.5.5.5
       - 119.29.29.29

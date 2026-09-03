@@ -126,23 +126,23 @@
 
               <div class="grid grid-cols-5 gap-2 text-center text-xs">
                 <div class="bg-white/5 p-2 rounded-xl border border-white/10">
-                  <div class="font-bold text-white">{{ activeSession.detailedDimensions?.technical_depth || 80 }}</div>
+                  <div class="font-bold text-white">{{ activeSession.detailedDimensions?.technical_depth ?? '—' }}</div>
                   <div class="text-[10px] text-indigo-200 mt-0.5">技术深度</div>
                 </div>
                 <div class="bg-white/5 p-2 rounded-xl border border-white/10">
-                  <div class="font-bold text-white">{{ activeSession.detailedDimensions?.logic_structure || 85 }}</div>
+                  <div class="font-bold text-white">{{ activeSession.detailedDimensions?.logic_structure ?? '—' }}</div>
                   <div class="text-[10px] text-indigo-200 mt-0.5">逻辑结构</div>
                 </div>
                 <div class="bg-white/5 p-2 rounded-xl border border-white/10">
-                  <div class="font-bold text-white">{{ activeSession.detailedDimensions?.communication || 80 }}</div>
+                  <div class="font-bold text-white">{{ activeSession.detailedDimensions?.communication ?? '—' }}</div>
                   <div class="text-[10px] text-indigo-200 mt-0.5">表达沟通</div>
                 </div>
                 <div class="bg-white/5 p-2 rounded-xl border border-white/10">
-                  <div class="font-bold text-white">{{ activeSession.detailedDimensions?.star_framework || 85 }}</div>
+                  <div class="font-bold text-white">{{ activeSession.detailedDimensions?.star_framework ?? '—' }}</div>
                   <div class="text-[10px] text-indigo-200 mt-0.5">STAR框架</div>
                 </div>
                 <div class="bg-white/5 p-2 rounded-xl border border-white/10">
-                  <div class="font-bold text-white">{{ activeSession.detailedDimensions?.culture_fit || 80 }}</div>
+                  <div class="font-bold text-white">{{ activeSession.detailedDimensions?.culture_fit ?? '—' }}</div>
                   <div class="text-[10px] text-indigo-200 mt-0.5">文化契合</div>
                 </div>
               </div>
