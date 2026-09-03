@@ -249,6 +249,16 @@
           </div>
 
           <div>
+            <label class="block font-bold text-slate-700 mb-1">用于本场面试的简历</label>
+            <select v-model="formResumeId" class="select w-full" :disabled="!resumes.length">
+              <option v-if="!resumes.length" value="">暂无简历，将使用通用问题</option>
+              <option v-for="resume in resumes" :key="resume.id" :value="resume.id">
+                {{ resume.name }}{{ resume.isDefault ? '（默认）' : '' }}
+              </option>
+            </select>
+          </div>
+
+          <div>
             <label class="block font-bold text-slate-700 mb-1">面试官角色设定</label>
             <select v-model="formRoleType" class="select w-full">
               <option value="tech_expert">大厂技术专家（重点考察底层原理、高并发与调优）</option>
@@ -282,7 +292,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
-import { jobService, type MockInterviewSessionItem } from '@/services/jobService'
+import { jobService, type MockInterviewSessionItem, type ResumeProfile } from '@/services/jobService'
 
 const loading = ref(false)
 const starting = ref(false)
@@ -297,6 +307,20 @@ const showStartModal = ref(false)
 const formTargetRole = ref('后端开发工程师（Go/Java）')
 const formRoleType = ref('tech_expert')
 const formDifficulty = ref('intermediate')
+const resumes = ref<ResumeProfile[]>([])
+const formResumeId = ref('')
+
+async function fetchResumes() {
+  try {
+    const res = await jobService.listResumes()
+    resumes.value = res.items || []
+    if (!formResumeId.value) {
+      formResumeId.value = resumes.value.find((resume) => resume.isDefault)?.id || resumes.value[0]?.id || ''
+    }
+  } catch (err) {
+    console.error(err)
+  }
+}
 
 async function fetchSessions() {
   loading.value = true
@@ -327,7 +351,8 @@ async function startNewSession() {
     const res = await jobService.createInterviewSession({
       target_role: formTargetRole.value,
       role_type: formRoleType.value,
-      difficulty: formDifficulty.value
+      difficulty: formDifficulty.value,
+      resume_id: formResumeId.value || undefined
     })
     showStartModal.value = false
     await fetchSessions()
@@ -403,6 +428,7 @@ function questionTypeLabel(type: string) {
 }
 
 onMounted(() => {
+  fetchResumes()
   fetchSessions()
 })
 </script>

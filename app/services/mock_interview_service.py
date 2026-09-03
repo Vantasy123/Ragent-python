@@ -45,6 +45,18 @@ class MockInterviewService:
         resume_id: Optional[str] = None,
         job_id: Optional[str] = None
     ) -> MockInterviewSession:
+        if resume_id:
+            resume = self.db.query(ResumeProfile).filter(
+                ResumeProfile.id == resume_id,
+                ResumeProfile.user_id == user_id,
+            ).first()
+            if not resume:
+                raise ValueError("简历不存在或无权访问")
+        if job_id:
+            job = self.db.query(JobOpportunity).filter(JobOpportunity.id == job_id).first()
+            if not job or job.status != "active":
+                raise ValueError("目标岗位不存在或已关闭")
+
         session = MockInterviewSession(
             user_id=user_id,
             resume_id=resume_id,
@@ -73,12 +85,17 @@ class MockInterviewService:
         self,
         session_id: str,
         round_number: Optional[int] = None,
-        question_type: Optional[str] = None
+        question_type: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> MockInterviewRecord:
         """根据当前面试会话进度、目标岗位和简历生成下一轮面试题。"""
-        session = self.get_session_by_id(session_id)
+        session = self.get_session_by_id(session_id, user_id=user_id)
         if not session:
-            raise ValueError(f"Interview session {session_id} not found")
+            raise ValueError("面试会话不存在或无权访问")
+        if session.status != "in_progress":
+            raise ValueError("当前面试会话已结束，不能继续出题")
+        if round_number is not None and round_number < 1:
+            raise ValueError("轮次必须从 1 开始")
 
         current_records = self.db.query(MockInterviewRecord).filter(
             MockInterviewRecord.session_id == session_id
@@ -86,6 +103,8 @@ class MockInterviewService:
 
         if round_number is None:
             round_number = len(current_records) + 1
+        if any(record.round_number == round_number for record in current_records):
+            raise ValueError(f"第 {round_number} 轮问题已存在")
 
         resume = self.db.query(ResumeProfile).filter(ResumeProfile.id == session.resume_id).first() if session.resume_id else None
         job = self.db.query(JobOpportunity).filter(JobOpportunity.id == session.job_id).first() if session.job_id else None
@@ -169,15 +188,20 @@ class MockInterviewService:
     def evaluate_answer(
         self,
         record_id: str,
-        user_answer: str
+        user_answer: str,
+        user_id: Optional[str] = None,
     ) -> MockInterviewRecord:
         """评估候选人的单轮面试回答，给出 0-100 打分、采分点覆盖分析与优化建议。"""
+        if not user_answer or not user_answer.strip():
+            raise ValueError("回答内容不能为空")
         record = self.db.query(MockInterviewRecord).filter(MockInterviewRecord.id == record_id).first()
         if not record:
-            raise ValueError(f"Interview record {record_id} not found")
-
-        record.user_answer = user_answer
-        session = self.get_session_by_id(record.session_id)
+            raise ValueError("面试题不存在或无权访问")
+        session = self.get_session_by_id(record.session_id, user_id=user_id)
+        if not session:
+            raise ValueError("面试题不存在或无权访问")
+        if session.status != "in_progress":
+            raise ValueError("当前面试会话已结束，不能提交回答")
 
         prompt = f"""你是一位极具权威的大厂面试官。请对候选人针对以下面试题的回答进行严格而专业的评估打分。
 
@@ -246,11 +270,13 @@ class MockInterviewService:
         self.db.refresh(record)
         return record
 
-    def finish_session_and_generate_report(self, session_id: str) -> MockInterviewSession:
+    def finish_session_and_generate_report(self, session_id: str, user_id: Optional[str] = None) -> MockInterviewSession:
         """结束面试会话，汇总全轮问答并生成五维能力雷达图与综合复盘报告。"""
-        session = self.get_session_by_id(session_id)
+        session = self.get_session_by_id(session_id, user_id=user_id)
         if not session:
-            raise ValueError(f"Session {session_id} not found")
+            raise ValueError("面试会话不存在或无权访问")
+        if session.status == "completed":
+            return session
 
         records = self.db.query(MockInterviewRecord).filter(
             MockInterviewRecord.session_id == session_id

@@ -56,6 +56,28 @@ def db_session():
     session.close()
 
 
+def test_resume_service_rejects_empty_and_does_not_invent_fallback_data(db_session):
+    service = JobResumeService(db_session)
+    with pytest.raises(ValueError, match="简历内容不能为空"):
+        service.parse_resume_text(" ")
+    parsed = service._rule_based_parse("联系方式：13800138000")
+    assert parsed["educations"] == []
+    assert parsed["work_experiences"] == []
+    assert parsed["project_experiences"] == []
+    assert parsed["skills"] == []
+    assert parsed["basic_info"]["phone"] == "13800138000"
+
+
+def test_mock_interview_enforces_ownership_and_lifecycle(db_session):
+    service = MockInterviewService(db_session)
+    session = service.create_interview_session(user_id="test_user_job_1")
+    with pytest.raises(ValueError, match="无权访问"):
+        service.generate_next_question(session.id, user_id="another-user")
+    service.finish_session_and_generate_report(session.id, user_id="test_user_job_1")
+    with pytest.raises(ValueError, match="已结束"):
+        service.generate_next_question(session.id, user_id="test_user_job_1")
+
+
 def test_resume_service(db_session):
     service = JobResumeService(db_session)
     raw_resume = """

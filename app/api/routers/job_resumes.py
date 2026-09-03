@@ -139,7 +139,10 @@ def parse_resume(
     current_user: User = Depends(get_current_user)
 ):
     service = JobResumeService(db)
-    parsed = service.parse_resume_text(req.raw_text)
+    try:
+        parsed = service.parse_resume_text(req.raw_text)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     score, score_details = service.calculate_resume_score(parsed)
     return {
         "parsedData": parsed,
@@ -155,14 +158,17 @@ def create_or_save_resume(
     current_user: User = Depends(get_current_user)
 ):
     service = JobResumeService(db)
-    resume = service.create_or_update_resume(
-        user_id=current_user.id,
-        name=req.name,
-        raw_text=req.raw_text,
-        parsed_data=req.parsed_data,
-        resume_id=req.resume_id,
-        is_default=req.is_default
-    )
+    try:
+        resume = service.create_or_update_resume(
+            user_id=current_user.id,
+            name=req.name,
+            raw_text=req.raw_text,
+            parsed_data=req.parsed_data,
+            resume_id=req.resume_id,
+            is_default=req.is_default
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {
         "id": resume.id,
         "name": resume.name,
@@ -180,11 +186,16 @@ def star_polish_project(
     current_user: User = Depends(get_current_user)
 ):
     service = JobResumeService(db)
-    res = service.optimize_project_star({
-        "project_name": req.project_name,
-        "tech_stack": req.tech_stack,
-        "background": req.background
-    }, target_jd=req.target_jd)
+    if not service.get_resume_by_id(resume_id, user_id=current_user.id):
+        raise HTTPException(status_code=404, detail="简历不存在或无权访问")
+    try:
+        res = service.optimize_project_star({
+            "project_name": req.project_name,
+            "tech_stack": req.tech_stack,
+            "background": req.background
+        }, target_jd=req.target_jd)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {"starOptimized": res}
 
 
@@ -196,13 +207,17 @@ def create_version(
     current_user: User = Depends(get_current_user)
 ):
     service = JobResumeService(db)
-    version = service.create_custom_version(
-        resume_id=resume_id,
-        version_name=req.version_name,
-        target_job_title=req.target_job_title,
-        target_jd=req.target_jd,
-        custom_data=req.custom_data
-    )
+    try:
+        version = service.create_custom_version(
+            resume_id=resume_id,
+            version_name=req.version_name,
+            target_job_title=req.target_job_title,
+            target_jd=req.target_jd,
+            custom_data=req.custom_data,
+            user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return {
         "id": version.id,
         "versionName": version.version_name,

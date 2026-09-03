@@ -34,9 +34,11 @@ class JobResumeService:
         return query.first()
 
     def parse_resume_text(self, raw_text: str) -> Dict[str, Any]:
-        """使用大模型或启发式规则将简历全文解析为高精度结构化 JSON 数据。"""
+        """使用大模型或启发式规则将简历全文解析为结构化 JSON 数据。"""
         if not raw_text or not raw_text.strip():
-            return self._get_fallback_parsed_data("求职者")
+            raise ValueError("简历内容不能为空")
+        if len(raw_text) > 30000:
+            raise ValueError("简历内容不能超过 30000 个字符")
 
         prompt = f"""你是一个顶尖的HR总监与AI求职专家。请分析以下简历全文，将其严格解析为标准的结构化 JSON 格式。
 必须包含以下顶层字段：
@@ -151,10 +153,15 @@ class JobResumeService:
         resume_id: Optional[str] = None,
         is_default: bool = False
     ) -> ResumeProfile:
+        if not raw_text or not raw_text.strip():
+            raise ValueError("简历内容不能为空")
+        if len(raw_text) > 30000:
+            raise ValueError("简历内容不能超过 30000 个字符")
         if not parsed_data:
             parsed_data = self.parse_resume_text(raw_text)
-
+        parsed_data = self._normalize_parsed_data(parsed_data)
         score, score_details = self.calculate_resume_score(parsed_data)
+
         basic = parsed_data.get("basic_info", {})
 
         if is_default:
@@ -281,11 +288,12 @@ class JobResumeService:
         version_name: str,
         target_job_title: str,
         target_jd: str = "",
-        custom_data: Optional[Dict[str, Any]] = None
+        custom_data: Optional[Dict[str, Any]] = None,
+        user_id: Optional[str] = None,
     ) -> ResumeVersion:
-        profile = self.get_resume_by_id(resume_id)
+        profile = self.get_resume_by_id(resume_id, user_id=user_id)
         if not profile:
-            raise ValueError(f"Resume {resume_id} not found")
+            raise ValueError("简历不存在或无权访问")
 
         content = custom_data or profile.parsed_data
         star_projects = []
@@ -316,69 +324,48 @@ class JobResumeService:
         return True
 
     def _normalize_parsed_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        default = self._get_fallback_parsed_data("求职者")
+        default = {
+            "basic_info": {"name": "", "gender": "", "phone": "", "email": "", "current_city": "", "target_city": "", "target_role": "", "years_of_experience": 0, "education_level": "", "expected_salary": "", "summary": ""},
+            "educations": [],
+            "work_experiences": [],
+            "project_experiences": [],
+            "skills": [],
+            "certificates": [],
+            "highlights": [],
+        }
         if not isinstance(data, dict):
             return default
-        for k in ["basic_info", "educations", "work_experiences", "project_experiences", "skills", "certificates", "highlights"]:
-            if k not in data:
-                data[k] = default[k]
+        for key, fallback in default.items():
+            if key not in data or not isinstance(data[key], type(fallback)):
+                data[key] = fallback
         return data
 
     def _get_fallback_parsed_data(self, name: str) -> Dict[str, Any]:
+        """返回不臆造教育、经历、技能和业绩的空结构。"""
         return {
             "basic_info": {
                 "name": name,
-                "gender": "未指定",
+                "gender": "",
                 "phone": "",
                 "email": "",
-                "current_city": "北京",
-                "target_city": "北京",
-                "target_role": "后端开发工程师",
-                "years_of_experience": 1,
-                "education_level": "本科",
-                "expected_salary": "20k-35k",
-                "summary": "具备扎实的计算机基础与大型项目工程实战经验，熟悉分布式架构与微服务体系。"
+                "current_city": "",
+                "target_city": "",
+                "target_role": "",
+                "years_of_experience": 0,
+                "education_level": "",
+                "expected_salary": "",
+                "summary": "",
             },
-            "educations": [
-                {
-                    "school": "知名大学",
-                    "major": "计算机科学与技术",
-                    "degree": "学士",
-                    "start_date": "2020-09",
-                    "end_date": "2024-06",
-                    "gpa": "3.8/4.0",
-                    "courses": ["数据结构", "操作系统", "计算机网络", "数据库系统"]
-                }
-            ],
+            "educations": [],
             "work_experiences": [],
-            "project_experiences": [
-                {
-                    "project_name": "企业级智能求职 Agent 平台",
-                    "role": "核心架构设计与开发",
-                    "start_date": "2024-01",
-                    "end_date": "2024-06",
-                    "tech_stack": ["FastAPI", "Python", "Vue3", "Milvus", "LLM", "SQLAlchemy"],
-                    "background": "针对求职者海量岗位检索、人岗精准匹配与全流程自动投递诉求搭建的 Agent 平台",
-                    "responsibilities": ["负责多源岗位检索、人岗匹配打分引擎与模拟面试评测模块的设计与研发"],
-                    "achievements": ["将人岗匹配计算效率提升40%，支持全链路多轮交互与高可用容错"],
-                    "star_highlights": "主导人岗匹配算法与多轮 AI 面试引擎，实现全链路智能化与毫秒级召回。"
-                }
-            ],
-            "skills": [
-                {"category": "编程语言", "skills": ["Python", "Java", "TypeScript", "SQL"]},
-                {"category": "框架与中间件", "skills": ["FastAPI", "Spring Boot", "MySQL", "Redis", "Milvus", "Docker"]},
-                {"category": "AI与Agent", "skills": ["RAG", "ReAct Agent", "LangChain", "Prompt Engineering"]}
-            ],
-            "certificates": [{"name": "CET-6", "date": "2022-12"}],
-            "highlights": [
-                "熟练掌握 Agentic RAG 与多 Agent 编排体系，具备从0到1工程落地经验",
-                "深入理解分布式系统、微服务治理、缓存一致性与高性能架构设计",
-                "具备优秀的业务抽象、沟通协作与技术攻坚能力"
-            ]
+            "project_experiences": [],
+            "skills": [],
+            "certificates": [],
+            "highlights": [],
         }
 
     def _rule_based_parse(self, text: str) -> Dict[str, Any]:
-        data = self._get_fallback_parsed_data("候选人")
+        data = self._normalize_parsed_data({})
         phone_match = re.search(r'1[3-9]\d{9}', text)
         if phone_match:
             data["basic_info"]["phone"] = phone_match.group(0)
