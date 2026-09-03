@@ -426,7 +426,7 @@ async def stream_chat(
                 yield event
 
         if answer:
-            service.add_message(conversation_id, "assistant", answer, {"taskId": task_id, "traceId": trace.id, "agentMode": "react", "model": selected_model})
+            service.add_message(conversation_id, "assistant", answer, {"taskId": task_id, "traceId": trace.id, "agentMode": "react", "model": selected_model, "agentEvents": react_events})
             trace_service.complete_span(react_span, output_data={"events": react_events, "responseLength": len(answer), "model": selected_model})
             trace_service.complete_run(trace.id, "success")
             yield {"type": "done", "taskId": task_id, "traceId": trace.id, "model": selected_model}
@@ -476,13 +476,13 @@ async def stream_chat(
             yield {"type": "sources", "sources": sources, "taskId": task_id, "traceId": trace.id, "model": selected_model}
     except ChatGenerationError as exc:
         diagnostic = f"聊天链路失败：[{exc.stage}] {exc.detail}"
-        service.add_message(conversation_id, "assistant", diagnostic, {"taskId": task_id, "traceId": trace.id, "errorStage": exc.stage, "model": selected_model})
+        service.add_message(conversation_id, "assistant", diagnostic, {"taskId": task_id, "traceId": trace.id, "errorStage": exc.stage, "model": selected_model, "agentEvents": react_events})
         trace_service.complete_span(generation_span, status="error", error_message=diagnostic, output_data={"stage": exc.stage, "model": selected_model})
         trace_service.complete_run(trace.id, "error")
         yield {"type": "error", "content": diagnostic, "taskId": task_id, "traceId": trace.id, "stage": exc.stage, "model": selected_model}
         return
 
-    service.add_message(conversation_id, "assistant", answer, {"taskId": task_id, "traceId": trace.id, "sources": sources, "model": selected_model})
+    service.add_message(conversation_id, "assistant", answer, {"taskId": task_id, "traceId": trace.id, "sources": sources, "model": selected_model, "agentEvents": react_events})
     trace_service.complete_span(generation_span, output_data={"responseLength": len(answer), "answerPreview": answer[:500], "sources": sources, "model": selected_model})
     trace_service.complete_run(trace.id, "success")
     yield {"type": "done", "taskId": task_id, "traceId": trace.id, "model": selected_model}

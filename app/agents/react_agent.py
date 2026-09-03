@@ -33,7 +33,7 @@ class GraphState(TypedDict, total=False):
     final_answer: str
     step_index: int
     decision: dict[str, Any] | None
-    _events: list[dict[str, Any]]
+    events: list[dict[str, Any]]
 
 
 class ConversationReactAgent:
@@ -69,7 +69,7 @@ class ConversationReactAgent:
                 },
             )
             decision = graph_state.get("decision")
-            events = graph_state.pop("_events", []) if isinstance(graph_state, dict) else []
+            events = graph_state.pop("events", []) if isinstance(graph_state, dict) else []
             for event in events:
                 yield event
             if not decision:
@@ -117,20 +117,20 @@ class ConversationReactAgent:
             data["decision"] = decision
             if decision and decision.get("action") == "tool_call":
                 thought = str(decision.get("thought") or "")
-                data["_events"] = [{"type": "react_step", "stepIndex": data.get("step_index", 0), "thought": thought, "action": "tool_call"}]
+                data["events"] = [{"type": "react_step", "stepIndex": data.get("step_index", 0), "thought": thought, "action": "tool_call"}]
                 tool_name = str(decision.get("tool") or "")
                 tool_args = decision.get("args") if isinstance(decision.get("args"), dict) else {}
                 result = await self.registry.call(ToolCallRequest(name=tool_name, args=tool_args))
                 result_data = result.to_dict()
                 data.setdefault("observations", []).append({"tool": tool_name, "args": tool_args, "result": result_data})
-                data["_events"].extend([
+                data["events"].extend([
                     {"type": "tool_call", "agent": "conversation", "stepIndex": data.get("step_index", 0), "tool": tool_name, "args": tool_args, **{key: decision[key] for key in ("intent", "routing_reason", "routing_confidence") if key in decision}},
                     {"type": "observation", "agent": "conversation", "stepIndex": data.get("step_index", 0), "tool": tool_name, "args": tool_args, "result": result_data},
                 ])
             elif decision and decision.get("action") == "final_answer":
                 answer = str(decision.get("final_answer") or decision.get("answer") or decision.get("content") or "已完成分析处理。")
                 data["final_answer"] = answer
-                data["_events"] = [{"type": "final_answer", "content": answer}]
+                data["events"] = [{"type": "final_answer", "content": answer}]
             return data
 
         graph = StateGraph(GraphState)

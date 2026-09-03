@@ -168,16 +168,31 @@
                     {{ message.content }}
                   </div>
                 </div>
-                <div 
-                  v-else 
-                  class="text-left markdown-body bg-slate-50 border border-slate-200/80 rounded-2xl rounded-tl-none px-4 py-2.5 max-w-[85%] selection:bg-blue-500/10" 
+                <div
+                  v-else
+                  class="text-left markdown-body bg-slate-50 border border-slate-200/80 rounded-2xl rounded-tl-none px-4 py-2.5 max-w-[85%] selection:bg-blue-500/10"
                   v-html="renderMarkdown(message.content || (isLoading && index === messages.length - 1 ? '*AI 正在处理...*' : ''))"
-                >
+                ></div>
+                <div v-if="message.role === 'assistant' && message.agentEvents?.length" class="mt-2 w-full max-w-[85%] rounded-xl border border-slate-200 bg-white/70">
+                  <div class="flex items-center justify-between px-3 py-2 text-xs text-slate-500">
+                    <span class="font-semibold">Agent 执行链路（{{ message.agentEvents.length }}）</span>
+                    <button class="text-blue-600 hover:underline" @click="toggleMessageTrace(message.id || String(index))">
+                      {{ expandedMessageTraces[message.id || String(index)] ? '收起' : '查看' }}
+                    </button>
+                  </div>
+                  <div v-if="expandedMessageTraces[message.id || String(index)]" class="border-t border-slate-100 px-3 py-2 space-y-2">
+                    <div v-for="(event, eventIndex) in message.agentEvents" :key="eventIndex" class="text-[11px] text-slate-600">
+                      <span class="font-semibold text-slate-800">{{ formatAgentEvent(event) }}</span>
+                      <span v-if="event.tool" class="ml-1 font-mono">{{ event.tool }}</span>
+                      <span v-if="event.thought || event.reason || event.content || event.result?.summary" class="block mt-0.5">{{ event.thought || event.reason || event.content || event.result?.summary }}</span>
+                      <DataPreview v-if="event.args || event.result" :data="event.result || event.args" empty-text="" class="mt-1" />
+                    </div>
+                  </div>
                 </div>
               </div>
-            </article>
-          </div>
-        </AsyncState>
+              </article>
+            </div>
+          </AsyncState>
       </div>
 
       <!-- Agent Steps Logs -->
@@ -388,6 +403,20 @@ const messages = computed(() => chat.messages)
 const conversations = computed(() => chat.conversations)
 const isLoading = computed(() => chat.isLoading)
 const showDetails = ref(false)
+const expandedMessageTraces = ref<Record<string, boolean>>({})
+
+function toggleMessageTrace(id: string) {
+  expandedMessageTraces.value[id] = !expandedMessageTraces.value[id]
+}
+
+function formatAgentEvent(event: any) {
+  if (event.type === 'tool_call') return '工具调用'
+  if (event.type === 'observation') return '工具结果'
+  if (event.type === 'react_step') return 'Agent 推理'
+  if (event.type === 'final_answer') return '最终回答'
+  if (event.type === 'error') return '执行失败'
+  return '执行事件'
+}
 
 const currentModelInfo = computed(() => {
   return chat.availableModels.find((m) => m.id === chat.selectedModel) || chat.availableModels[0]
