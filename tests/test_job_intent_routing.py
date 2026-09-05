@@ -45,5 +45,28 @@ def test_react_agent_emits_deterministic_job_route_without_llm(monkeypatch):
     assert tool_events[0]["routing_confidence"] >= 0.9
 
 
+def test_react_agent_reuses_uploaded_resume_from_history(monkeypatch):
+    captured_args = []
+
+    async def fake_call(self, request, *, skip_approval=False, actor_role="admin"):
+        captured_args.append(request.args)
+        class Result:
+            success = True
+            def to_dict(self):
+                return {"success": True, "summary": "fixture", "data": {"questions": []}}
+        return Result()
+
+    monkeypatch.setattr(UnifiedToolRegistry, "call", fake_call)
+    history = [{
+        "role": "user",
+        "content": "请帮我分析这份简历\n\n【已上传附件：Java简历.pdf】\n程翰，软件工程本科。项目：智能求职 Agent 平台，使用 Python、FastAPI、LangGraph、Milvus、MySQL，负责 RAG 与 MCP 工具链开发。",
+    }]
+    events = asyncio.run(_collect(ConversationReactAgent(registry=UnifiedToolRegistry(), max_steps=1).run("扮演大厂面试官进行模拟面试出题", history)))
+
+    assert captured_args
+    assert "Java简历.pdf" in captured_args[0]["resume_text"]
+    assert any(event["type"] == "tool_call" for event in events)
+
+
 async def _collect(iterator):
     return [event async for event in iterator]

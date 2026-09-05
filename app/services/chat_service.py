@@ -151,15 +151,31 @@ class ConversationService:
 
 
 def _history(service: ConversationService, conversation_id: str) -> list[dict[str, str]]:
-    """_history 函数：准备模型调用前需要的上下文、提示词或历史消息。"""
+    """准备模型上下文，并保留近期上传附件的提取文本供后续追问复用。"""
     runtime = get_runtime_settings(service.db)
     keep = max(runtime.history_keep_turns * 2, 2)
-    cached = context_window.get_window(conversation_id, keep)
-    if cached:
-        return cached[-keep:]
-    rows = service.list_messages(conversation_id)
+    rows = service.list_messages(conversation_id)[-keep:]
     context_window.rebuild_window(conversation_id, rows, keep)
-    return [{"role": row.role, "content": row.content} for row in rows[-keep:]]
+
+    history: list[dict[str, str]] = []
+    for row in rows:
+        content = row.content or ""
+        metadata = row.meta_data if isinstance(row.meta_data, dict) else {}
+        attachments = metadata.get("attachments") if isinstance(metadata, dict) else None
+        if row.role == "user" and isinstance(attachments, list):
+            attachment_blocks = []
+            for attachment in attachments:
+                if not isinstance(attachment, dict):
+                    continue
+                text = str(attachment.get("text") or "").strip()
+                if not text:
+                    continue
+                filename = str(attachment.get("filename") or "附件")
+                attachment_blocks.append(f"【已上传附件：{filename}】\n{text[:6000]}")
+            if attachment_blocks:
+                content = f"{content}\n\n" + "\n\n".join(attachment_blocks)
+        history.append({"role": row.role, "content": content})
+    return history
 
 
 def _chunk_content(chunk: Any) -> str:

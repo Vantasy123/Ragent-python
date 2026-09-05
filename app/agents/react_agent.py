@@ -245,11 +245,16 @@ class ConversationReactAgent:
         if step_index == 0 and not state.observations:
             route = route_job_intent(state.question)
             if route is not None and route.tool:
+                route_args = dict(route.args)
+                if route.tool == "job_generate_interview_questions":
+                    recent_resume = self._resume_context_from_history(state.history)
+                    if recent_resume:
+                        route_args.setdefault("resume_text", recent_resume)
                 return {
                     "thought": route.reason,
                     "action": "tool_call",
                     "tool": route.tool,
-                    "args": route.args,
+                    "args": route_args,
                     "intent": route.intent,
                     "routing_reason": route.reason,
                     "routing_confidence": route.confidence,
@@ -262,6 +267,21 @@ class ConversationReactAgent:
             return self._parse_json(getattr(response, "content", ""))
         except Exception:
             return None
+
+    @staticmethod
+    def _resume_context_from_history(history: list[dict[str, str]]) -> str:
+        """从近期会话中提取已上传的简历文本，避免后续面试请求重复索要。"""
+        marker = "【已上传附件："
+        for message in reversed(history):
+            content = str(message.get("content") or "")
+            if marker not in content:
+                continue
+            start = content.find(marker)
+            end = content.find("\n\n【已上传附件：", start + 1)
+            resume = content[start:end if end >= 0 else None].strip()
+            if len(resume) >= 80:
+                return resume[:6000]
+        return ""
 
     def _build_prompt(self, state: ReactState, step_index: int) -> str:
         """构造只允许 JSON 输出的 ReAct 决策提示词。"""
